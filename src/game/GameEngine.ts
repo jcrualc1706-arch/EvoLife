@@ -24,7 +24,7 @@ export class GameEngine {
   private readonly foodManager: FoodManager;
   private readonly predatorManager: PredatorManager;
   private readonly inputController: InputController;
-  private readonly clock: THREE.Clock;
+  private readonly timer: THREE.Timer;
 
   private status: GameStatus = 'playing';
   private stats: PlayerStats;
@@ -73,7 +73,7 @@ export class GameEngine {
       isHeadless ? 1 : Math.min(window.devicePixelRatio, 2)
     );
     this.renderer.shadowMap.enabled = !isHeadless;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    this.renderer.shadowMap.type = THREE.PCFShadowMap;
 
     // Clear container and mount canvas
     while (container.firstChild) {
@@ -89,7 +89,8 @@ export class GameEngine {
     this.inputController = new InputController(() => this.togglePause());
 
     this.stats = this.createInitialStats();
-    this.clock = new THREE.Clock();
+    this.timer = new THREE.Timer();
+    this.timer.connect(document);
 
     // Pre-compile shaders once
     this.renderer.compile(this.environment.scene, this.cameraController.camera);
@@ -135,8 +136,8 @@ export class GameEngine {
       this.inputController.resetInputs();
     } else if (this.status === 'paused') {
       this.status = 'playing';
-      // Reset clock delta so resuming doesn't jump
-      this.clock.getDelta();
+      // Reset timer delta so resuming doesn't jump
+      this.timer.update();
     }
     this.emitUISnapshot();
   }
@@ -144,7 +145,7 @@ export class GameEngine {
   public resumeGame(): void {
     if (this.status === 'paused') {
       this.status = 'playing';
-      this.clock.getDelta();
+      this.timer.update();
       this.emitUISnapshot();
     }
   }
@@ -165,7 +166,8 @@ export class GameEngine {
     this.foodManager.resetAll();
     this.predatorManager.resetAll();
 
-    this.clock.getDelta();
+    this.timer.reset();
+    this.timer.update();
     this.emitUISnapshot();
   }
 
@@ -175,15 +177,16 @@ export class GameEngine {
   }
 
   private startLoop(): void {
-    const tick = () => {
+    const tick = (timestamp: number) => {
       this.animationFrameId = requestAnimationFrame(tick);
-      this.updateFrame();
+      this.updateFrame(timestamp);
     };
     this.animationFrameId = requestAnimationFrame(tick);
   }
 
-  private updateFrame(): void {
-    const rawDelta = this.clock.getDelta();
+  private updateFrame(timestamp?: number): void {
+    this.timer.update(timestamp);
+    const rawDelta = this.timer.getDelta();
     // Clamp delta to avoid large jumps on tab switch
     const delta = Math.min(rawDelta, 0.1);
 
@@ -352,6 +355,7 @@ export class GameEngine {
     );
 
     this.inputController.dispose();
+    this.timer.dispose();
     this.player.dispose();
     this.foodManager.dispose();
     this.predatorManager.dispose();
