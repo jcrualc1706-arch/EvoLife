@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { CreatureEditorModal } from './components/CreatureEditorModal';
 import { DeathModal } from './components/DeathModal';
 import { GameHUD } from './components/GameHUD';
 import { PauseModal } from './components/PauseModal';
@@ -28,6 +29,7 @@ const INITIAL_SNAPSHOT: GameUISnapshot = {
   nearestPredatorState: 'DEAMBULAR',
   nearestPredatorDistance: 999,
   recentEventMessage: null,
+  evolutionSlots: [],
 };
 
 export default function App() {
@@ -52,6 +54,18 @@ export default function App() {
 
   const handleTogglePause = useCallback(() => {
     engineRef.current?.togglePause();
+  }, []);
+
+  const handleToggleEditor = useCallback(() => {
+    engineRef.current?.toggleEditor();
+  }, []);
+
+  const handleCloseEditor = useCallback(() => {
+    engineRef.current?.closeEditor();
+  }, []);
+
+  const handleUnlockSlot = useCallback((slotId: string) => {
+    engineRef.current?.unlockEvolutionSlot(slotId);
   }, []);
 
   const handleResume = useCallback(() => {
@@ -90,9 +104,20 @@ export default function App() {
       <GameHUD
         snapshot={snapshot}
         onTogglePause={handleTogglePause}
+        onToggleEditor={handleToggleEditor}
         onRestart={handleRestart}
         onControlInput={handleControlInput}
       />
+
+      {/* Creature Evolution Editor Modal (Key E) */}
+      {snapshot.status === 'editing' && (
+        <CreatureEditorModal
+          stats={snapshot.stats}
+          slots={snapshot.evolutionSlots}
+          onUnlockSlot={handleUnlockSlot}
+          onClose={handleCloseEditor}
+        />
+      )}
 
       {/* Pause Menu Modal (Escape) */}
       {snapshot.status === 'paused' && (

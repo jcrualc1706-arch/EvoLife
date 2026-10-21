@@ -10,12 +10,14 @@ export class InputController {
   };
 
   private onPauseToggleCallback: (() => void) | null = null;
+  private onEditorToggleCallback: (() => void) | null = null;
   private boundKeyDown: (e: KeyboardEvent) => void;
   private boundKeyUp: (e: KeyboardEvent) => void;
   private boundWindowBlur: () => void;
 
-  constructor(onPauseToggle?: () => void) {
+  constructor(onPauseToggle?: () => void, onEditorToggle?: () => void) {
     this.onPauseToggleCallback = onPauseToggle ?? null;
+    this.onEditorToggleCallback = onEditorToggle ?? null;
     this.boundKeyDown = this.handleKeyDown.bind(this);
     this.boundKeyUp = this.handleKeyUp.bind(this);
     this.boundWindowBlur = this.resetInputs.bind(this);
@@ -26,7 +28,12 @@ export class InputController {
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
-    if (event.repeat && event.code === 'Escape') return;
+    if (
+      event.repeat &&
+      (event.code === 'Escape' || event.code === 'KeyE')
+    ) {
+      return;
+    }
 
     switch (event.code) {
       case 'KeyW':
@@ -48,6 +55,12 @@ export class InputController {
       case 'Space':
         event.preventDefault();
         this.state.boost = true;
+        break;
+      case 'KeyE':
+        event.preventDefault();
+        if (this.onEditorToggleCallback) {
+          this.onEditorToggleCallback();
+        }
         break;
       case 'Escape':
         event.preventDefault();

@@ -7,6 +7,7 @@ import {
   Pause,
   RotateCcw,
   ShieldAlert,
+  Sparkles,
   Zap,
 } from 'lucide-react';
 import { GameUISnapshot, InputState } from '../game/types';
@@ -14,6 +15,7 @@ import { GameUISnapshot, InputState } from '../game/types';
 interface GameHUDProps {
   snapshot: GameUISnapshot;
   onTogglePause: () => void;
+  onToggleEditor: () => void;
   onRestart: () => void;
   onControlInput: (key: keyof InputState, active: boolean) => void;
 }
@@ -21,12 +23,18 @@ interface GameHUDProps {
 export const GameHUD: React.FC<GameHUDProps> = ({
   snapshot,
   onTogglePause,
+  onToggleEditor,
   onRestart,
   onControlInput,
 }) => {
   const [dockCollapsed, setDockCollapsed] = useState(false);
-  const { stats, nearestPredatorState, nearestPredatorDistance, recentEventMessage } =
-    snapshot;
+  const {
+    stats,
+    nearestPredatorState,
+    nearestPredatorDistance,
+    recentEventMessage,
+    evolutionSlots,
+  } = snapshot;
 
   const healthPct = Math.max(
     0,
@@ -36,6 +44,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     0,
     Math.min(100, (stats.energy / stats.maxEnergy) * 100)
   );
+
+  const availableUpgradesCount = evolutionSlots.filter(
+    (s) => !s.unlocked && stats.adn >= s.costAdn
+  ).length;
+  const unlockedCount = evolutionSlots.filter((s) => s.unlocked).length;
 
   const formatTime = (sec: number) => {
     const mins = Math.floor(sec / 60);
@@ -52,7 +65,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4 sm:p-6">
-      {/* Top Status Bar: Brand + Core Vital Bars (Vida, Energía, ADN) + Pause Action */}
+      {/* Top Status Bar: Brand + Core Vital Bars (Vida, Energía, ADN) + Evolucionar & Pause Actions */}
       <header className="pointer-events-auto mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-4 rounded-xl border border-cyan-500/20 bg-[#041524]/92 px-5 py-3.5 shadow-xl">
         {/* Zone 1: Brand Title & Stage */}
         <div className="flex items-center gap-3 shrink-0">
@@ -64,7 +77,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               EvoLife
             </h1>
             <p className="text-xs text-slate-400 whitespace-nowrap">
-              Fase Celular · Supervivencia
+              Fase Celular · {unlockedCount}/{evolutionSlots.length} Órganos
             </p>
           </div>
         </div>
@@ -72,7 +85,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         {/* Zone 2: Vital Telemetry Bars (Vida, Energía, ADN) */}
         <div className="flex flex-1 flex-wrap items-center justify-center gap-6 px-2">
           {/* VIDA (Health) */}
-          <div className="min-w-[165px] flex-1 max-w-[230px]">
+          <div className="min-w-[155px] flex-1 max-w-[220px]">
             <div className="mb-1.5 flex items-center justify-between text-xs">
               <span className="flex items-center gap-1.5 font-semibold text-slate-200">
                 <Activity className="h-3.5 w-3.5 text-rose-400" />
@@ -97,7 +110,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
 
           {/* ENERGÍA (Energy) */}
-          <div className="min-w-[165px] flex-1 max-w-[230px]">
+          <div className="min-w-[155px] flex-1 max-w-[220px]">
             <div className="mb-1.5 flex items-center justify-between text-xs">
               <span className="flex items-center gap-1.5 font-semibold text-slate-200">
                 <Zap className="h-3.5 w-3.5 text-cyan-400" />
@@ -133,23 +146,48 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 Puntos de ADN
               </div>
               <div className="font-mono text-xl font-bold tabular-nums text-amber-300">
-                {stats.adn} <span className="text-xs font-normal text-amber-200/80">ADN</span>
+                {stats.adn}{' '}
+                <span className="text-xs font-normal text-amber-200/80">
+                  ADN
+                </span>
               </div>
             </div>
 
-            <div className="hidden lg:block text-xs text-slate-400">
+            <div className="hidden xl:block text-xs text-slate-400">
               <div>
-                Nutrientes: <span className="font-mono font-semibold text-slate-200 tabular-nums">{stats.foodEaten}</span>
+                Nutrientes:{' '}
+                <span className="font-mono font-semibold text-slate-200 tabular-nums">
+                  {stats.foodEaten}
+                </span>
               </div>
               <div>
-                Tiempo: <span className="font-mono font-semibold text-slate-200 tabular-nums">{formatTime(stats.survivalTime)}</span>
+                Tiempo:{' '}
+                <span className="font-mono font-semibold text-slate-200 tabular-nums">
+                  {formatTime(stats.survivalTime)}
+                </span>
               </div>
             </div>
           </div>
         </div>
 
-        {/* Zone 3: Pause & Quick Restart Controls */}
-        <div className="flex items-center gap-2.5 shrink-0">
+        {/* Zone 3: Evolucionar (E), Pause & Quick Restart Controls */}
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={onToggleEditor}
+            className={`flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+              availableUpgradesCount > 0
+                ? 'border-amber-300 bg-amber-400 text-slate-950 hover:bg-amber-300'
+                : 'border-amber-500/40 bg-amber-950/60 text-amber-200 hover:bg-amber-900/70'
+            }`}
+          >
+            <Sparkles className="h-3.5 w-3.5" />
+            <span>
+              Evolucionar (E)
+              {availableUpgradesCount > 0 ? ` · ${availableUpgradesCount}` : ''}
+            </span>
+          </button>
+
           <button
             type="button"
             onClick={onRestart}
@@ -157,12 +195,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-slate-500 hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <RotateCcw className="h-3.5 w-3.5" />
-            <span>Reiniciar</span>
+            <span className="hidden sm:inline">Reiniciar</span>
           </button>
+
           <button
             type="button"
             onClick={onTogglePause}
-            className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-4 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3.5 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Pause className="h-3.5 w-3.5" />
             <span>Pausa (Esc)</span>
@@ -266,9 +305,11 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
             {/* Control Instructions */}
             <div className="hidden md:flex items-center gap-3 text-xs text-slate-400">
-              <span>WASD: Desplazar / Girar</span>
+              <span>WASD: Mover</span>
               <span aria-hidden="true">·</span>
-              <span>Espacio: Impulso (+Energía)</span>
+              <span>Espacio: Impulso</span>
+              <span aria-hidden="true">·</span>
+              <span>E: Evolucionar</span>
               <span aria-hidden="true">·</span>
               <span>Esc: Pausa</span>
             </div>

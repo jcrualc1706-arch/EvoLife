@@ -1,6 +1,8 @@
-export type GameStatus = 'playing' | 'paused' | 'gameover';
+export type GameStatus = 'playing' | 'paused' | 'editing' | 'gameover';
 
 export type PredatorBehaviorState = 'DEAMBULAR' | 'PERSEGUIR' | 'ATACAR';
+
+export type EvolutionCategory = 'locomocion' | 'metabolismo' | 'defensa';
 
 export interface PlayerStats {
   health: number;
@@ -23,6 +25,16 @@ export interface PredatorTelemetry {
   distanceToPlayer: number;
 }
 
+export interface CellularEvolutionSlot {
+  id: string;
+  name: string;
+  description: string;
+  statSummary: string;
+  category: EvolutionCategory;
+  costAdn: number;
+  unlocked: boolean;
+}
+
 export interface GameUISnapshot {
   status: GameStatus;
   stats: PlayerStats;
@@ -32,6 +44,7 @@ export interface GameUISnapshot {
   nearestPredatorState: PredatorBehaviorState;
   nearestPredatorDistance: number;
   recentEventMessage: string | null;
+  evolutionSlots: CellularEvolutionSlot[];
 }
 
 export interface InputState {
@@ -40,14 +53,4 @@ export interface InputState {
   left: boolean;
   right: boolean;
   boost: boolean;
-}
-
-/**
- * Prepared structure for future Creature Editor & Evolution upgrades using DNA.
- */
-export interface CellularEvolutionSlot {
-  id: string;
-  name: string;
-  costAdn: number;
-  unlocked: boolean;
 }

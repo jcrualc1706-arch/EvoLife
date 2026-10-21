@@ -252,16 +252,19 @@ export class PredatorManager {
   public update(
     delta: number,
     elapsedTime: number,
-    playerPosition: THREE.Vector3
+    playerPosition: THREE.Vector3,
+    canCounterAttack = false
   ): {
     totalDamageDealt: number;
     attackerPosition: THREE.Vector3 | null;
+    repelledPredators: number;
     telemetry: PredatorTelemetry[];
     nearestState: PredatorBehaviorState;
     nearestDistance: number;
   } {
     let totalDamageDealt = 0;
     let attackerPosition: THREE.Vector3 | null = null;
+    let repelledPredators = 0;
     let nearestDistance = Infinity;
     let nearestState: PredatorBehaviorState = 'DEAMBULAR';
 
@@ -281,10 +284,35 @@ export class PredatorManager {
         dxToPlayer * dxToPlayer + dzToPlayer * dzToPlayer
       );
 
+      // Counter-attack check: if player has rostral_spines and is boosting within < 3.4m
+      if (canCounterAttack && distToPlayer < 3.4 && p.attackCooldown <= 1.6) {
+        const pushDirX = distToPlayer > 0.01 ? -dxToPlayer / distToPlayer : 1;
+        const pushDirZ = distToPlayer > 0.01 ? -dzToPlayer / distToPlayer : 0;
+
+        p.position.x += pushDirX * 7.5;
+        p.position.z += pushDirZ * 7.5;
+        p.headingAngle = Math.atan2(-pushDirX, -pushDirZ);
+        p.state = 'DEAMBULAR';
+        p.attackCooldown = 2.6;
+        p.lungeTimer = 0;
+        p.wanderTarget.set(
+          p.position.x + pushDirX * 28,
+          GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+          p.position.z + pushDirZ * 28
+        );
+        p.wanderRetargetTimer = 4.5;
+        repelledPredators++;
+        continue;
+      }
+
       // --- FINITE STATE MACHINE TRANSITIONS ---
       switch (p.state) {
         case 'DEAMBULAR':
-          if (distToPlayer <= GAME_CONFIG.PREDATOR.DETECTION_RADIUS) {
+          // Wait until retreat cooldown finishes before re-engaging
+          if (
+            p.attackCooldown <= 1.5 &&
+            distToPlayer <= GAME_CONFIG.PREDATOR.DETECTION_RADIUS
+          ) {
             p.state = 'PERSEGUIR';
           }
           break;
@@ -424,6 +452,7 @@ export class PredatorManager {
     return {
       totalDamageDealt,
       attackerPosition,
+      repelledPredators,
       telemetry: this.telemetryCache,
       nearestState,
       nearestDistance,

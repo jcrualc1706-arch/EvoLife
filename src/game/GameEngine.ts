@@ -31,12 +31,50 @@ export class GameEngine {
   private recentEventMessage: string | null = null;
   private eventMessageTimer = 0;
 
-  // Prepared evolution slots for future creature editor phase
   public readonly preparedEvolutionCatalog: CellularEvolutionSlot[] = [
-    { id: 'flagellum_2', name: 'Flagelo Hidrodinámico', costAdn: 25, unlocked: false },
-    { id: 'chloroplast_1', name: 'Vacuola Fotosintética', costAdn: 40, unlocked: false },
-    { id: 'membrane_armor', name: 'Membrana Quitinizada', costAdn: 60, unlocked: false },
+    {
+      id: 'flagellum_2',
+      name: 'Flagelo Bimotor',
+      description:
+        'Desarrolla un par adicional de flagelos laterales articulados que incrementan el empuje hidrodinámico y la agilidad de maniobra.',
+      statSummary: '+25% Velocidad · +15% Giro',
+      category: 'locomocion',
+      costAdn: 20,
+      unlocked: false,
+    },
+    {
+      id: 'chloroplast_1',
+      name: 'Cloroplastos Simbióticos',
+      description:
+        'Integra orgánulos fotosintéticos internos capaces de sintetizar energía de la luz filtrada, reduciendo el gasto basal.',
+      statSummary: '-50% Consumo Pasivo · +30 Energía Máx.',
+      category: 'metabolismo',
+      costAdn: 30,
+      unlocked: false,
+    },
+    {
+      id: 'membrane_armor',
+      name: 'Corteza Quitinizada',
+      description:
+        'Refuerza el dorso celular con placas quitinosas que amortiguan las mordidas de los depredadores y amplían la vitalidad.',
+      statSummary: '+40 Vida Máx. · -30% Daño Recibido',
+      category: 'defensa',
+      costAdn: 45,
+      unlocked: false,
+    },
+    {
+      id: 'rostral_spines',
+      name: 'Espolones Rostrales',
+      description:
+        'Añade dos púas frontales calcificadas que permiten embestir con Impulso (Espacio) a los depredadores (< 3.4m) y ahuyentarlos.',
+      statSummary: 'Contraataque con Impulso (< 3.4m)',
+      category: 'defensa',
+      costAdn: 40,
+      unlocked: false,
+    },
   ];
+
+  private readonly unlockedSlotIds = new Set<string>();
 
   private animationFrameId: number | null = null;
   private uiSyncAccumulator = 0;
@@ -86,7 +124,10 @@ export class GameEngine {
     this.cameraController = new CameraController(width / Math.max(height, 1));
     this.foodManager = new FoodManager(this.environment.scene);
     this.predatorManager = new PredatorManager(this.environment.scene);
-    this.inputController = new InputController(() => this.togglePause());
+    this.inputController = new InputController(
+      () => this.togglePause(),
+      () => this.toggleEditor()
+    );
 
     this.stats = this.createInitialStats();
     this.timer = new THREE.Timer();
@@ -131,6 +172,13 @@ export class GameEngine {
   public togglePause(): void {
     if (this.status === 'gameover') return;
 
+    if (this.status === 'editing') {
+      this.status = 'playing';
+      this.timer.update();
+      this.emitUISnapshot();
+      return;
+    }
+
     if (this.status === 'playing') {
       this.status = 'paused';
       this.inputController.resetInputs();
@@ -142,8 +190,54 @@ export class GameEngine {
     this.emitUISnapshot();
   }
 
+  public toggleEditor(): void {
+    if (this.status === 'gameover') return;
+
+    if (this.status === 'playing' || this.status === 'paused') {
+      this.status = 'editing';
+      this.inputController.resetInputs();
+    } else if (this.status === 'editing') {
+      this.status = 'playing';
+      this.timer.update();
+    }
+    this.emitUISnapshot();
+  }
+
+  public closeEditor(): void {
+    if (this.status === 'editing') {
+      this.status = 'playing';
+      this.timer.update();
+      this.emitUISnapshot();
+    }
+  }
+
+  public unlockEvolutionSlot(slotId: string): boolean {
+    const slot = this.preparedEvolutionCatalog.find((s) => s.id === slotId);
+    if (!slot || slot.unlocked || this.stats.adn < slot.costAdn) {
+      return false;
+    }
+
+    this.stats.adn -= slot.costAdn;
+    slot.unlocked = true;
+    this.unlockedSlotIds.add(slot.id);
+
+    if (slot.id === 'chloroplast_1') {
+      this.stats.maxEnergy = 130;
+      this.stats.energy = Math.min(130, this.stats.energy + 30);
+      this.stats.isStarving = false;
+    } else if (slot.id === 'membrane_armor') {
+      this.stats.maxHealth = 140;
+      this.stats.health = Math.min(140, this.stats.health + 40);
+    }
+
+    this.player.syncEvolutionParts(this.unlockedSlotIds);
+    this.setEventMessage(`Evolución completada: ${slot.name}`);
+    this.emitUISnapshot();
+    return true;
+  }
+
   public resumeGame(): void {
-    if (this.status === 'paused') {
+    if (this.status === 'paused' || this.status === 'editing') {
       this.status = 'playing';
       this.timer.update();
       this.emitUISnapshot();
@@ -152,6 +246,11 @@ export class GameEngine {
 
   public restartGame(): void {
     this.status = 'playing';
+    for (const slot of this.preparedEvolutionCatalog) {
+      slot.unlocked = false;
+    }
+    this.unlockedSlotIds.clear();
+
     this.stats = this.createInitialStats();
     this.elapsedActiveTime = 0;
     this.recentEventMessage = 'Nueva generación celular iniciada';
@@ -196,20 +295,34 @@ export class GameEngine {
 
       let forceUIEmit = false;
 
+      const hasFlagellum2 = this.unlockedSlotIds.has('flagellum_2');
+      const hasChloroplast = this.unlockedSlotIds.has('chloroplast_1');
+      const hasArmor = this.unlockedSlotIds.has('membrane_armor');
+      const hasSpines = this.unlockedSlotIds.has('rostral_spines');
+
       // 1. Update Player Movement & Propulsion
       const canBoost =
         this.stats.energy >= GAME_CONFIG.PLAYER.MIN_ENERGY_FOR_BOOST;
+      const speedMultiplier = hasFlagellum2 ? 1.25 : 1.0;
+      const turnMultiplier = hasFlagellum2 ? 1.15 : 1.0;
+
       const moveResult = this.player.update(
         delta,
         this.elapsedActiveTime,
         this.inputController.state,
-        canBoost
+        canBoost,
+        speedMultiplier,
+        turnMultiplier
       );
       this.stats.isBoosting = moveResult.isBoosting;
       this.stats.speed = Math.abs(this.player.currentSpeed);
 
       // 2. Energy Consumption (Passive + Movement + Boost)
-      let energyDrain = GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC * delta;
+      const passiveDrainRate = hasChloroplast
+        ? GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC * 0.5
+        : GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC;
+
+      let energyDrain = passiveDrainRate * delta;
       if (moveResult.isMoving) {
         energyDrain += GAME_CONFIG.PLAYER.MOVEMENT_ENERGY_DRAIN_PER_SEC * delta;
       }
@@ -254,27 +367,42 @@ export class GameEngine {
         forceUIEmit = true;
       }
 
-      // 5. Update Predators (DEAMBULAR / PERSEGUIR / ATACAR)
+      // 5. Update Predators (DEAMBULAR / PERSEGUIR / ATACAR + Counter-attack)
+      const canCounterAttack = hasSpines && moveResult.isBoosting;
       const predatorResult = this.predatorManager.update(
         delta,
         this.elapsedActiveTime,
-        this.player.position
+        this.player.position,
+        canCounterAttack
       );
 
       this.nearestPredatorState = predatorResult.nearestState;
       this.nearestPredatorDistance = predatorResult.nearestDistance;
 
-      if (predatorResult.totalDamageDealt > 0) {
-        this.stats.health = Math.max(
-          0,
-          this.stats.health - predatorResult.totalDamageDealt
+      if (predatorResult.repelledPredators > 0) {
+        this.setEventMessage(
+          'Contraataque con Espolones Rostrales: Depredador repelido'
         );
+        forceUIEmit = true;
+      }
+
+      if (predatorResult.totalDamageDealt > 0) {
+        const attacksCount = Math.max(
+          1,
+          Math.round(
+            predatorResult.totalDamageDealt / GAME_CONFIG.PREDATOR.ATTACK_DAMAGE
+          )
+        );
+        const damagePerHit = hasArmor ? 12 : GAME_CONFIG.PREDATOR.ATTACK_DAMAGE;
+        const effectiveDamage = attacksCount * damagePerHit;
+
+        this.stats.health = Math.max(0, this.stats.health - effectiveDamage);
         this.stats.damageFlashTime = 0.4;
         if (predatorResult.attackerPosition) {
           this.player.applyDamageKnockback(predatorResult.attackerPosition, 16);
         }
         this.setEventMessage(
-          `Ataque de depredador (-${predatorResult.totalDamageDealt} Vida)`
+          `Ataque de depredador (-${effectiveDamage} Vida)`
         );
         forceUIEmit = true;
       }
@@ -333,6 +461,7 @@ export class GameEngine {
       nearestPredatorState: this.nearestPredatorState,
       nearestPredatorDistance: this.nearestPredatorDistance,
       recentEventMessage: this.recentEventMessage,
+      evolutionSlots: this.preparedEvolutionCatalog.map((slot) => ({ ...slot })),
     });
   }
 

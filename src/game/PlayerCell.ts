@@ -23,6 +23,14 @@ export class PlayerCell {
   private ciliaLeft: THREE.Mesh[] = [];
   private ciliaRight: THREE.Mesh[] = [];
 
+  // Evolutionary 3D Part Groups (pre-allocated once, toggled via .visible)
+  private evoFlagellumGroup!: THREE.Group;
+  private evoLateralTailLeft: THREE.Mesh[] = [];
+  private evoLateralTailRight: THREE.Mesh[] = [];
+  private evoChloroplastGroup!: THREE.Group;
+  private evoArmorGroup!: THREE.Group;
+  private evoSpinesGroup!: THREE.Group;
+
   private flagellumPhase = 0;
   private damageFlashTimer = 0;
 
@@ -186,6 +194,102 @@ export class PlayerCell {
     haloMesh.position.y = -0.95;
     this.group.add(haloMesh);
 
+    // --- 8. EVOLUTIONARY PARTS (Hidden initially, unlocked via ADN) ---
+
+    // 8A. flagellum_2 ("Flagelo Bimotor"): Two lateral articulated flagella
+    this.evoFlagellumGroup = new THREE.Group();
+    this.evoFlagellumGroup.visible = false;
+    const biFlagellumMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.75,
+      roughness: 0.3,
+      metalness: 0.2,
+    });
+    for (let i = 0; i < 3; i++) {
+      const latRadius = 0.19 * (1 - i * 0.2);
+      const latGeo = new THREE.SphereGeometry(latRadius, 10, 10);
+      latGeo.scale(0.8, 0.8, 1.6);
+      this.disposableGeometries.push(latGeo);
+
+      const leftSeg = new THREE.Mesh(latGeo, biFlagellumMat);
+      leftSeg.position.set(-0.55 - i * 0.08, 0, 1.3 + i * 0.42);
+      this.evoFlagellumGroup.add(leftSeg);
+      this.evoLateralTailLeft.push(leftSeg);
+
+      const rightSeg = new THREE.Mesh(latGeo, biFlagellumMat);
+      rightSeg.position.set(0.55 + i * 0.08, 0, 1.3 + i * 0.42);
+      this.evoFlagellumGroup.add(rightSeg);
+      this.evoLateralTailRight.push(rightSeg);
+    }
+    this.group.add(this.evoFlagellumGroup);
+
+    // 8B. chloroplast_1 ("Cloroplastos Simbióticos"): Glowing emerald organelles inside cell
+    this.evoChloroplastGroup = new THREE.Group();
+    this.evoChloroplastGroup.visible = false;
+    const chloroGeo = new THREE.CapsuleGeometry(0.18, 0.24, 8, 12);
+    const chloroMat = new THREE.MeshStandardMaterial({
+      color: 0x4ade80,
+      emissive: 0x16a34a,
+      emissiveIntensity: 1.15,
+      roughness: 0.25,
+      metalness: 0.1,
+    });
+    const chloroPositions: [number, number, number, number, number][] = [
+      [-0.48, 0.22, -0.55, 0.5, 0.3],
+      [0.48, 0.22, -0.55, -0.5, -0.3],
+      [-0.52, -0.18, 0.35, -0.4, 0.6],
+      [0.52, -0.18, 0.35, 0.4, -0.6],
+    ];
+    for (const [cx, cy, cz, rx, rz] of chloroPositions) {
+      const cMesh = new THREE.Mesh(chloroGeo, chloroMat);
+      cMesh.position.set(cx, cy, cz);
+      cMesh.rotation.set(rx, 0.2, rz);
+      this.evoChloroplastGroup.add(cMesh);
+    }
+    this.group.add(this.evoChloroplastGroup);
+
+    // 8C. membrane_armor ("Corteza Quitinizada"): Dorsal protective chitin plates
+    this.evoArmorGroup = new THREE.Group();
+    this.evoArmorGroup.visible = false;
+    const armorPlateGeo = new THREE.DodecahedronGeometry(0.42, 0);
+    armorPlateGeo.scale(1.35, 0.42, 1.1);
+    const armorMat = new THREE.MeshStandardMaterial({
+      color: 0x818cf8,
+      emissive: 0x3730a3,
+      emissiveIntensity: 0.45,
+      roughness: 0.28,
+      metalness: 0.55,
+    });
+    for (let i = 0; i < 3; i++) {
+      const plate = new THREE.Mesh(armorPlateGeo, armorMat);
+      const scaleStep = 1 - Math.abs(i - 1) * 0.16;
+      plate.scale.setScalar(scaleStep);
+      plate.position.set(0, 0.86 - Math.abs(i - 1) * 0.06, -0.55 + i * 0.55);
+      this.evoArmorGroup.add(plate);
+    }
+    this.group.add(this.evoArmorGroup);
+
+    // 8D. rostral_spines ("Espolones Rostrales"): Forward-pointing (-Z) sharp horns
+    this.evoSpinesGroup = new THREE.Group();
+    this.evoSpinesGroup.visible = false;
+    const spineGeo = new THREE.ConeGeometry(0.18, 0.95, 10);
+    spineGeo.rotateX(-Math.PI / 2); // Point toward -Z
+    const spineMat = new THREE.MeshStandardMaterial({
+      color: 0xfde047,
+      emissive: 0xd97706,
+      emissiveIntensity: 0.55,
+      roughness: 0.2,
+      metalness: 0.65,
+    });
+    for (const side of [-1, 1]) {
+      const horn = new THREE.Mesh(spineGeo, spineMat);
+      horn.position.set(side * 0.62, 0.06, -1.42);
+      horn.rotation.y = side * -0.16;
+      this.evoSpinesGroup.add(horn);
+    }
+    this.group.add(this.evoSpinesGroup);
+
     this.disposableGeometries.push(
       membraneGeo,
       nucleusGeo,
@@ -193,7 +297,10 @@ export class PlayerCell {
       eyeGeo,
       pupilGeo,
       ciliaGeo,
-      haloGeo
+      haloGeo,
+      chloroGeo,
+      armorPlateGeo,
+      spineGeo
     );
     this.disposableMaterials.push(
       this.membraneMat,
@@ -203,8 +310,19 @@ export class PlayerCell {
       pupilMat,
       ciliaMat,
       tailMat,
-      this.boostHaloMat
+      this.boostHaloMat,
+      biFlagellumMat,
+      chloroMat,
+      armorMat,
+      spineMat
     );
+  }
+
+  public syncEvolutionParts(unlockedIds: Set<string>): void {
+    this.evoFlagellumGroup.visible = unlockedIds.has('flagellum_2');
+    this.evoChloroplastGroup.visible = unlockedIds.has('chloroplast_1');
+    this.evoArmorGroup.visible = unlockedIds.has('membrane_armor');
+    this.evoSpinesGroup.visible = unlockedIds.has('rostral_spines');
   }
 
   public applyDamageKnockback(fromPosition: THREE.Vector3, strength = 15): void {
@@ -223,12 +341,15 @@ export class PlayerCell {
     delta: number,
     elapsedTime: number,
     input: InputState,
-    canBoost: boolean
+    canBoost: boolean,
+    speedMultiplier = 1.0,
+    turnMultiplier = 1.0
   ): { isMoving: boolean; isBoosting: boolean } {
     // 1. Smooth angular turning (A / D)
     let targetTurnRate = 0;
-    if (input.left) targetTurnRate += GAME_CONFIG.PLAYER.TURN_SPEED;
-    if (input.right) targetTurnRate -= GAME_CONFIG.PLAYER.TURN_SPEED;
+    const effectiveTurnSpeed = GAME_CONFIG.PLAYER.TURN_SPEED * turnMultiplier;
+    if (input.left) targetTurnRate += effectiveTurnSpeed;
+    if (input.right) targetTurnRate -= effectiveTurnSpeed;
 
     this.angularVelocity = THREE.MathUtils.damp(
       this.angularVelocity,
@@ -241,19 +362,19 @@ export class PlayerCell {
     // 2. Smooth forward/backward thrust (W / S) + Space Boost
     this.isBoosting = input.boost && canBoost;
 
+    const maxForward = GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED * speedMultiplier;
+    const maxReverse = GAME_CONFIG.PLAYER.MAX_REVERSE_SPEED * speedMultiplier;
+
     let targetSpeed = 0;
     if (input.forward) {
-      targetSpeed = GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED;
+      targetSpeed = maxForward;
     } else if (input.backward) {
-      targetSpeed = -GAME_CONFIG.PLAYER.MAX_REVERSE_SPEED;
+      targetSpeed = -maxReverse;
     }
 
     if (this.isBoosting) {
       // Boost propels the organism forward even if W is just tapped or held
-      const baseBoostSpeed =
-        input.backward
-          ? -GAME_CONFIG.PLAYER.MAX_REVERSE_SPEED
-          : GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED;
+      const baseBoostSpeed = input.backward ? -maxReverse : maxForward;
       targetSpeed = baseBoostSpeed * GAME_CONFIG.PLAYER.BOOST_MULTIPLIER;
     }
 
@@ -312,10 +433,10 @@ export class PlayerCell {
     );
     this.group.rotation.set(0, this.headingAngle, bankAngle);
 
-    // 6. Animate procedural flagellum, cilia, and nucleus pulse
+    // 6. Animate procedural flagellum, lateral flagella, cilia, and nucleus pulse
     const speedRatio = Math.min(
       Math.abs(this.currentSpeed) / GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED,
-      2.0
+      2.5
     );
     const swimFreq = 5.5 + speedRatio * 10.5 + (this.isBoosting ? 8.0 : 0);
     this.flagellumPhase += delta * swimFreq;
@@ -326,6 +447,15 @@ export class PlayerCell {
       const amplitude = (0.1 + speedRatio * 0.14) * (1 + i * 0.45);
       seg.position.x = wave * amplitude;
       seg.rotation.y = wave * 0.35;
+    }
+
+    if (this.evoFlagellumGroup.visible) {
+      for (let i = 0; i < this.evoLateralTailLeft.length; i++) {
+        const wave = Math.cos(this.flagellumPhase - i * 0.9);
+        const amp = (0.08 + speedRatio * 0.12) * (1 + i * 0.35);
+        this.evoLateralTailLeft[i].position.x = -0.55 - i * 0.08 + wave * amp;
+        this.evoLateralTailRight[i].position.x = 0.55 + i * 0.08 - wave * amp;
+      }
     }
 
     for (let i = 0; i < this.ciliaLeft.length; i++) {
@@ -379,6 +509,10 @@ export class PlayerCell {
     this.knockbackVelocity.set(0, 0, 0);
     this.damageFlashTimer = 0;
     this.group.rotation.set(0, 0, 0);
+    this.evoFlagellumGroup.visible = false;
+    this.evoChloroplastGroup.visible = false;
+    this.evoArmorGroup.visible = false;
+    this.evoSpinesGroup.visible = false;
   }
 
   public dispose(): void {
