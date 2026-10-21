@@ -1,0 +1,6 @@
+{
+  "name": "EvoLife: Fase Celular",
+  "description": "Prototipo jugable en 3D de evolución y supervivencia submarina en la fase celular desarrollado con React, TypeScript y Three.js.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

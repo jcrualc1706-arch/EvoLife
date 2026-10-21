@@ -1,0 +1,116 @@
+import * as THREE from 'three';
+import { GAME_CONFIG } from './config';
+import { PlayerCell } from './PlayerCell';
+
+const _desiredCamPos = new THREE.Vector3();
+const _desiredLookTarget = new THREE.Vector3();
+const _playerForward = new THREE.Vector3();
+
+export class CameraController {
+  public readonly camera: THREE.PerspectiveCamera;
+  private readonly currentLookTarget = new THREE.Vector3();
+
+  constructor(aspect: number) {
+    this.camera = new THREE.PerspectiveCamera(
+      GAME_CONFIG.CAMERA.BASE_FOV,
+      aspect,
+      0.1,
+      240
+    );
+    this.resetImmediate(new THREE.Vector3(0, GAME_CONFIG.WORLD.SWIM_PLANE_Y, 0), 0);
+  }
+
+  public resetImmediate(playerPosition: THREE.Vector3, headingAngle: number): void {
+    _playerForward.set(-Math.sin(headingAngle), 0, -Math.cos(headingAngle));
+
+    this.camera.position
+      .copy(playerPosition)
+      .addScaledVector(_playerForward, -GAME_CONFIG.CAMERA.OFFSET_BACK);
+    this.camera.position.y = playerPosition.y + GAME_CONFIG.CAMERA.OFFSET_UP;
+
+    this.currentLookTarget
+      .copy(playerPosition)
+      .addScaledVector(_playerForward, GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE);
+
+    this.camera.lookAt(this.currentLookTarget);
+  }
+
+  public update(delta: number, player: PlayerCell): void {
+    _playerForward.set(
+      -Math.sin(player.headingAngle),
+      0,
+      -Math.cos(player.headingAngle)
+    );
+
+    // Desired camera position behind & above the cell
+    _desiredCamPos
+      .copy(player.position)
+      .addScaledVector(_playerForward, -GAME_CONFIG.CAMERA.OFFSET_BACK);
+    _desiredCamPos.y = player.position.y + GAME_CONFIG.CAMERA.OFFSET_UP;
+
+    // Smooth exponential damping for camera position (zero vibration)
+    this.camera.position.x = THREE.MathUtils.damp(
+      this.camera.position.x,
+      _desiredCamPos.x,
+      GAME_CONFIG.CAMERA.POSITION_DAMPING,
+      delta
+    );
+    this.camera.position.y = THREE.MathUtils.damp(
+      this.camera.position.y,
+      _desiredCamPos.y,
+      GAME_CONFIG.CAMERA.POSITION_DAMPING,
+      delta
+    );
+    this.camera.position.z = THREE.MathUtils.damp(
+      this.camera.position.z,
+      _desiredCamPos.z,
+      GAME_CONFIG.CAMERA.POSITION_DAMPING,
+      delta
+    );
+
+    // Desired lookAt point slightly ahead of the cell
+    _desiredLookTarget
+      .copy(player.position)
+      .addScaledVector(_playerForward, GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE);
+
+    this.currentLookTarget.x = THREE.MathUtils.damp(
+      this.currentLookTarget.x,
+      _desiredLookTarget.x,
+      GAME_CONFIG.CAMERA.TARGET_DAMPING,
+      delta
+    );
+    this.currentLookTarget.y = THREE.MathUtils.damp(
+      this.currentLookTarget.y,
+      _desiredLookTarget.y,
+      GAME_CONFIG.CAMERA.TARGET_DAMPING,
+      delta
+    );
+    this.currentLookTarget.z = THREE.MathUtils.damp(
+      this.currentLookTarget.z,
+      _desiredLookTarget.z,
+      GAME_CONFIG.CAMERA.TARGET_DAMPING,
+      delta
+    );
+
+    this.camera.lookAt(this.currentLookTarget);
+
+    // Subtle FOV widening when boosting
+    const targetFov = player.isBoosting
+      ? GAME_CONFIG.CAMERA.BOOST_FOV
+      : GAME_CONFIG.CAMERA.BASE_FOV;
+    if (Math.abs(this.camera.fov - targetFov) > 0.05) {
+      this.camera.fov = THREE.MathUtils.damp(
+        this.camera.fov,
+        targetFov,
+        6.0,
+        delta
+      );
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
+  public handleResize(width: number, height: number): void {
+    this.camera.aspect = width / Math.max(height, 1);
+    this.camera.updateProjectionMatrix();
+  }
+}
