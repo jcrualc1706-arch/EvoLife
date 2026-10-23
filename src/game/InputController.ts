@@ -7,6 +7,7 @@ export class InputController {
     left: false,
     right: false,
     boost: false,
+    ability: false,
   };
 
   private onPauseToggleCallback: (() => void) | null = null;
@@ -56,6 +57,10 @@ export class InputController {
         event.preventDefault();
         this.state.boost = true;
         break;
+      case 'KeyQ':
+        event.preventDefault();
+        this.state.ability = true;
+        break;
       case 'KeyE':
         event.preventDefault();
         if (this.onEditorToggleCallback) {
@@ -92,6 +97,9 @@ export class InputController {
       case 'Space':
         this.state.boost = false;
         break;
+      case 'KeyQ':
+        this.state.ability = false;
+        break;
     }
   }
 
@@ -105,6 +113,7 @@ export class InputController {
     this.state.left = false;
     this.state.right = false;
     this.state.boost = false;
+    this.state.ability = false;
   }
 
   public dispose(): void {

@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from './config';
+import { DietType, FoodKind } from './types';
 
 interface FoodItemState {
   position: THREE.Vector3;
   active: boolean;
   respawnTimer: number;
-  isRichSpore: boolean;
+  kind: FoodKind;
+  defaultKind: FoodKind;
   phase: number;
   spawnScale: number;
 }
@@ -14,6 +16,7 @@ export interface FoodConsumptionResult {
   energyGained: number;
   adnGained: number;
   itemsEaten: number;
+  blockedFoodKind: FoodKind | null;
 }
 
 const _dummy = new THREE.Object3D();
@@ -23,6 +26,7 @@ export class FoodManager {
   private readonly items: FoodItemState[] = [];
   private coreInstanced!: THREE.InstancedMesh;
   private shellInstanced!: THREE.InstancedMesh;
+  private dropCursor = 0;
 
   private readonly disposableGeometries: THREE.BufferGeometry[] = [];
   private readonly disposableMaterials: THREE.Material[] = [];
@@ -40,22 +44,22 @@ export class FoodManager {
     const coreMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       emissive: 0x10b981,
-      emissiveIntensity: 0.85,
+      emissiveIntensity: 0.75,
       roughness: 0.25,
       metalness: 0.15,
     });
 
-    // 2. Outer translucent membrane (Dodecahedron) + satellite nodes
+    // 2. Outer translucent membrane (Dodecahedron)
     const shellGeo = new THREE.DodecahedronGeometry(0.68, 1);
     const shellMat = new THREE.MeshPhysicalMaterial({
       color: 0xffffff,
       emissive: 0x059669,
-      emissiveIntensity: 0.35,
+      emissiveIntensity: 0.3,
       roughness: 0.2,
       metalness: 0.05,
       transmission: 0.6,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.58,
       depthWrite: false,
     });
 
@@ -66,11 +70,15 @@ export class FoodManager {
     this.coreInstanced.castShadow = true;
 
     for (let i = 0; i < count; i++) {
+      const defaultKind: FoodKind =
+        i % 6 === 0 ? 'dna_spore' : i % 3 === 1 ? 'meat' : 'plant';
+
       this.items.push({
         position: new THREE.Vector3(),
         active: true,
         respawnTimer: 0,
-        isRichSpore: i % 5 === 0,
+        kind: defaultKind,
+        defaultKind,
         phase: i * 0.77,
         spawnScale: 1,
       });
@@ -81,6 +89,25 @@ export class FoodManager {
 
     this.disposableGeometries.push(coreGeo, shellGeo);
     this.disposableMaterials.push(coreMat, shellMat);
+  }
+
+  private applyItemColor(index: number, kind: FoodKind): void {
+    if (kind === 'dna_spore') {
+      _color.setHex(0xfde047); // Golden DNA meteorite spore
+      this.coreInstanced.setColorAt(index, _color);
+      _color.setHex(0x38bdf8);
+      this.shellInstanced.setColorAt(index, _color);
+    } else if (kind === 'meat') {
+      _color.setHex(0xfb7185); // Coral-crimson protein meat fragment
+      this.coreInstanced.setColorAt(index, _color);
+      _color.setHex(0xe11d48);
+      this.shellInstanced.setColorAt(index, _color);
+    } else {
+      _color.setHex(0x34d399); // Emerald phytoplankton plant matter
+      this.coreInstanced.setColorAt(index, _color);
+      _color.setHex(0x6ee7b7);
+      this.shellInstanced.setColorAt(index, _color);
+    }
   }
 
   private assignRandomPosition(item: FoodItemState, avoidCenter = false): void {
@@ -97,26 +124,41 @@ export class FoodManager {
     );
   }
 
-  public resetAll(): void {
-    for (let i = 0; i < this.items.length; i++) {
-      const item = this.items[i];
+  /**
+   * Spawns a protein meat chunk + a DNA spore at the exact position where a cell dies in the ecosystem.
+   */
+  public spawnMeatDrop(position: THREE.Vector3): void {
+    const drops: FoodKind[] = ['meat', 'dna_spore'];
+
+    for (let d = 0; d < drops.length; d++) {
+      // Find an inactive slot first, or recycle via round-robin cursor
+      let targetIdx = -1;
+      for (let i = 0; i < this.items.length; i++) {
+        if (!this.items[i].active) {
+          targetIdx = i;
+          break;
+        }
+      }
+      if (targetIdx === -1) {
+        targetIdx = this.dropCursor % this.items.length;
+        this.dropCursor++;
+      }
+
+      const item = this.items[targetIdx];
       item.active = true;
       item.respawnTimer = 0;
-      item.spawnScale = 1;
-      item.isRichSpore = i % 5 === 0;
-      this.assignRandomPosition(item, i < 6);
+      item.kind = drops[d];
+      item.spawnScale = 0.2;
 
-      if (item.isRichSpore) {
-        _color.setHex(0xfde047); // Golden DNA-rich spore
-        this.coreInstanced.setColorAt(i, _color);
-        _color.setHex(0x38bdf8);
-        this.shellInstanced.setColorAt(i, _color);
-      } else {
-        _color.setHex(0x34d399); // Emerald phytoplankton nutrient
-        this.coreInstanced.setColorAt(i, _color);
-        _color.setHex(0x6ee7b7);
-        this.shellInstanced.setColorAt(i, _color);
-      }
+      const offsetAngle = d * Math.PI + Math.random() * 0.8;
+      const offsetDist = 0.85 + d * 0.55;
+      item.position.set(
+        position.x + Math.cos(offsetAngle) * offsetDist,
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+        position.z + Math.sin(offsetAngle) * offsetDist
+      );
+
+      this.applyItemColor(targetIdx, item.kind);
     }
 
     if (this.coreInstanced.instanceColor) {
@@ -127,14 +169,44 @@ export class FoodManager {
     }
   }
 
+  public resetAll(): void {
+    for (let i = 0; i < this.items.length; i++) {
+      const item = this.items[i];
+      item.active = true;
+      item.respawnTimer = 0;
+      item.spawnScale = 1;
+      item.kind = item.defaultKind;
+      this.assignRandomPosition(item, i < 6);
+      this.applyItemColor(i, item.kind);
+    }
+
+    if (this.coreInstanced.instanceColor) {
+      this.coreInstanced.instanceColor.needsUpdate = true;
+    }
+    if (this.shellInstanced.instanceColor) {
+      this.shellInstanced.instanceColor.needsUpdate = true;
+    }
+  }
+
+  private canDigest(playerDiet: DietType, kind: FoodKind): boolean {
+    if (kind === 'dna_spore') return true;
+    if (playerDiet === 'omnivore') return true;
+    if (playerDiet === 'herbivore' && kind === 'plant') return true;
+    if (playerDiet === 'carnivore' && kind === 'meat') return true;
+    return false;
+  }
+
   public update(
     delta: number,
     elapsedTime: number,
-    playerPosition: THREE.Vector3
+    playerPosition: THREE.Vector3,
+    playerDiet: DietType = 'herbivore'
   ): FoodConsumptionResult {
     let energyGained = 0;
     let adnGained = 0;
     let itemsEaten = 0;
+    let blockedFoodKind: FoodKind | null = null;
+    let colorDirty = false;
 
     const pickupDist =
       GAME_CONFIG.PLAYER.COLLISION_RADIUS + GAME_CONFIG.FOOD.COLLISION_RADIUS;
@@ -148,7 +220,10 @@ export class FoodManager {
         if (item.respawnTimer <= 0) {
           item.active = true;
           item.spawnScale = 0.05;
+          item.kind = item.defaultKind;
           this.assignRandomPosition(item, true);
+          this.applyItemColor(i, item.kind);
+          colorDirty = true;
         } else {
           // Keep hidden at scale 0
           _dummy.position.copy(item.position);
@@ -166,29 +241,41 @@ export class FoodManager {
       const distSq = dx * dx + dz * dz;
 
       if (distSq <= pickupDistSq) {
-        item.active = false;
-        item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
-        itemsEaten++;
-
-        if (item.isRichSpore) {
-          energyGained += GAME_CONFIG.FOOD.ENERGY_RESTORE_LARGE;
-          adnGained += GAME_CONFIG.FOOD.ADN_REWARD_LARGE;
+        if (!this.canDigest(playerDiet, item.kind)) {
+          // Gently push undigestible food away and notify HUD
+          const dist = Math.sqrt(distSq) || 0.1;
+          item.position.x += (dx / dist) * 1.8;
+          item.position.z += (dz / dist) * 1.8;
+          blockedFoodKind = item.kind;
         } else {
-          energyGained += GAME_CONFIG.FOOD.ENERGY_RESTORE_SMALL;
-          adnGained += GAME_CONFIG.FOOD.ADN_REWARD_SMALL;
-        }
+          item.active = false;
+          item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
+          itemsEaten++;
 
-        _dummy.position.copy(item.position);
-        _dummy.scale.setScalar(0);
-        _dummy.updateMatrix();
-        this.coreInstanced.setMatrixAt(i, _dummy.matrix);
-        this.shellInstanced.setMatrixAt(i, _dummy.matrix);
-        continue;
+          if (item.kind === 'dna_spore') {
+            energyGained += GAME_CONFIG.FOOD.ENERGY_RESTORE_LARGE;
+            adnGained += GAME_CONFIG.FOOD.ADN_REWARD_LARGE;
+          } else if (item.kind === 'meat') {
+            energyGained += 22;
+            adnGained += 8;
+          } else {
+            energyGained += GAME_CONFIG.FOOD.ENERGY_RESTORE_SMALL;
+            adnGained += GAME_CONFIG.FOOD.ADN_REWARD_SMALL;
+          }
+
+          _dummy.position.copy(item.position);
+          _dummy.scale.setScalar(0);
+          _dummy.updateMatrix();
+          this.coreInstanced.setMatrixAt(i, _dummy.matrix);
+          this.shellInstanced.setMatrixAt(i, _dummy.matrix);
+          continue;
+        }
       }
 
       // Smooth spawn scale-in + organic floating & rotation
       item.spawnScale = THREE.MathUtils.damp(item.spawnScale, 1.0, 5.0, delta);
-      const baseScale = item.isRichSpore ? 1.25 : 0.95;
+      const baseScale =
+        item.kind === 'dna_spore' ? 1.25 : item.kind === 'meat' ? 1.08 : 0.95;
       const pulse = 1.0 + Math.sin(elapsedTime * 3.2 + item.phase) * 0.12;
       const finalScale = item.spawnScale * baseScale * pulse;
 
@@ -216,10 +303,19 @@ export class FoodManager {
       this.shellInstanced.setMatrixAt(i, _dummy.matrix);
     }
 
+    if (colorDirty) {
+      if (this.coreInstanced.instanceColor) {
+        this.coreInstanced.instanceColor.needsUpdate = true;
+      }
+      if (this.shellInstanced.instanceColor) {
+        this.shellInstanced.instanceColor.needsUpdate = true;
+      }
+    }
+
     this.coreInstanced.instanceMatrix.needsUpdate = true;
     this.shellInstanced.instanceMatrix.needsUpdate = true;
 
-    return { energyGained, adnGained, itemsEaten };
+    return { energyGained, adnGained, itemsEaten, blockedFoodKind };
   }
 
   public getActiveCount(): number {

@@ -9,6 +9,7 @@ const _playerForward = new THREE.Vector3();
 export class CameraController {
   public readonly camera: THREE.PerspectiveCamera;
   private readonly currentLookTarget = new THREE.Vector3();
+  private currentZoomMultiplier = 1.0;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(
@@ -21,6 +22,7 @@ export class CameraController {
   }
 
   public resetImmediate(playerPosition: THREE.Vector3, headingAngle: number): void {
+    this.currentZoomMultiplier = 1.0;
     _playerForward.set(-Math.sin(headingAngle), 0, -Math.cos(headingAngle));
 
     this.camera.position
@@ -42,11 +44,24 @@ export class CameraController {
       -Math.cos(player.headingAngle)
     );
 
+    // Smoothly interpolate Spore-style camera zoom-out multiplier across Growth Stages 1 -> 2 -> 3
+    this.currentZoomMultiplier = THREE.MathUtils.damp(
+      this.currentZoomMultiplier,
+      player.cameraZoomMultiplier,
+      3.0,
+      delta
+    );
+
+    const effectiveOffsetBack =
+      GAME_CONFIG.CAMERA.OFFSET_BACK * this.currentZoomMultiplier;
+    const effectiveOffsetUp =
+      GAME_CONFIG.CAMERA.OFFSET_UP * this.currentZoomMultiplier;
+
     // Desired camera position behind & above the cell
     _desiredCamPos
       .copy(player.position)
-      .addScaledVector(_playerForward, -GAME_CONFIG.CAMERA.OFFSET_BACK);
-    _desiredCamPos.y = player.position.y + GAME_CONFIG.CAMERA.OFFSET_UP;
+      .addScaledVector(_playerForward, -effectiveOffsetBack);
+    _desiredCamPos.y = player.position.y + effectiveOffsetUp;
 
     // Smooth exponential damping for camera position (zero vibration)
     this.camera.position.x = THREE.MathUtils.damp(
@@ -71,7 +86,10 @@ export class CameraController {
     // Desired lookAt point slightly ahead of the cell
     _desiredLookTarget
       .copy(player.position)
-      .addScaledVector(_playerForward, GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE);
+      .addScaledVector(
+        _playerForward,
+        GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE * this.currentZoomMultiplier
+      );
 
     this.currentLookTarget.x = THREE.MathUtils.damp(
       this.currentLookTarget.x,

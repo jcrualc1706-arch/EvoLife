@@ -30,6 +30,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const {
     stats,
+    nearestSpeciesName,
     nearestPredatorState,
     nearestPredatorDistance,
     recentEventMessage,
@@ -61,31 +62,73 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       ? 'text-rose-400'
       : nearestPredatorState === 'PERSEGUIR'
       ? 'text-amber-400'
+      : nearestPredatorState === 'ATURDIDO'
+      ? 'text-cyan-300'
+      : nearestPredatorState === 'HUIR'
+      ? 'text-sky-400'
       : 'text-emerald-400';
+
+  const hasActiveAbility = Boolean(stats.activeStatusEffect);
+  const abilityReady = stats.abilityCooldownRatio >= 0.99;
+
+  const dietLabel =
+    stats.diet === 'omnivore'
+      ? 'Omnívoro'
+      : stats.diet === 'carnivore'
+      ? 'Carnívoro'
+      : 'Herbívoro';
+
+  const dietColorClass =
+    stats.diet === 'omnivore'
+      ? 'text-amber-300'
+      : stats.diet === 'carnivore'
+      ? 'text-rose-400'
+      : 'text-emerald-400';
+
+  const growthStageLabel =
+    stats.growthStage === 3
+      ? 'Fase 3/3 · Macrocélula'
+      : stats.growthStage === 2
+      ? 'Fase 2/3 · Célula Desarrollada'
+      : 'Fase 1/3 · Microcélula';
+
+  const growthProgressPct =
+    stats.growthStage === 3
+      ? 100
+      : stats.growthStage === 2
+      ? Math.min(100, Math.max(0, ((stats.totalAdnEarned - 60) / (140 - 60)) * 100))
+      : Math.min(100, Math.max(0, (stats.totalAdnEarned / 60) * 100));
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4 sm:p-6">
-      {/* Top Status Bar: Brand + Core Vital Bars (Vida, Energía, ADN) + Evolucionar & Pause Actions */}
+      {/* Top Status Bar: Brand + Core Vital Bars (Vida, Energía, ADN, Fase Evolutiva) + Llamar Pareja / Evolucionar & Pause Actions */}
       <header className="pointer-events-auto mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-4 rounded-xl border border-cyan-500/20 bg-[#041524]/92 px-5 py-3.5 shadow-xl">
-        {/* Zone 1: Brand Title & Stage */}
+        {/* Zone 1: Brand Title, Diet & Growth Stage */}
         <div className="flex items-center gap-3 shrink-0">
           <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-950/80 text-cyan-300">
             <Dna className="h-5 w-5" />
           </div>
           <div>
-            <h1 className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap">
-              EvoLife
-            </h1>
+            <div className="flex items-center gap-2">
+              <h1 className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap">
+                EvoLife
+              </h1>
+              <span className="rounded-md border border-cyan-500/30 bg-cyan-950/70 px-2 py-0.5 text-[11px] font-semibold text-cyan-300 whitespace-nowrap">
+                {growthStageLabel}
+              </span>
+            </div>
             <p className="text-xs text-slate-400 whitespace-nowrap">
-              Fase Celular · {unlockedCount}/{evolutionSlots.length} Órganos
+              Dieta: <span className={`font-semibold ${dietColorClass}`}>{dietLabel}</span>
+              <span className="mx-1.5">·</span>
+              <span>{unlockedCount}/{evolutionSlots.length} Órganos</span>
             </p>
           </div>
         </div>
 
-        {/* Zone 2: Vital Telemetry Bars (Vida, Energía, ADN) */}
-        <div className="flex flex-1 flex-wrap items-center justify-center gap-6 px-2">
+        {/* Zone 2: Vital Telemetry Bars (Vida, Energía, Progreso Evolutivo, ADN) */}
+        <div className="flex flex-1 flex-wrap items-center justify-center gap-5 px-2">
           {/* VIDA (Health) */}
-          <div className="min-w-[155px] flex-1 max-w-[220px]">
+          <div className="min-w-[140px] flex-1 max-w-[195px]">
             <div className="mb-1.5 flex items-center justify-between text-xs">
               <span className="flex items-center gap-1.5 font-semibold text-slate-200">
                 <Activity className="h-3.5 w-3.5 text-rose-400" />
@@ -110,7 +153,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
 
           {/* ENERGÍA (Energy) */}
-          <div className="min-w-[155px] flex-1 max-w-[220px]">
+          <div className="min-w-[140px] flex-1 max-w-[195px]">
             <div className="mb-1.5 flex items-center justify-between text-xs">
               <span className="flex items-center gap-1.5 font-semibold text-slate-200">
                 <Zap className="h-3.5 w-3.5 text-cyan-400" />
@@ -139,8 +182,28 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             </div>
           </div>
 
+          {/* CRECIMIENTO EVOLUTIVO (Spore Growth Progress Bar) */}
+          <div className="min-w-[145px] flex-1 max-w-[195px]">
+            <div className="mb-1.5 flex items-center justify-between text-xs">
+              <span className="font-semibold text-amber-200 whitespace-nowrap">
+                Crecimiento
+              </span>
+              <span className="font-mono font-bold tabular-nums text-amber-300">
+                {stats.growthStage === 3
+                  ? 'MÁX (1.62x)'
+                  : `${stats.totalAdnEarned} / ${stats.nextStageAdnThreshold} ADN`}
+              </span>
+            </div>
+            <div className="h-2.5 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-800">
+              <div
+                className="h-full bg-amber-400 transition-transform duration-200 origin-left"
+                style={{ transform: `scaleX(${growthProgressPct / 100})` }}
+              />
+            </div>
+          </div>
+
           {/* ADN (Genetic Points) */}
-          <div className="flex items-center gap-5 border-l border-slate-800 pl-5 shrink-0">
+          <div className="flex items-center gap-4 border-l border-slate-800 pl-4 shrink-0">
             <div>
               <div className="text-xs font-medium text-slate-400">
                 Puntos de ADN
@@ -153,7 +216,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
             </div>
 
-            <div className="hidden xl:block text-xs text-slate-400">
+            <div className="hidden 2xl:block text-xs text-slate-400">
               <div>
                 Nutrientes:{' '}
                 <span className="font-mono font-semibold text-slate-200 tabular-nums">
@@ -170,7 +233,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
           </div>
         </div>
 
-        {/* Zone 3: Evolucionar (E), Pause & Quick Restart Controls */}
+        {/* Zone 3: Llamar Pareja / Evolucionar (E), Pause & Quick Restart Controls */}
         <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
@@ -178,12 +241,12 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             className={`flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               availableUpgradesCount > 0
                 ? 'border-amber-300 bg-amber-400 text-slate-950 hover:bg-amber-300'
-                : 'border-amber-500/40 bg-amber-950/60 text-amber-200 hover:bg-amber-900/70'
+                : 'border-pink-400/40 bg-pink-950/60 text-pink-200 hover:bg-pink-900/70'
             }`}
           >
             <Sparkles className="h-3.5 w-3.5" />
             <span>
-              Evolucionar (E)
+              Llamar Pareja / Evolucionar (E)
               {availableUpgradesCount > 0 ? ` · ${availableUpgradesCount}` : ''}
             </span>
           </button>
@@ -224,7 +287,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       </div>
 
       {/* Unified Collapsible Bottom Control Dock */}
-      <div className="pointer-events-auto mx-auto flex w-full max-w-4xl flex-col items-center">
+      <div className="pointer-events-auto mx-auto flex w-full max-w-5xl flex-col items-center">
         <button
           type="button"
           onClick={() => setDockCollapsed((prev) => !prev)}
@@ -246,7 +309,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         {!dockCollapsed && (
           <div className="flex w-full flex-wrap items-center justify-between gap-4 rounded-xl border border-cyan-500/20 bg-[#041524]/92 px-5 py-3 shadow-2xl">
             {/* Keyboard & Interactive Movement Pad */}
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-1.5">
                 <button
                   type="button"
@@ -293,32 +356,67 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 onPointerDown={() => onControlInput('boost', true)}
                 onPointerUp={() => onControlInput('boost', false)}
                 onPointerLeave={() => onControlInput('boost', false)}
-                className={`rounded-lg border px-4 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                className={`rounded-lg border px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   stats.isBoosting
                     ? 'border-cyan-300 bg-cyan-400 text-slate-950'
                     : 'border-cyan-500/40 bg-cyan-950/70 text-cyan-200 hover:bg-cyan-900/80'
                 }`}
               >
-                ESPACIO · Impulso Flagelar
+                ESPACIO · Impulso
+              </button>
+
+              {/* Q · Active Cellular Weapon Button */}
+              <button
+                type="button"
+                onPointerDown={() => onControlInput('ability', true)}
+                onPointerUp={() => onControlInput('ability', false)}
+                onPointerLeave={() => onControlInput('ability', false)}
+                className={`relative overflow-hidden rounded-lg border px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                  !hasActiveAbility
+                    ? 'border-slate-700 bg-slate-900/80 text-slate-400 hover:border-slate-600'
+                    : abilityReady
+                    ? 'border-lime-400/60 bg-lime-950/70 text-lime-200 hover:bg-lime-900/80'
+                    : 'border-cyan-500/30 bg-slate-900 text-cyan-300'
+                }`}
+              >
+                {hasActiveAbility && !abilityReady && (
+                  <span
+                    className="pointer-events-none absolute inset-y-0 left-0 bg-cyan-500/25 transition-all duration-100"
+                    style={{
+                      width: `${Math.round(stats.abilityCooldownRatio * 100)}%`,
+                    }}
+                  />
+                )}
+                <span className="relative z-10 flex items-center gap-1.5">
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>
+                    Q · {stats.activeStatusEffect ?? 'Habilidad Celular'}
+                    {hasActiveAbility && !abilityReady
+                      ? ` (${Math.round(stats.abilityCooldownRatio * 100)}%)`
+                      : ''}
+                  </span>
+                </span>
               </button>
             </div>
 
             {/* Control Instructions */}
-            <div className="hidden md:flex items-center gap-3 text-xs text-slate-400">
+            <div className="hidden lg:flex items-center gap-2.5 text-xs text-slate-400">
               <span>WASD: Mover</span>
               <span aria-hidden="true">·</span>
               <span>Espacio: Impulso</span>
               <span aria-hidden="true">·</span>
-              <span>E: Evolucionar</span>
+              <span>Q: Habilidad</span>
               <span aria-hidden="true">·</span>
-              <span>Esc: Pausa</span>
+              <span>E: Evolucionar</span>
             </div>
 
-            {/* Predator Sensor Readout */}
+            {/* Ecosystem Species Sensor Readout */}
             <div className="flex items-center gap-2.5 border-l border-slate-800 pl-4 text-xs">
               <ShieldAlert className={`h-4 w-4 ${threatColorClass}`} />
               <div>
-                <div className="text-slate-400">Depredador más cercano</div>
+                <div className="text-slate-400 font-medium">
+                  {nearestSpeciesName}
+                </div>
                 <div className="font-mono font-semibold tabular-nums">
                   <span className={threatColorClass}>{nearestPredatorState}</span>
                   <span className="text-slate-500"> · </span>

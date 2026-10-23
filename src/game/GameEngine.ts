@@ -8,6 +8,7 @@ import { PredatorManager } from './PredatorManager';
 import { SceneEnvironment } from './SceneEnvironment';
 import {
   CellularEvolutionSlot,
+  DietType,
   GameStatus,
   GameUISnapshot,
   InputState,
@@ -33,6 +34,26 @@ export class GameEngine {
 
   public readonly preparedEvolutionCatalog: CellularEvolutionSlot[] = [
     {
+      id: 'mouth_jaw',
+      name: 'Mandíbula Aserrada',
+      description:
+        'Potentes pinzas quitinosas frontales que cambian tu dieta a Carnívora, permitiendo digerir fragmentos de carne y devorar células filtradoras.',
+      statSummary: 'Dieta Carnívora · Depreda Células Filtradoras',
+      category: 'metabolismo',
+      costAdn: 15,
+      unlocked: false,
+    },
+    {
+      id: 'mouth_proboscis',
+      name: 'Probóscide Succionadora',
+      description:
+        'Tubo succionador especializado que otorga Dieta Omnívora total (vegetal y carne), +25% de energía por alimento y drena ADN al contacto.',
+      statSummary: 'Dieta Omnívora · +25% Energía · Drena ADN',
+      category: 'metabolismo',
+      costAdn: 25,
+      unlocked: false,
+    },
+    {
       id: 'flagellum_2',
       name: 'Flagelo Bimotor',
       description:
@@ -53,13 +74,13 @@ export class GameEngine {
       unlocked: false,
     },
     {
-      id: 'membrane_armor',
-      name: 'Corteza Quitinizada',
+      id: 'poison_gland',
+      name: 'Glándula de Veneno',
       description:
-        'Refuerza el dorso celular con placas quitinosas que amortiguan las mordidas de los depredadores y amplían la vitalidad.',
-      statSummary: '+40 Vida Máx. · -30% Daño Recibido',
+        'Vesícula posterior bioluminiscente que libera nubes tóxicas al usar Impulso (Espacio), al acercarse un depredador (< 12m) o al pulsar Q, ralentizando un 45% y repeliendo amenazas.',
+      statSummary: 'Nube Tóxica (Q / Auto <12m) · -45% Vel. Enemiga',
       category: 'defensa',
-      costAdn: 45,
+      costAdn: 35,
       unlocked: false,
     },
     {
@@ -72,6 +93,26 @@ export class GameEngine {
       costAdn: 40,
       unlocked: false,
     },
+    {
+      id: 'membrane_armor',
+      name: 'Corteza Quitinizada',
+      description:
+        'Refuerza el dorso celular con placas quitinosas que amortiguan las mordidas de los depredadores y amplían la vitalidad.',
+      statSummary: '+40 Vida Máx. · -30% Daño Recibido',
+      category: 'defensa',
+      costAdn: 45,
+      unlocked: false,
+    },
+    {
+      id: 'electric_cell',
+      name: 'Órgano Bioeléctrico',
+      description:
+        'Nodos bioeléctricos laterales que emiten un pulso de área de 9.5m al pulsar Q (12 Energía, 6s enfriamiento): aturde depredadores 3.2s y electrocuta células filtradoras.',
+      statSummary: 'Pulso 9.5m (Tecla Q) · Aturde 3.2s · Electrocuta',
+      category: 'defensa',
+      costAdn: 50,
+      unlocked: false,
+    },
   ];
 
   private readonly unlockedSlotIds = new Set<string>();
@@ -79,6 +120,11 @@ export class GameEngine {
   private animationFrameId: number | null = null;
   private uiSyncAccumulator = 0;
   private elapsedActiveTime = 0;
+  private electricCooldownTimer = 0;
+  private poisonSpawnCooldownTimer = 0;
+  private matingCallTimer = 0;
+  private wasAbilityPressed = false;
+  private nearestSpeciesName = 'Mandíbula Rápida';
   private nearestPredatorState: PredatorBehaviorState = 'DEAMBULAR';
   private nearestPredatorDistance = 999;
 
@@ -159,14 +205,88 @@ export class GameEngine {
       energy: GAME_CONFIG.PLAYER.INITIAL_ENERGY,
       maxEnergy: GAME_CONFIG.PLAYER.MAX_ENERGY,
       adn: GAME_CONFIG.PLAYER.INITIAL_ADN,
+      totalAdnEarned: GAME_CONFIG.PLAYER.INITIAL_ADN,
+      growthStage: 1,
+      nextStageAdnThreshold: 60,
+      diet: 'herbivore',
       foodEaten: 0,
       survivalTime: 0,
       isStarving: false,
       isBoosting: false,
       boostCooldownRatio: 1,
+      abilityCooldownRatio: 1,
+      activeStatusEffect: null,
       speed: 0,
       damageFlashTime: 0,
     };
+  }
+
+  private computeCurrentDiet(): DietType {
+    const hasProboscis = this.unlockedSlotIds.has('mouth_proboscis');
+    const hasJaw = this.unlockedSlotIds.has('mouth_jaw');
+    const hasChloroplast = this.unlockedSlotIds.has('chloroplast_1');
+
+    if (hasProboscis || (hasJaw && hasChloroplast)) {
+      return 'omnivore';
+    }
+    if (hasJaw) {
+      return 'carnivore';
+    }
+    return 'herbivore';
+  }
+
+  private recalculateVitalCaps(): void {
+    const growthHealthBonus =
+      this.stats.growthStage === 3
+        ? 40
+        : this.stats.growthStage === 2
+        ? 20
+        : 0;
+    const armorHealthBonus = this.unlockedSlotIds.has('membrane_armor')
+      ? 40
+      : 0;
+    this.stats.maxHealth =
+      GAME_CONFIG.PLAYER.MAX_HEALTH + growthHealthBonus + armorHealthBonus;
+    this.stats.health = Math.min(this.stats.maxHealth, this.stats.health);
+
+    const chloroEnergyBonus = this.unlockedSlotIds.has('chloroplast_1')
+      ? 30
+      : 0;
+    this.stats.maxEnergy = GAME_CONFIG.PLAYER.MAX_ENERGY + chloroEnergyBonus;
+    this.stats.energy = Math.min(this.stats.maxEnergy, this.stats.energy);
+  }
+
+  private addAdn(amount: number): boolean {
+    if (amount <= 0) return false;
+    this.stats.adn += amount;
+    this.stats.totalAdnEarned += amount;
+
+    const total = this.stats.totalAdnEarned;
+    const targetStage: 1 | 2 | 3 = total >= 140 ? 3 : total >= 60 ? 2 : 1;
+    this.stats.nextStageAdnThreshold = targetStage === 1 ? 60 : 140;
+
+    if (targetStage > this.stats.growthStage) {
+      const prevMax = this.stats.maxHealth;
+      this.stats.growthStage = targetStage;
+      this.player.setGrowthStage(targetStage);
+      this.recalculateVitalCaps();
+      const bonus = Math.max(0, this.stats.maxHealth - prevMax);
+      this.stats.health = Math.min(
+        this.stats.maxHealth,
+        this.stats.health + bonus
+      );
+      if (targetStage === 2) {
+        this.setEventMessage(
+          '¡Crecimiento Celular! Fase 2/3: Célula Desarrollada (+20 Vida Máx.)'
+        );
+      } else {
+        this.setEventMessage(
+          '¡Culminación Celular! Fase 3/3: Organismo Macrocelular (+40 Vida Máx.)'
+        );
+      }
+      return true;
+    }
+    return false;
   }
 
   public togglePause(): void {
@@ -174,6 +294,8 @@ export class GameEngine {
 
     if (this.status === 'editing') {
       this.status = 'playing';
+      this.matingCallTimer = 0;
+      this.player.hideMateCell();
       this.timer.update();
       this.emitUISnapshot();
       return;
@@ -181,10 +303,11 @@ export class GameEngine {
 
     if (this.status === 'playing') {
       this.status = 'paused';
+      this.matingCallTimer = 0;
+      this.player.hideMateCell();
       this.inputController.resetInputs();
     } else if (this.status === 'paused') {
       this.status = 'playing';
-      // Reset timer delta so resuming doesn't jump
       this.timer.update();
     }
     this.emitUISnapshot();
@@ -193,19 +316,47 @@ export class GameEngine {
   public toggleEditor(): void {
     if (this.status === 'gameover') return;
 
-    if (this.status === 'playing' || this.status === 'paused') {
+    if (this.status === 'editing') {
+      this.status = 'playing';
+      this.matingCallTimer = 0;
+      this.player.hideMateCell();
+      this.timer.update();
+      this.emitUISnapshot();
+      return;
+    }
+
+    if (this.status === 'paused') {
+      this.status = 'editing';
+      this.matingCallTimer = 0;
+      this.player.startMatingCall();
+      this.inputController.resetInputs();
+      this.emitUISnapshot();
+      return;
+    }
+
+    // In 'playing' status: if already calling mate, skip remaining courtship and open editor immediately
+    if (this.matingCallTimer > 0) {
+      this.matingCallTimer = 0;
       this.status = 'editing';
       this.inputController.resetInputs();
-    } else if (this.status === 'editing') {
-      this.status = 'playing';
-      this.timer.update();
+      this.emitUISnapshot();
+      return;
     }
+
+    // Start 0.85s Spore-style Mating Call & Partner Cell approach before opening Editor
+    this.matingCallTimer = 0.85;
+    this.player.startMatingCall();
+    this.setEventMessage(
+      'Llamada de apareamiento: Pareja celular acudiendo...'
+    );
     this.emitUISnapshot();
   }
 
   public closeEditor(): void {
-    if (this.status === 'editing') {
+    if (this.status === 'editing' || this.matingCallTimer > 0) {
       this.status = 'playing';
+      this.matingCallTimer = 0;
+      this.player.hideMateCell();
       this.timer.update();
       this.emitUISnapshot();
     }
@@ -220,14 +371,14 @@ export class GameEngine {
     this.stats.adn -= slot.costAdn;
     slot.unlocked = true;
     this.unlockedSlotIds.add(slot.id);
+    this.stats.diet = this.computeCurrentDiet();
+    this.recalculateVitalCaps();
 
     if (slot.id === 'chloroplast_1') {
-      this.stats.maxEnergy = 130;
-      this.stats.energy = Math.min(130, this.stats.energy + 30);
+      this.stats.energy = Math.min(this.stats.maxEnergy, this.stats.energy + 30);
       this.stats.isStarving = false;
     } else if (slot.id === 'membrane_armor') {
-      this.stats.maxHealth = 140;
-      this.stats.health = Math.min(140, this.stats.health + 40);
+      this.stats.health = Math.min(this.stats.maxHealth, this.stats.health + 40);
     }
 
     this.player.syncEvolutionParts(this.unlockedSlotIds);
@@ -236,9 +387,31 @@ export class GameEngine {
     return true;
   }
 
+  public refundEvolutionSlot(slotId: string): boolean {
+    const slot = this.preparedEvolutionCatalog.find((s) => s.id === slotId);
+    if (!slot || !slot.unlocked) {
+      return false;
+    }
+
+    slot.unlocked = false;
+    this.unlockedSlotIds.delete(slot.id);
+    this.stats.adn += slot.costAdn;
+    this.stats.diet = this.computeCurrentDiet();
+    this.recalculateVitalCaps();
+
+    this.player.syncEvolutionParts(this.unlockedSlotIds);
+    this.setEventMessage(
+      `Órgano retirado: ${slot.name} (+${slot.costAdn} ADN reembolsado)`
+    );
+    this.emitUISnapshot();
+    return true;
+  }
+
   public resumeGame(): void {
     if (this.status === 'paused' || this.status === 'editing') {
       this.status = 'playing';
+      this.matingCallTimer = 0;
+      this.player.hideMateCell();
       this.timer.update();
       this.emitUISnapshot();
     }
@@ -253,6 +426,10 @@ export class GameEngine {
 
     this.stats = this.createInitialStats();
     this.elapsedActiveTime = 0;
+    this.electricCooldownTimer = 0;
+    this.poisonSpawnCooldownTimer = 0;
+    this.matingCallTimer = 0;
+    this.wasAbilityPressed = false;
     this.recentEventMessage = 'Nueva generación celular iniciada';
     this.eventMessageTimer = 2.8;
 
@@ -295,10 +472,28 @@ export class GameEngine {
 
       let forceUIEmit = false;
 
+      const hasJaw = this.unlockedSlotIds.has('mouth_jaw');
+      const hasProboscis = this.unlockedSlotIds.has('mouth_proboscis');
       const hasFlagellum2 = this.unlockedSlotIds.has('flagellum_2');
       const hasChloroplast = this.unlockedSlotIds.has('chloroplast_1');
-      const hasArmor = this.unlockedSlotIds.has('membrane_armor');
+      const hasPoisonGland = this.unlockedSlotIds.has('poison_gland');
       const hasSpines = this.unlockedSlotIds.has('rostral_spines');
+      const hasArmor = this.unlockedSlotIds.has('membrane_armor');
+      const hasElectricCell = this.unlockedSlotIds.has('electric_cell');
+
+      // Update ability cooldown timers
+      if (this.electricCooldownTimer > 0) {
+        this.electricCooldownTimer = Math.max(
+          0,
+          this.electricCooldownTimer - delta
+        );
+      }
+      if (this.poisonSpawnCooldownTimer > 0) {
+        this.poisonSpawnCooldownTimer = Math.max(
+          0,
+          this.poisonSpawnCooldownTimer - delta
+        );
+      }
 
       // 1. Update Player Movement & Propulsion
       const canBoost =
@@ -316,6 +511,120 @@ export class GameEngine {
       );
       this.stats.isBoosting = moveResult.isBoosting;
       this.stats.speed = Math.abs(this.player.currentSpeed);
+
+      // Check Mating Call courtship completion -> transition to Creature Editor
+      if (this.matingCallTimer > 0) {
+        this.matingCallTimer -= delta;
+        if (this.matingCallTimer <= 0) {
+          this.matingCallTimer = 0;
+          this.status = 'editing';
+          this.inputController.resetInputs();
+          this.setEventMessage(
+            'Pareja celular unida: Configura la nueva puesta genética'
+          );
+          this.emitUISnapshot();
+          this.renderer.render(
+            this.environment.scene,
+            this.cameraController.camera
+          );
+          return;
+        }
+      }
+
+      // 1B. Active Cellular Weapons (KeyQ + Auto Poison Trail)
+      const abilityPressedNow = this.inputController.state.ability;
+      const abilityJustTriggered = abilityPressedNow && !this.wasAbilityPressed;
+      this.wasAbilityPressed = abilityPressedNow;
+
+      let electricPulseTriggered = false;
+
+      // Automatic or Boost-triggered Poison Cloud release (every 1.2s when boosting or threat < 12m)
+      const predatorClose =
+        this.nearestPredatorDistance < 12.0 &&
+        (this.nearestPredatorState === 'PERSEGUIR' ||
+          this.nearestPredatorState === 'ATACAR');
+
+      if (
+        hasPoisonGland &&
+        this.poisonSpawnCooldownTimer <= 0 &&
+        (moveResult.isBoosting || predatorClose)
+      ) {
+        this.player.spawnPoisonCloud();
+        this.poisonSpawnCooldownTimer = 1.2;
+      }
+
+      // Manual KeyQ activation
+      if (abilityJustTriggered) {
+        let usedAnyAbility = false;
+
+        if (hasElectricCell) {
+          if (this.electricCooldownTimer <= 0) {
+            if (this.stats.energy >= 12) {
+              this.stats.energy = Math.max(0, this.stats.energy - 12);
+              this.electricCooldownTimer = 6.0;
+              this.player.triggerElectricPulse();
+              electricPulseTriggered = true;
+              usedAnyAbility = true;
+              this.setEventMessage(
+                'Descarga Bioeléctrica emitida (Pulso 9.5m)'
+              );
+              forceUIEmit = true;
+            } else {
+              this.setEventMessage(
+                'Energía insuficiente para Descarga Bioeléctrica (12 Energía)'
+              );
+              forceUIEmit = true;
+            }
+          } else {
+            this.setEventMessage(
+              `Órgano Bioeléctrico recargándose (${this.electricCooldownTimer.toFixed(1)}s)`
+            );
+            forceUIEmit = true;
+          }
+        }
+
+        if (hasPoisonGland && this.poisonSpawnCooldownTimer <= 0) {
+          this.player.spawnPoisonCloud();
+          this.poisonSpawnCooldownTimer = 1.2;
+          if (!usedAnyAbility) {
+            this.setEventMessage('Nube tóxica defensiva liberada');
+            forceUIEmit = true;
+          }
+          usedAnyAbility = true;
+        }
+
+        if (!hasElectricCell && !hasPoisonGland) {
+          this.setEventMessage(
+            'Evoluciona Glándula de Veneno u Órgano Bioeléctrico (E) para usar Q'
+          );
+          forceUIEmit = true;
+        }
+      }
+
+      // Compute HUD abilityCooldownRatio & activeStatusEffect
+      if (hasElectricCell) {
+        this.stats.abilityCooldownRatio = Math.max(
+          0,
+          Math.min(1, 1 - this.electricCooldownTimer / 6.0)
+        );
+      } else if (hasPoisonGland) {
+        this.stats.abilityCooldownRatio = Math.max(
+          0,
+          Math.min(1, 1 - this.poisonSpawnCooldownTimer / 1.2)
+        );
+      } else {
+        this.stats.abilityCooldownRatio = 1;
+      }
+
+      if (hasElectricCell && hasPoisonGland) {
+        this.stats.activeStatusEffect = 'Bioeléctrico + Veneno';
+      } else if (hasElectricCell) {
+        this.stats.activeStatusEffect = 'Pulso Bioeléctrico';
+      } else if (hasPoisonGland) {
+        this.stats.activeStatusEffect = 'Glándula de Veneno';
+      } else {
+        this.stats.activeStatusEffect = null;
+      }
 
       // 2. Energy Consumption (Passive + Movement + Boost)
       const passiveDrainRate = hasChloroplast
@@ -347,62 +656,190 @@ export class GameEngine {
         this.stats.isStarving = false;
       }
 
-      // 4. Update Food & Check Nutrient Collisions
+      // 4. Update Food & Check Diet-Filtered Collisions
       const foodResult = this.foodManager.update(
         delta,
         this.elapsedActiveTime,
-        this.player.position
+        this.player.position,
+        this.stats.diet
       );
 
       if (foodResult.itemsEaten > 0) {
+        const energyMultiplier = hasProboscis ? 1.25 : 1.0;
+        const finalEnergyGained = Math.round(
+          foodResult.energyGained * energyMultiplier
+        );
+
         this.stats.energy = Math.min(
           this.stats.maxEnergy,
-          this.stats.energy + foodResult.energyGained
+          this.stats.energy + finalEnergyGained
         );
-        this.stats.adn += foodResult.adnGained;
         this.stats.foodEaten += foodResult.itemsEaten;
+        const leveledUp = this.addAdn(foodResult.adnGained);
+        if (!leveledUp) {
+          this.setEventMessage(
+            `+${foodResult.adnGained} ADN · +${finalEnergyGained} Energía`
+          );
+        }
+        forceUIEmit = true;
+      } else if (foodResult.blockedFoodKind === 'meat' && !this.recentEventMessage) {
         this.setEventMessage(
-          `+${foodResult.adnGained} ADN · +${foodResult.energyGained} Energía`
+          'Necesitas Boca Carnívora (Mandíbula) o Probóscide para digerir carne'
+        );
+        forceUIEmit = true;
+      } else if (foodResult.blockedFoodKind === 'plant' && !this.recentEventMessage) {
+        this.setEventMessage(
+          'Dieta Carnívora: Evoluciona Probóscide o Cloroplastos para digerir algas'
         );
         forceUIEmit = true;
       }
 
-      // 5. Update Predators (DEAMBULAR / PERSEGUIR / ATACAR + Counter-attack)
+      // 5. Update Trophic Ecosystem Species (Hunters, Leviathans, Herbivores)
       const canCounterAttack = hasSpines && moveResult.isBoosting;
-      const predatorResult = this.predatorManager.update(
+      const canPredateHerbivores = hasJaw || hasProboscis;
+      const canDevourWeakenedHunters =
+        this.stats.growthStage === 3 &&
+        canPredateHerbivores &&
+        moveResult.isBoosting;
+
+      const ecosystemResult = this.predatorManager.update(
         delta,
         this.elapsedActiveTime,
         this.player.position,
-        canCounterAttack
+        canCounterAttack,
+        canPredateHerbivores,
+        hasProboscis,
+        (killedPos) => this.foodManager.spawnMeatDrop(killedPos),
+        this.player.getActivePoisonClouds(),
+        electricPulseTriggered,
+        9.5,
+        canDevourWeakenedHunters
       );
 
-      this.nearestPredatorState = predatorResult.nearestState;
-      this.nearestPredatorDistance = predatorResult.nearestDistance;
+      this.nearestSpeciesName = ecosystemResult.nearestSpeciesName;
+      this.nearestPredatorState = ecosystemResult.nearestState;
+      this.nearestPredatorDistance = ecosystemResult.nearestDistance;
 
-      if (predatorResult.repelledPredators > 0) {
+      // 5A-0. Stage 3 Macrocell devoured a stunned/poisoned Hunter
+      if (ecosystemResult.huntersDevoured > 0) {
+        const energyBonus = hasProboscis
+          ? Math.round(ecosystemResult.hunterEnergyGained * 1.25)
+          : ecosystemResult.hunterEnergyGained;
+        this.stats.energy = Math.min(
+          this.stats.maxEnergy,
+          this.stats.energy + energyBonus
+        );
+        this.stats.foodEaten += ecosystemResult.huntersDevoured;
+        this.addAdn(ecosystemResult.hunterAdnGained);
         this.setEventMessage(
-          'Contraataque con Espolones Rostrales: Depredador repelido'
+          `¡Depredador Mandíbula Rápida devorado! (+${ecosystemResult.hunterAdnGained} ADN · +${energyBonus} Energía)`
         );
         forceUIEmit = true;
       }
 
-      if (predatorResult.totalDamageDealt > 0) {
-        const attacksCount = Math.max(
-          1,
-          Math.round(
-            predatorResult.totalDamageDealt / GAME_CONFIG.PREDATOR.ATTACK_DAMAGE
-          )
+      // 5A. Bioelectric pulse feedback
+      if (
+        ecosystemResult.stunnedPredatorsCount > 0 ||
+        ecosystemResult.electrocutedHerbivoresCount > 0
+      ) {
+        if (ecosystemResult.electrocutedAdnGained > 0) {
+          this.addAdn(ecosystemResult.electrocutedAdnGained);
+        }
+        const parts: string[] = [];
+        if (ecosystemResult.stunnedPredatorsCount > 0) {
+          parts.push(
+            `${ecosystemResult.stunnedPredatorsCount} depredador(es) ATURDIDO(S) (3.2s)`
+          );
+        }
+        if (ecosystemResult.electrocutedHerbivoresCount > 0) {
+          parts.push(
+            `${ecosystemResult.electrocutedHerbivoresCount} célula(s) electrocutada(s) (+${ecosystemResult.electrocutedAdnGained} ADN)`
+          );
+        }
+        this.setEventMessage(`Descarga Bioeléctrica: ${parts.join(' · ')}`);
+        forceUIEmit = true;
+      } else if (ecosystemResult.poisonedCount > 0 && !this.recentEventMessage) {
+        this.setEventMessage(
+          'Toxina activa: Depredador envenenado (-45% velocidad)'
         );
-        const damagePerHit = hasArmor ? 12 : GAME_CONFIG.PREDATOR.ATTACK_DAMAGE;
-        const effectiveDamage = attacksCount * damagePerHit;
+        forceUIEmit = true;
+      }
+
+      // 5B. Herbivore devoured by player
+      if (ecosystemResult.herbivoresHunted > 0) {
+        const energyBonus = hasProboscis
+          ? Math.round(ecosystemResult.herbivoreEnergyGained * 1.25)
+          : ecosystemResult.herbivoreEnergyGained;
+
+        this.stats.energy = Math.min(
+          this.stats.maxEnergy,
+          this.stats.energy + energyBonus
+        );
+        this.stats.foodEaten += ecosystemResult.herbivoresHunted;
+        const leveledUp = this.addAdn(ecosystemResult.herbivoreAdnGained);
+        if (!leveledUp) {
+          this.setEventMessage(
+            `Célula Filtradora devorada (+${ecosystemResult.herbivoreAdnGained} ADN · +${energyBonus} Energía)`
+          );
+        }
+        forceUIEmit = true;
+      } else if (
+        ecosystemResult.blockedHerbivoreHunt &&
+        !this.recentEventMessage
+      ) {
+        this.setEventMessage(
+          'Evoluciona Mandíbula Aserrada o Probóscide (E) para depredar células'
+        );
+        forceUIEmit = true;
+      }
+
+      // 5C. Predator or Leviathan repelled with Rostral Spines
+      if (ecosystemResult.repelledLeviathans > 0) {
+        const leveledUp = this.addAdn(ecosystemResult.leviathanBonusAdn);
+        if (!leveledUp) {
+          this.setEventMessage(
+            `Megacélula Acorazada repelida (+${ecosystemResult.leviathanBonusAdn} ADN genético)`
+          );
+        }
+        forceUIEmit = true;
+      } else if (ecosystemResult.repelledHunters > 0) {
+        this.setEventMessage(
+          'Contraataque con Espolones Rostrales: Mandíbula Rápida repelida'
+        );
+        forceUIEmit = true;
+      }
+
+      // 5D. Damage taken from Hunter or Leviathan
+      if (ecosystemResult.totalDamageDealt > 0) {
+        const effectiveDamage = hasArmor
+          ? Math.floor(ecosystemResult.totalDamageDealt * 0.7)
+          : ecosystemResult.totalDamageDealt;
 
         this.stats.health = Math.max(0, this.stats.health - effectiveDamage);
         this.stats.damageFlashTime = 0.4;
-        if (predatorResult.attackerPosition) {
-          this.player.applyDamageKnockback(predatorResult.attackerPosition, 16);
+
+        if (ecosystemResult.proboscisDrainedAdn > 0) {
+          this.addAdn(ecosystemResult.proboscisDrainedAdn);
         }
+
+        if (ecosystemResult.attackerPosition) {
+          const knockbackStrength =
+            ecosystemResult.attackerSpeciesName === 'Megacélula Acorazada'
+              ? 21
+              : 16;
+          this.player.applyDamageKnockback(
+            ecosystemResult.attackerPosition,
+            knockbackStrength
+          );
+        }
+        const attackerLabel =
+          ecosystemResult.attackerSpeciesName ?? 'Depredador';
+        const drainNote =
+          ecosystemResult.proboscisDrainedAdn > 0
+            ? ` · +${ecosystemResult.proboscisDrainedAdn} ADN succionado`
+            : '';
         this.setEventMessage(
-          `Ataque de depredador (-${effectiveDamage} Vida)`
+          `Ataque de ${attackerLabel} (-${effectiveDamage} Vida${drainNote})`
         );
         forceUIEmit = true;
       }
@@ -418,8 +855,10 @@ export class GameEngine {
       if (this.stats.health <= 0) {
         this.stats.health = 0;
         this.status = 'gameover';
+        this.matingCallTimer = 0;
+        this.player.hideMateCell();
         this.inputController.resetInputs();
-        this.setEventMessage('Organismo celular eliminado');
+        this.footerDeathCleanup();
         forceUIEmit = true;
       }
 
@@ -446,6 +885,10 @@ export class GameEngine {
     this.renderer.render(this.environment.scene, this.cameraController.camera);
   }
 
+  private footerDeathCleanup(): void {
+    this.setEventMessage('Organismo celular eliminado');
+  }
+
   private setEventMessage(msg: string): void {
     this.recentEventMessage = msg;
     this.eventMessageTimer = 2.4;
@@ -458,6 +901,7 @@ export class GameEngine {
       activeFoodCount: this.foodManager.getActiveCount(),
       totalFoodCapacity: GAME_CONFIG.FOOD.TOTAL_COUNT,
       predatorStates: [],
+      nearestSpeciesName: this.nearestSpeciesName,
       nearestPredatorState: this.nearestPredatorState,
       nearestPredatorDistance: this.nearestPredatorDistance,
       recentEventMessage: this.recentEventMessage,

@@ -15,17 +15,24 @@ const INITIAL_SNAPSHOT: GameUISnapshot = {
     energy: GAME_CONFIG.PLAYER.INITIAL_ENERGY,
     maxEnergy: GAME_CONFIG.PLAYER.MAX_ENERGY,
     adn: GAME_CONFIG.PLAYER.INITIAL_ADN,
+    totalAdnEarned: GAME_CONFIG.PLAYER.INITIAL_ADN,
+    growthStage: 1,
+    nextStageAdnThreshold: 60,
+    diet: 'herbivore',
     foodEaten: 0,
     survivalTime: 0,
     isStarving: false,
     isBoosting: false,
     boostCooldownRatio: 1,
+    abilityCooldownRatio: 1,
+    activeStatusEffect: null,
     speed: 0,
     damageFlashTime: 0,
   },
   activeFoodCount: GAME_CONFIG.FOOD.TOTAL_COUNT,
   totalFoodCapacity: GAME_CONFIG.FOOD.TOTAL_COUNT,
   predatorStates: [],
+  nearestSpeciesName: 'Mandíbula Rápida',
   nearestPredatorState: 'DEAMBULAR',
   nearestPredatorDistance: 999,
   recentEventMessage: null,
@@ -66,6 +73,10 @@ export default function App() {
 
   const handleUnlockSlot = useCallback((slotId: string) => {
     engineRef.current?.unlockEvolutionSlot(slotId);
+  }, []);
+
+  const handleRefundSlot = useCallback((slotId: string) => {
+    engineRef.current?.refundEvolutionSlot(slotId);
   }, []);
 
   const handleResume = useCallback(() => {
@@ -115,6 +126,7 @@ export default function App() {
           stats={snapshot.stats}
           slots={snapshot.evolutionSlots}
           onUnlockSlot={handleUnlockSlot}
+          onRefundSlot={handleRefundSlot}
           onClose={handleCloseEditor}
         />
       )}

@@ -1,6 +1,17 @@
 export type GameStatus = 'playing' | 'paused' | 'editing' | 'gameover';
 
-export type PredatorBehaviorState = 'DEAMBULAR' | 'PERSEGUIR' | 'ATACAR';
+export type PredatorBehaviorState =
+  | 'DEAMBULAR'
+  | 'PERSEGUIR'
+  | 'ATACAR'
+  | 'HUIR'
+  | 'ATURDIDO';
+
+export type SpeciesType = 'hunter' | 'leviathan' | 'herbivore';
+
+export type DietType = 'herbivore' | 'carnivore' | 'omnivore';
+
+export type FoodKind = 'plant' | 'meat' | 'dna_spore';
 
 export type EvolutionCategory = 'locomocion' | 'metabolismo' | 'defensa';
 
@@ -10,17 +21,25 @@ export interface PlayerStats {
   energy: number;
   maxEnergy: number;
   adn: number;
+  totalAdnEarned: number;
+  growthStage: 1 | 2 | 3;
+  nextStageAdnThreshold: number;
+  diet: DietType;
   foodEaten: number;
   survivalTime: number;
   isStarving: boolean;
   isBoosting: boolean;
   boostCooldownRatio: number;
+  abilityCooldownRatio: number;
+  activeStatusEffect: string | null;
   speed: number;
   damageFlashTime: number;
 }
 
 export interface PredatorTelemetry {
   id: number;
+  species: SpeciesType;
+  speciesName: string;
   state: PredatorBehaviorState;
   distanceToPlayer: number;
 }
@@ -41,6 +60,7 @@ export interface GameUISnapshot {
   activeFoodCount: number;
   totalFoodCapacity: number;
   predatorStates: PredatorTelemetry[];
+  nearestSpeciesName: string;
   nearestPredatorState: PredatorBehaviorState;
   nearestPredatorDistance: number;
   recentEventMessage: string | null;
@@ -53,4 +73,13 @@ export interface InputState {
   left: boolean;
   right: boolean;
   boost: boolean;
+  ability: boolean;
 }
+
+export interface PoisonCloudHazard {
+  position: THREE.Vector3;
+  radius: number;
+  active: boolean;
+}
+
+import * as THREE from 'three';

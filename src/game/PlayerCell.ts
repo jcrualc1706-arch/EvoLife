@@ -1,9 +1,16 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from './config';
-import { InputState } from './types';
+import { InputState, PoisonCloudHazard } from './types';
 
 const _forwardDir = new THREE.Vector3();
 const _knockbackDecay = new THREE.Vector3();
+
+interface PooledPoisonCloud extends PoisonCloudHazard {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  life: number;
+  maxLife: number;
+}
 
 export class PlayerCell {
   public readonly group: THREE.Group;
@@ -12,6 +19,9 @@ export class PlayerCell {
   public currentSpeed = 0;
   public angularVelocity = 0;
   public isBoosting = false;
+  public currentScale = 1.0;
+  public targetScale = 1.0;
+  public cameraZoomMultiplier = 1.0;
 
   private readonly knockbackVelocity = new THREE.Vector3();
   private membraneMesh!: THREE.Mesh;
@@ -24,12 +34,39 @@ export class PlayerCell {
   private ciliaRight: THREE.Mesh[] = [];
 
   // Evolutionary 3D Part Groups (pre-allocated once, toggled via .visible)
+  private evoJawGroup!: THREE.Group;
+  private evoJawLeft!: THREE.Mesh;
+  private evoJawRight!: THREE.Mesh;
+  private evoProboscisGroup!: THREE.Group;
   private evoFlagellumGroup!: THREE.Group;
   private evoLateralTailLeft: THREE.Mesh[] = [];
   private evoLateralTailRight: THREE.Mesh[] = [];
   private evoChloroplastGroup!: THREE.Group;
   private evoArmorGroup!: THREE.Group;
   private evoSpinesGroup!: THREE.Group;
+  private evoPoisonGlandGroup!: THREE.Group;
+  private evoElectricGroup!: THREE.Group;
+  private evoElectricNodes: THREE.Mesh[] = [];
+
+  // Pre-allocated World-Space Combat Effect Pools (Poison Clouds & Electric Pulse)
+  private readonly poisonCloudPool: PooledPoisonCloud[] = [];
+  private poisonPoolCursor = 0;
+  private electricWaveMesh!: THREE.Mesh;
+  private electricDomeMesh!: THREE.Mesh;
+  private electricWaveMat!: THREE.MeshBasicMaterial;
+  private electricDomeMat!: THREE.MeshBasicMaterial;
+  private electricPulseTimer = 0;
+  private readonly electricPulseDuration = 0.55;
+
+  // Pre-allocated Mating Call Acoustic Rings & Partner Cell (Spore Ritual)
+  private readonly matingRingMeshes: THREE.Mesh[] = [];
+  private readonly matingRingMats: THREE.MeshBasicMaterial[] = [];
+  private mateCellGroup!: THREE.Group;
+  private readonly mateTailSegments: THREE.Mesh[] = [];
+  private readonly mateStartPos = new THREE.Vector3();
+  private matingCallActive = false;
+  private matingCallElapsed = 0;
+  private readonly matingCallDuration = 0.9;
 
   private flagellumPhase = 0;
   private damageFlashTimer = 0;
@@ -43,6 +80,7 @@ export class PlayerCell {
     this.position = this.group.position;
 
     this.buildProceduralCell();
+    this.initCombatEffectsPool(scene);
     scene.add(this.group);
   }
 
@@ -196,7 +234,52 @@ export class PlayerCell {
 
     // --- 8. EVOLUTIONARY PARTS (Hidden initially, unlocked via ADN) ---
 
-    // 8A. flagellum_2 ("Flagelo Bimotor"): Two lateral articulated flagella
+    // 8A. mouth_jaw ("Mandíbula Aserrada"): Carnivore serrated pincers at front (-Z)
+    this.evoJawGroup = new THREE.Group();
+    this.evoJawGroup.visible = false;
+    const jawGeo = new THREE.ConeGeometry(0.22, 0.88, 8);
+    jawGeo.rotateX(-Math.PI / 2);
+    jawGeo.scale(1.1, 0.65, 1.0);
+    const jawMat = new THREE.MeshStandardMaterial({
+      color: 0xfda4af,
+      emissive: 0xe11d48,
+      emissiveIntensity: 0.45,
+      roughness: 0.25,
+      metalness: 0.55,
+    });
+    this.evoJawLeft = new THREE.Mesh(jawGeo, jawMat);
+    this.evoJawLeft.position.set(-0.34, -0.08, -1.52);
+    this.evoJawLeft.rotation.y = -0.28;
+    this.evoJawGroup.add(this.evoJawLeft);
+
+    this.evoJawRight = new THREE.Mesh(jawGeo, jawMat);
+    this.evoJawRight.position.set(0.34, -0.08, -1.52);
+    this.evoJawRight.rotation.y = 0.28;
+    this.evoJawGroup.add(this.evoJawRight);
+    this.group.add(this.evoJawGroup);
+
+    // 8B. mouth_proboscis ("Probóscide Succionadora"): Omnivore suction tube at front (-Z)
+    this.evoProboscisGroup = new THREE.Group();
+    this.evoProboscisGroup.visible = false;
+    const proboscisTubeGeo = new THREE.CylinderGeometry(0.07, 0.18, 1.05, 12);
+    proboscisTubeGeo.rotateX(Math.PI / 2);
+    const proboscisTipGeo = new THREE.TorusGeometry(0.11, 0.04, 8, 16);
+    const proboscisMat = new THREE.MeshStandardMaterial({
+      color: 0xfef08a,
+      emissive: 0x10b981,
+      emissiveIntensity: 0.65,
+      roughness: 0.22,
+      metalness: 0.35,
+    });
+    const tubeMesh = new THREE.Mesh(proboscisTubeGeo, proboscisMat);
+    tubeMesh.position.set(0, -0.04, -1.65);
+    const tipMesh = new THREE.Mesh(proboscisTipGeo, proboscisMat);
+    tipMesh.position.set(0, -0.04, -2.16);
+    this.evoProboscisGroup.add(tubeMesh);
+    this.evoProboscisGroup.add(tipMesh);
+    this.group.add(this.evoProboscisGroup);
+
+    // 8C. flagellum_2 ("Flagelo Bimotor"): Two lateral articulated flagella
     this.evoFlagellumGroup = new THREE.Group();
     this.evoFlagellumGroup.visible = false;
     const biFlagellumMat = new THREE.MeshStandardMaterial({
@@ -224,7 +307,7 @@ export class PlayerCell {
     }
     this.group.add(this.evoFlagellumGroup);
 
-    // 8B. chloroplast_1 ("Cloroplastos Simbióticos"): Glowing emerald organelles inside cell
+    // 8D. chloroplast_1 ("Cloroplastos Simbióticos"): Glowing emerald organelles inside cell
     this.evoChloroplastGroup = new THREE.Group();
     this.evoChloroplastGroup.visible = false;
     const chloroGeo = new THREE.CapsuleGeometry(0.18, 0.24, 8, 12);
@@ -249,7 +332,7 @@ export class PlayerCell {
     }
     this.group.add(this.evoChloroplastGroup);
 
-    // 8C. membrane_armor ("Corteza Quitinizada"): Dorsal protective chitin plates
+    // 8E. membrane_armor ("Corteza Quitinizada"): Dorsal protective chitin plates
     this.evoArmorGroup = new THREE.Group();
     this.evoArmorGroup.visible = false;
     const armorPlateGeo = new THREE.DodecahedronGeometry(0.42, 0);
@@ -270,11 +353,11 @@ export class PlayerCell {
     }
     this.group.add(this.evoArmorGroup);
 
-    // 8D. rostral_spines ("Espolones Rostrales"): Forward-pointing (-Z) sharp horns
+    // 8F. rostral_spines ("Espolones Rostrales"): Forward-pointing (-Z) sharp horns
     this.evoSpinesGroup = new THREE.Group();
     this.evoSpinesGroup.visible = false;
     const spineGeo = new THREE.ConeGeometry(0.18, 0.95, 10);
-    spineGeo.rotateX(-Math.PI / 2); // Point toward -Z
+    spineGeo.rotateX(-Math.PI / 2);
     const spineMat = new THREE.MeshStandardMaterial({
       color: 0xfde047,
       emissive: 0xd97706,
@@ -290,6 +373,63 @@ export class PlayerCell {
     }
     this.group.add(this.evoSpinesGroup);
 
+    // 8G. poison_gland ("Glándula de Veneno"): Posterior acid-green bulb & ducts at tail base (+Z)
+    this.evoPoisonGlandGroup = new THREE.Group();
+    this.evoPoisonGlandGroup.visible = false;
+    const poisonBulbGeo = new THREE.SphereGeometry(0.36, 14, 14);
+    poisonBulbGeo.scale(1.15, 0.85, 1.25);
+    const poisonNozzleGeo = new THREE.CylinderGeometry(0.06, 0.12, 0.45, 8);
+    poisonNozzleGeo.rotateX(Math.PI / 2);
+    const poisonGlandMat = new THREE.MeshStandardMaterial({
+      color: 0xa3e635,
+      emissive: 0x65a30d,
+      emissiveIntensity: 1.1,
+      roughness: 0.22,
+      metalness: 0.15,
+    });
+    const bulbMesh = new THREE.Mesh(poisonBulbGeo, poisonGlandMat);
+    bulbMesh.position.set(0, 0.22, 1.12);
+    this.evoPoisonGlandGroup.add(bulbMesh);
+    for (const side of [-1, 1]) {
+      const nozzle = new THREE.Mesh(poisonNozzleGeo, poisonGlandMat);
+      nozzle.position.set(side * 0.28, 0.12, 1.48);
+      nozzle.rotation.y = side * 0.22;
+      this.evoPoisonGlandGroup.add(nozzle);
+    }
+    this.group.add(this.evoPoisonGlandGroup);
+
+    // 8H. electric_cell ("Órgano Bioeléctrico"): Lateral yellow-cyan discharge antennas
+    this.evoElectricGroup = new THREE.Group();
+    this.evoElectricGroup.visible = false;
+    const elecPylonGeo = new THREE.CylinderGeometry(0.06, 0.14, 0.58, 8);
+    elecPylonGeo.rotateZ(Math.PI / 2);
+    const elecOrbGeo = new THREE.OctahedronGeometry(0.22, 1);
+    const elecPylonMat = new THREE.MeshStandardMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.85,
+      roughness: 0.2,
+      metalness: 0.7,
+    });
+    const elecOrbMat = new THREE.MeshStandardMaterial({
+      color: 0xfef08a,
+      emissive: 0xfacc15,
+      emissiveIntensity: 1.5,
+      roughness: 0.1,
+      metalness: 0.3,
+    });
+    for (const side of [-1, 1]) {
+      const pylon = new THREE.Mesh(elecPylonGeo, elecPylonMat);
+      pylon.position.set(side * 0.96, 0.32, -0.05);
+      this.evoElectricGroup.add(pylon);
+
+      const orb = new THREE.Mesh(elecOrbGeo, elecOrbMat);
+      orb.position.set(side * 1.28, 0.36, -0.05);
+      this.evoElectricGroup.add(orb);
+      this.evoElectricNodes.push(orb);
+    }
+    this.group.add(this.evoElectricGroup);
+
     this.disposableGeometries.push(
       membraneGeo,
       nucleusGeo,
@@ -298,9 +438,16 @@ export class PlayerCell {
       pupilGeo,
       ciliaGeo,
       haloGeo,
+      jawGeo,
+      proboscisTubeGeo,
+      proboscisTipGeo,
       chloroGeo,
       armorPlateGeo,
-      spineGeo
+      spineGeo,
+      poisonBulbGeo,
+      poisonNozzleGeo,
+      elecPylonGeo,
+      elecOrbGeo
     );
     this.disposableMaterials.push(
       this.membraneMat,
@@ -311,18 +458,260 @@ export class PlayerCell {
       ciliaMat,
       tailMat,
       this.boostHaloMat,
+      jawMat,
+      proboscisMat,
       biFlagellumMat,
       chloroMat,
       armorMat,
-      spineMat
+      spineMat,
+      poisonGlandMat,
+      elecPylonMat,
+      elecOrbMat
     );
   }
 
+  private initCombatEffectsPool(scene: THREE.Scene): void {
+    // 1. Pre-allocate 10 Poison Cloud spheres in world space
+    const cloudGeo = new THREE.IcosahedronGeometry(1.0, 2);
+    this.disposableGeometries.push(cloudGeo);
+
+    for (let i = 0; i < 10; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x84cc16,
+        transparent: true,
+        opacity: 0.0,
+        depthWrite: false,
+      });
+      this.disposableMaterials.push(mat);
+
+      const mesh = new THREE.Mesh(cloudGeo, mat);
+      mesh.visible = false;
+      scene.add(mesh);
+
+      this.poisonCloudPool.push({
+        position: mesh.position,
+        radius: 2.3,
+        active: false,
+        mesh,
+        mat,
+        life: 0,
+        maxLife: 4.0,
+      });
+    }
+
+    // 2. Pre-allocate Bioelectric Shockwave Ring & Dome (9.5m max radius)
+    const waveRingGeo = new THREE.RingGeometry(0.75, 1.0, 48);
+    waveRingGeo.rotateX(-Math.PI / 2);
+    this.electricWaveMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.electricWaveMesh = new THREE.Mesh(waveRingGeo, this.electricWaveMat);
+    this.electricWaveMesh.visible = false;
+    scene.add(this.electricWaveMesh);
+
+    const domeGeo = new THREE.SphereGeometry(1.0, 24, 16);
+    domeGeo.scale(1, 0.35, 1);
+    this.electricDomeMat = new THREE.MeshBasicMaterial({
+      color: 0xfef08a,
+      transparent: true,
+      opacity: 0,
+      wireframe: true,
+      depthWrite: false,
+    });
+    this.electricDomeMesh = new THREE.Mesh(domeGeo, this.electricDomeMat);
+    this.electricDomeMesh.visible = false;
+    scene.add(this.electricDomeMesh);
+
+    // 3. Pre-allocate Mating Call Acoustic Rings (Pink & Cyan harmonic waves)
+    for (let r = 0; r < 2; r++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: r === 0 ? 0xf472b6 : 0x22d3ee,
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const ringMesh = new THREE.Mesh(waveRingGeo, mat);
+      ringMesh.visible = false;
+      scene.add(ringMesh);
+      this.matingRingMeshes.push(ringMesh);
+      this.matingRingMats.push(mat);
+      this.disposableMaterials.push(mat);
+    }
+
+    // 4. Pre-allocate 3D Partner Cell ("Pareja Celular") for courtship ritual
+    this.mateCellGroup = new THREE.Group();
+    this.mateCellGroup.visible = false;
+
+    const mateBodyGeo = new THREE.CapsuleGeometry(0.88, 0.82, 14, 20);
+    mateBodyGeo.rotateX(Math.PI / 2);
+    const mateBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0xf472b6,
+      emissive: 0xdb2777,
+      emissiveIntensity: 0.4,
+      roughness: 0.18,
+      metalness: 0.05,
+      transmission: 0.6,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.9,
+    });
+    const mateBodyMesh = new THREE.Mesh(mateBodyGeo, mateBodyMat);
+    this.mateCellGroup.add(mateBodyMesh);
+
+    const mateCoreGeo = new THREE.IcosahedronGeometry(0.46, 1);
+    const mateCoreMat = new THREE.MeshStandardMaterial({
+      color: 0xfbcfe8,
+      emissive: 0xec4899,
+      emissiveIntensity: 1.1,
+      roughness: 0.3,
+    });
+    const mateCoreMesh = new THREE.Mesh(mateCoreGeo, mateCoreMat);
+    this.mateCellGroup.add(mateCoreMesh);
+
+    const mateEyeGeo = new THREE.SphereGeometry(0.2, 12, 12);
+    const mateEyeMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      emissive: 0x38bdf8,
+      emissiveIntensity: 0.4,
+      roughness: 0.1,
+    });
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(mateEyeGeo, mateEyeMat);
+      eye.position.set(side * 0.4, 0.32, -1.0);
+      this.mateCellGroup.add(eye);
+    }
+
+    const mateTailGeo = new THREE.SphereGeometry(0.2, 10, 10);
+    mateTailGeo.scale(0.8, 0.8, 1.5);
+    for (let t = 0; t < 3; t++) {
+      const seg = new THREE.Mesh(mateTailGeo, mateCoreMat);
+      seg.scale.setScalar(1 - t * 0.22);
+      seg.position.set(0, 0, 1.35 + t * 0.42);
+      this.mateCellGroup.add(seg);
+      this.mateTailSegments.push(seg);
+    }
+
+    scene.add(this.mateCellGroup);
+
+    this.disposableGeometries.push(
+      waveRingGeo,
+      domeGeo,
+      mateBodyGeo,
+      mateCoreGeo,
+      mateEyeGeo,
+      mateTailGeo
+    );
+    this.disposableMaterials.push(
+      this.electricWaveMat,
+      this.electricDomeMat,
+      mateBodyMat,
+      mateCoreMat,
+      mateEyeMat
+    );
+  }
+
+  public setGrowthStage(stage: 1 | 2 | 3): void {
+    if (stage === 3) {
+      this.targetScale = 1.62;
+      this.cameraZoomMultiplier = 1.45;
+    } else if (stage === 2) {
+      this.targetScale = 1.3;
+      this.cameraZoomMultiplier = 1.22;
+    } else {
+      this.targetScale = 1.0;
+      this.cameraZoomMultiplier = 1.0;
+    }
+  }
+
+  public startMatingCall(): void {
+    this.matingCallActive = true;
+    this.matingCallElapsed = 0;
+
+    // Position the Partner Cell 11m away ahead-right of the player cell so it swims in visibly
+    const spawnAngle = this.headingAngle + 0.55;
+    const dist = 10.5 * this.currentScale;
+    this.mateStartPos.set(
+      this.position.x - Math.sin(spawnAngle) * dist,
+      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+      this.position.z - Math.cos(spawnAngle) * dist
+    );
+    this.mateCellGroup.position.copy(this.mateStartPos);
+    this.mateCellGroup.scale.setScalar(this.currentScale * 0.95);
+    this.mateCellGroup.visible = true;
+
+    for (const ring of this.matingRingMeshes) {
+      ring.position.set(
+        this.position.x,
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.15,
+        this.position.z
+      );
+      ring.scale.setScalar(1.0);
+      ring.visible = true;
+    }
+  }
+
+  public hideMateCell(): void {
+    this.matingCallActive = false;
+    this.matingCallElapsed = 0;
+    this.mateCellGroup.visible = false;
+    for (const ring of this.matingRingMeshes) {
+      ring.visible = false;
+    }
+  }
+
+  public spawnPoisonCloud(): void {
+    const cloud = this.poisonCloudPool[this.poisonPoolCursor % this.poisonCloudPool.length];
+    this.poisonPoolCursor++;
+
+    // Spawn behind the cell (+Z local direction)
+    const backDist = 2.1 * this.currentScale;
+    const backX = Math.sin(this.headingAngle) * backDist;
+    const backZ = Math.cos(this.headingAngle) * backDist;
+
+    cloud.position.set(
+      this.position.x + backX + (Math.random() - 0.5) * 0.5,
+      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+      this.position.z + backZ + (Math.random() - 0.5) * 0.5
+    );
+    cloud.radius = 2.35 * this.currentScale;
+    cloud.life = 4.0;
+    cloud.maxLife = 4.0;
+    cloud.active = true;
+    cloud.mesh.visible = true;
+    cloud.mesh.scale.setScalar(0.7 * this.currentScale);
+    cloud.mat.opacity = 0.48;
+  }
+
+  public triggerElectricPulse(): void {
+    this.electricPulseTimer = this.electricPulseDuration;
+    this.electricWaveMesh.position.copy(this.position);
+    this.electricWaveMesh.position.y = GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.2;
+    this.electricWaveMesh.scale.setScalar(1.0);
+    this.electricWaveMesh.visible = true;
+
+    this.electricDomeMesh.position.copy(this.position);
+    this.electricDomeMesh.scale.setScalar(1.0);
+    this.electricDomeMesh.visible = true;
+  }
+
+  public getActivePoisonClouds(): readonly PoisonCloudHazard[] {
+    return this.poisonCloudPool;
+  }
+
   public syncEvolutionParts(unlockedIds: Set<string>): void {
+    this.evoJawGroup.visible = unlockedIds.has('mouth_jaw');
+    this.evoProboscisGroup.visible = unlockedIds.has('mouth_proboscis');
     this.evoFlagellumGroup.visible = unlockedIds.has('flagellum_2');
     this.evoChloroplastGroup.visible = unlockedIds.has('chloroplast_1');
     this.evoArmorGroup.visible = unlockedIds.has('membrane_armor');
     this.evoSpinesGroup.visible = unlockedIds.has('rostral_spines');
+    this.evoPoisonGlandGroup.visible = unlockedIds.has('poison_gland');
+    this.evoElectricGroup.visible = unlockedIds.has('electric_cell');
   }
 
   public applyDamageKnockback(fromPosition: THREE.Vector3, strength = 15): void {
@@ -345,6 +734,15 @@ export class PlayerCell {
     speedMultiplier = 1.0,
     turnMultiplier = 1.0
   ): { isMoving: boolean; isBoosting: boolean } {
+    // 0. Smoothly interpolate 3-level cellular growth scale (1.0x -> 1.3x -> 1.62x)
+    this.currentScale = THREE.MathUtils.damp(
+      this.currentScale,
+      this.targetScale,
+      3.5,
+      delta
+    );
+    this.group.scale.setScalar(this.currentScale);
+
     // 1. Smooth angular turning (A / D)
     let targetTurnRate = 0;
     const effectiveTurnSpeed = GAME_CONFIG.PLAYER.TURN_SPEED * turnMultiplier;
@@ -373,7 +771,6 @@ export class PlayerCell {
     }
 
     if (this.isBoosting) {
-      // Boost propels the organism forward even if W is just tapped or held
       const baseBoostSpeed = input.backward ? -maxReverse : maxForward;
       targetSpeed = baseBoostSpeed * GAME_CONFIG.PLAYER.BOOST_MULTIPLIER;
     }
@@ -433,7 +830,7 @@ export class PlayerCell {
     );
     this.group.rotation.set(0, this.headingAngle, bankAngle);
 
-    // 6. Animate procedural flagellum, lateral flagella, cilia, and nucleus pulse
+    // 6. Animate procedural flagellum, lateral flagella, jaws, electric nodes, cilia, and nucleus
     const speedRatio = Math.min(
       Math.abs(this.currentSpeed) / GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED,
       2.5
@@ -458,10 +855,123 @@ export class PlayerCell {
       }
     }
 
+    if (this.evoJawGroup.visible) {
+      const jawSnap = Math.sin(this.flagellumPhase * 0.85) * 0.16;
+      this.evoJawLeft.rotation.y = -0.25 + jawSnap;
+      this.evoJawRight.rotation.y = 0.25 - jawSnap;
+    }
+
+    if (this.evoElectricGroup.visible) {
+      const sparkScale = 1.0 + Math.sin(elapsedTime * 18.0) * 0.22;
+      for (const orb of this.evoElectricNodes) {
+        orb.scale.setScalar(sparkScale);
+        orb.rotation.y += delta * 6.0;
+        orb.rotation.z += delta * 4.5;
+      }
+    }
+
     for (let i = 0; i < this.ciliaLeft.length; i++) {
       const flutter = Math.sin(this.flagellumPhase * 1.2 + i) * 0.28;
       this.ciliaLeft[i].rotation.y = 0.35 + flutter;
       this.ciliaRight[i].rotation.y = -0.35 - flutter;
+    }
+
+    // 7. Update Pooled Poison Clouds
+    for (let i = 0; i < this.poisonCloudPool.length; i++) {
+      const cloud = this.poisonCloudPool[i];
+      if (!cloud.active) continue;
+
+      cloud.life -= delta;
+      if (cloud.life <= 0) {
+        cloud.active = false;
+        cloud.mesh.visible = false;
+        continue;
+      }
+
+      const progress = 1 - cloud.life / cloud.maxLife;
+      const currentScale = (0.85 + progress * 1.65) * this.currentScale;
+      cloud.radius = currentScale * 1.05;
+      cloud.mesh.scale.set(currentScale, currentScale * 0.55, currentScale);
+      cloud.mesh.rotation.y += delta * 0.8;
+      cloud.mat.opacity = (1 - progress) * 0.45;
+    }
+
+    // 8. Update Bioelectric Shockwave Pulse (expands to 9.5m)
+    if (this.electricPulseTimer > 0) {
+      this.electricPulseTimer = Math.max(0, this.electricPulseTimer - delta);
+      const t = 1 - this.electricPulseTimer / this.electricPulseDuration;
+      const currentRadius = 1.2 + t * 8.3; // Reaches 9.5m
+      this.electricWaveMesh.position.x = this.position.x;
+      this.electricWaveMesh.position.z = this.position.z;
+      this.electricWaveMesh.scale.setScalar(currentRadius);
+      this.electricWaveMat.opacity = (1 - t) * 0.85;
+
+      this.electricDomeMesh.position.copy(this.position);
+      this.electricDomeMesh.scale.setScalar(currentRadius);
+      this.electricDomeMesh.rotation.y += delta * 8.0;
+      this.electricDomeMat.opacity = (1 - t) * 0.55;
+
+      if (this.electricPulseTimer <= 0) {
+        this.electricWaveMesh.visible = false;
+        this.electricDomeMesh.visible = false;
+      }
+    }
+
+    // 8B. Update Mating Call Acoustic Waves & Partner Cell Approach
+    if (this.matingCallActive) {
+      this.matingCallElapsed = Math.min(
+        this.matingCallDuration,
+        this.matingCallElapsed + delta
+      );
+      const progress = this.matingCallElapsed / this.matingCallDuration;
+
+      for (let r = 0; r < this.matingRingMeshes.length; r++) {
+        const ringProgress = (progress + r * 0.45) % 1.0;
+        const ringScale = (1.1 + ringProgress * 7.5) * this.currentScale;
+        const ring = this.matingRingMeshes[r];
+        ring.position.set(
+          this.position.x,
+          GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.12,
+          this.position.z
+        );
+        ring.scale.setScalar(ringScale);
+        this.matingRingMats[r].opacity = (1 - ringProgress) * 0.85;
+      }
+
+      // Target companion position right alongside the player cell
+      const targetOffsetDist = 2.4 * this.currentScale;
+      const targetX =
+        this.position.x + Math.cos(this.headingAngle) * targetOffsetDist;
+      const targetZ =
+        this.position.z - Math.sin(this.headingAngle) * targetOffsetDist;
+
+      const smoothT = 1 - Math.pow(1 - progress, 2.4);
+      this.mateCellGroup.position.x = THREE.MathUtils.lerp(
+        this.mateStartPos.x,
+        targetX,
+        smoothT
+      );
+      this.mateCellGroup.position.z = THREE.MathUtils.lerp(
+        this.mateStartPos.z,
+        targetZ,
+        smoothT
+      );
+      this.mateCellGroup.position.y =
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y + Math.sin(elapsedTime * 5.0) * 0.14;
+
+      const dxToPlayer = this.position.x - this.mateCellGroup.position.x;
+      const dzToPlayer = this.position.z - this.mateCellGroup.position.z;
+      this.mateCellGroup.rotation.set(
+        0,
+        Math.atan2(-dxToPlayer, -dzToPlayer),
+        0
+      );
+      this.mateCellGroup.scale.setScalar(this.currentScale * 0.94);
+
+      for (let t = 0; t < this.mateTailSegments.length; t++) {
+        this.mateTailSegments[t].position.x =
+          Math.sin(elapsedTime * 18.0 - t * 0.9) * 0.18;
+      }
     }
 
     // Nucleus breathing pulse & damage flash feedback
@@ -473,6 +983,12 @@ export class PlayerCell {
       this.membraneMat.color.setHex(0xf43f5e);
       this.membraneMat.emissive.setHex(0xe11d48);
       this.membraneMat.emissiveIntensity = 0.9;
+    } else if (this.matingCallActive) {
+      this.membraneMat.color.setHex(0xf472b6);
+      this.membraneMat.emissive.setHex(0xec4899);
+      this.membraneMat.emissiveIntensity = 0.7;
+      this.boostHaloMat.opacity = 0.75;
+      this.boostHaloMat.color.setHex(0xf472b6);
     } else if (this.isBoosting) {
       this.membraneMat.color.setHex(0x67e8f9);
       this.membraneMat.emissive.setHex(0x06b6d4);
@@ -506,13 +1022,31 @@ export class PlayerCell {
     this.currentSpeed = 0;
     this.angularVelocity = 0;
     this.isBoosting = false;
+    this.currentScale = 1.0;
+    this.targetScale = 1.0;
+    this.cameraZoomMultiplier = 1.0;
+    this.group.scale.setScalar(1.0);
     this.knockbackVelocity.set(0, 0, 0);
     this.damageFlashTimer = 0;
     this.group.rotation.set(0, 0, 0);
+    this.evoJawGroup.visible = false;
+    this.evoProboscisGroup.visible = false;
     this.evoFlagellumGroup.visible = false;
     this.evoChloroplastGroup.visible = false;
     this.evoArmorGroup.visible = false;
     this.evoSpinesGroup.visible = false;
+    this.evoPoisonGlandGroup.visible = false;
+    this.evoElectricGroup.visible = false;
+
+    for (const cloud of this.poisonCloudPool) {
+      cloud.active = false;
+      cloud.life = 0;
+      cloud.mesh.visible = false;
+    }
+    this.electricPulseTimer = 0;
+    this.electricWaveMesh.visible = false;
+    this.electricDomeMesh.visible = false;
+    this.hideMateCell();
   }
 
   public dispose(): void {
