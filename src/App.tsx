@@ -35,6 +35,10 @@ const INITIAL_SNAPSHOT: GameUISnapshot = {
   nearestSpeciesName: 'Mandíbula Rápida',
   nearestPredatorState: 'DEAMBULAR',
   nearestPredatorDistance: 999,
+  currentBiomeName: 'Pradera Bioluminiscente',
+  activeQuestTitle: 'Misión 1/4 · Primeros Nutrientes',
+  activeQuestProgressText: 'Acumula 20 ADN totales (0/20 ADN) · Recompensa: +10 ADN',
+  readyForLandTransition: false,
   recentEventMessage: null,
   evolutionSlots: [],
 };

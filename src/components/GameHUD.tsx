@@ -33,6 +33,10 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     nearestSpeciesName,
     nearestPredatorState,
     nearestPredatorDistance,
+    currentBiomeName,
+    activeQuestTitle,
+    activeQuestProgressText,
+    readyForLandTransition,
     recentEventMessage,
     evolutionSlots,
   } = snapshot;
@@ -101,189 +105,219 @@ export const GameHUD: React.FC<GameHUDProps> = ({
 
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4 sm:p-6">
-      {/* Top Status Bar: Brand + Core Vital Bars (Vida, Energía, ADN, Fase Evolutiva) + Llamar Pareja / Evolucionar & Pause Actions */}
-      <header className="pointer-events-auto mx-auto flex w-full max-w-6xl flex-wrap items-center justify-between gap-4 rounded-xl border border-cyan-500/20 bg-[#041524]/92 px-5 py-3.5 shadow-xl">
-        {/* Zone 1: Brand Title, Diet & Growth Stage */}
-        <div className="flex items-center gap-3 shrink-0">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-950/80 text-cyan-300">
-            <Dna className="h-5 w-5" />
-          </div>
-          <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap">
-                EvoLife
-              </h1>
-              <span className="rounded-md border border-cyan-500/30 bg-cyan-950/70 px-2 py-0.5 text-[11px] font-semibold text-cyan-300 whitespace-nowrap">
-                {growthStageLabel}
-              </span>
+      <div className="mx-auto flex w-full max-w-6xl flex-col gap-2.5">
+        {/* Top Status Bar: Brand + Core Vital Bars (Vida, Energía, ADN, Fase Evolutiva) + Llamar Pareja / Evolucionar & Pause Actions */}
+        <header className="pointer-events-auto flex w-full flex-wrap items-center justify-between gap-4 rounded-xl border border-cyan-500/20 bg-[#041524]/92 px-5 py-3.5 shadow-xl">
+          {/* Zone 1: Brand Title, Diet, Biome & Growth Stage */}
+          <div className="flex items-center gap-3 shrink-0">
+            <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-950/80 text-cyan-300">
+              <Dna className="h-5 w-5" />
             </div>
-            <p className="text-xs text-slate-400 whitespace-nowrap">
-              Dieta: <span className={`font-semibold ${dietColorClass}`}>{dietLabel}</span>
-              <span className="mx-1.5">·</span>
-              <span>{unlockedCount}/{evolutionSlots.length} Órganos</span>
-            </p>
-          </div>
-        </div>
-
-        {/* Zone 2: Vital Telemetry Bars (Vida, Energía, Progreso Evolutivo, ADN) */}
-        <div className="flex flex-1 flex-wrap items-center justify-center gap-5 px-2">
-          {/* VIDA (Health) */}
-          <div className="min-w-[140px] flex-1 max-w-[195px]">
-            <div className="mb-1.5 flex items-center justify-between text-xs">
-              <span className="flex items-center gap-1.5 font-semibold text-slate-200">
-                <Activity className="h-3.5 w-3.5 text-rose-400" />
-                Vida
-              </span>
-              <span className="font-mono font-bold tabular-nums text-white">
-                {Math.ceil(stats.health)} / {stats.maxHealth}
-              </span>
-            </div>
-            <div className="h-2.5 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-800">
-              <div
-                className={`h-full transition-transform duration-150 origin-left ${
-                  healthPct <= 30
-                    ? 'bg-rose-500'
-                    : healthPct <= 60
-                    ? 'bg-amber-500'
-                    : 'bg-emerald-500'
-                }`}
-                style={{ transform: `scaleX(${healthPct / 100})` }}
-              />
-            </div>
-          </div>
-
-          {/* ENERGÍA (Energy) */}
-          <div className="min-w-[140px] flex-1 max-w-[195px]">
-            <div className="mb-1.5 flex items-center justify-between text-xs">
-              <span className="flex items-center gap-1.5 font-semibold text-slate-200">
-                <Zap className="h-3.5 w-3.5 text-cyan-400" />
-                Energía
-                {stats.isStarving && (
-                  <span className="text-rose-400 font-semibold">
-                    · Inanición
-                  </span>
-                )}
-              </span>
-              <span className="font-mono font-bold tabular-nums text-white">
-                {Math.ceil(stats.energy)} / {stats.maxEnergy}
-              </span>
-            </div>
-            <div className="h-2.5 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-800">
-              <div
-                className={`h-full transition-transform duration-150 origin-left ${
-                  energyPct <= 20
-                    ? 'bg-amber-500'
-                    : stats.isBoosting
-                    ? 'bg-sky-300'
-                    : 'bg-cyan-400'
-                }`}
-                style={{ transform: `scaleX(${energyPct / 100})` }}
-              />
-            </div>
-          </div>
-
-          {/* CRECIMIENTO EVOLUTIVO (Spore Growth Progress Bar) */}
-          <div className="min-w-[145px] flex-1 max-w-[195px]">
-            <div className="mb-1.5 flex items-center justify-between text-xs">
-              <span className="font-semibold text-amber-200 whitespace-nowrap">
-                Crecimiento
-              </span>
-              <span className="font-mono font-bold tabular-nums text-amber-300">
-                {stats.growthStage === 3
-                  ? 'MÁX (1.62x)'
-                  : `${stats.totalAdnEarned} / ${stats.nextStageAdnThreshold} ADN`}
-              </span>
-            </div>
-            <div className="h-2.5 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-800">
-              <div
-                className="h-full bg-amber-400 transition-transform duration-200 origin-left"
-                style={{ transform: `scaleX(${growthProgressPct / 100})` }}
-              />
-            </div>
-          </div>
-
-          {/* ADN (Genetic Points) */}
-          <div className="flex items-center gap-4 border-l border-slate-800 pl-4 shrink-0">
             <div>
-              <div className="text-xs font-medium text-slate-400">
-                Puntos de ADN
-              </div>
-              <div className="font-mono text-xl font-bold tabular-nums text-amber-300">
-                {stats.adn}{' '}
-                <span className="text-xs font-normal text-amber-200/80">
-                  ADN
+              <div className="flex items-center gap-2">
+                <h1 className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap">
+                  EvoLife
+                </h1>
+                <span className="rounded-md border border-cyan-500/30 bg-cyan-950/70 px-2 py-0.5 text-[11px] font-semibold text-cyan-300 whitespace-nowrap">
+                  {growthStageLabel}
                 </span>
+              </div>
+              <p className="text-xs text-slate-400 whitespace-nowrap">
+                Dieta: <span className={`font-semibold ${dietColorClass}`}>{dietLabel}</span>
+                <span className="mx-1.5">·</span>
+                <span>{unlockedCount}/{evolutionSlots.length} Órganos</span>
+                <span className="mx-1.5">·</span>
+                <span className="font-medium text-teal-300">{currentBiomeName}</span>
+              </p>
+            </div>
+          </div>
+
+          {/* Zone 2: Vital Telemetry Bars (Vida, Energía, Progreso Evolutivo, ADN) */}
+          <div className="flex flex-1 flex-wrap items-center justify-center gap-5 px-2">
+            {/* VIDA (Health) */}
+            <div className="min-w-[140px] flex-1 max-w-[195px]">
+              <div className="mb-1.5 flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 font-semibold text-slate-200">
+                  <Activity className="h-3.5 w-3.5 text-rose-400" />
+                  Vida
+                </span>
+                <span className="font-mono font-bold tabular-nums text-white">
+                  {Math.ceil(stats.health)} / {stats.maxHealth}
+                </span>
+              </div>
+              <div className="h-2.5 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-800">
+                <div
+                  className={`h-full transition-transform duration-150 origin-left ${
+                    healthPct <= 30
+                      ? 'bg-rose-500'
+                      : healthPct <= 60
+                      ? 'bg-amber-500'
+                      : 'bg-emerald-500'
+                  }`}
+                  style={{ transform: `scaleX(${healthPct / 100})` }}
+                />
               </div>
             </div>
 
-            <div className="hidden 2xl:block text-xs text-slate-400">
-              <div>
-                Nutrientes:{' '}
-                <span className="font-mono font-semibold text-slate-200 tabular-nums">
-                  {stats.foodEaten}
+            {/* ENERGÍA (Energy) */}
+            <div className="min-w-[140px] flex-1 max-w-[195px]">
+              <div className="mb-1.5 flex items-center justify-between text-xs">
+                <span className="flex items-center gap-1.5 font-semibold text-slate-200">
+                  <Zap className="h-3.5 w-3.5 text-cyan-400" />
+                  Energía
+                  {stats.isStarving && (
+                    <span className="text-rose-400 font-semibold">
+                      · Inanición
+                    </span>
+                  )}
+                </span>
+                <span className="font-mono font-bold tabular-nums text-white">
+                  {Math.ceil(stats.energy)} / {stats.maxEnergy}
                 </span>
               </div>
-              <div>
-                Tiempo:{' '}
-                <span className="font-mono font-semibold text-slate-200 tabular-nums">
-                  {formatTime(stats.survivalTime)}
+              <div className="h-2.5 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-800">
+                <div
+                  className={`h-full transition-transform duration-150 origin-left ${
+                    energyPct <= 20
+                      ? 'bg-amber-500'
+                      : stats.isBoosting
+                      ? 'bg-sky-300'
+                      : 'bg-cyan-400'
+                  }`}
+                  style={{ transform: `scaleX(${energyPct / 100})` }}
+                />
+              </div>
+            </div>
+
+            {/* CRECIMIENTO EVOLUTIVO (Spore Growth Progress Bar) */}
+            <div className="min-w-[145px] flex-1 max-w-[195px]">
+              <div className="mb-1.5 flex items-center justify-between text-xs">
+                <span className="font-semibold text-amber-200 whitespace-nowrap">
+                  Crecimiento
                 </span>
+                <span className="font-mono font-bold tabular-nums text-amber-300">
+                  {stats.growthStage === 3
+                    ? 'MÁX (1.62x)'
+                    : `${stats.totalAdnEarned} / ${stats.nextStageAdnThreshold} ADN`}
+                </span>
+              </div>
+              <div className="h-2.5 w-full overflow-hidden rounded-md bg-slate-900 border border-slate-800">
+                <div
+                  className="h-full bg-amber-400 transition-transform duration-200 origin-left"
+                  style={{ transform: `scaleX(${growthProgressPct / 100})` }}
+                />
+              </div>
+            </div>
+
+            {/* ADN (Genetic Points) */}
+            <div className="flex items-center gap-4 border-l border-slate-800 pl-4 shrink-0">
+              <div>
+                <div className="text-xs font-medium text-slate-400">
+                  Puntos de ADN
+                </div>
+                <div className="font-mono text-xl font-bold tabular-nums text-amber-300">
+                  {stats.adn}{' '}
+                  <span className="text-xs font-normal text-amber-200/80">
+                    ADN
+                  </span>
+                </div>
+              </div>
+
+              <div className="hidden 2xl:block text-xs text-slate-400">
+                <div>
+                  Nutrientes:{' '}
+                  <span className="font-mono font-semibold text-slate-200 tabular-nums">
+                    {stats.foodEaten}
+                  </span>
+                </div>
+                <div>
+                  Tiempo:{' '}
+                  <span className="font-mono font-semibold text-slate-200 tabular-nums">
+                    {formatTime(stats.survivalTime)}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
-        </div>
 
-        {/* Zone 3: Llamar Pareja / Evolucionar (E), Pause & Quick Restart Controls */}
-        <div className="flex items-center gap-2 shrink-0">
-          <button
-            type="button"
-            onClick={onToggleEditor}
-            className={`flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-              availableUpgradesCount > 0
-                ? 'border-amber-300 bg-amber-400 text-slate-950 hover:bg-amber-300'
-                : 'border-pink-400/40 bg-pink-950/60 text-pink-200 hover:bg-pink-900/70'
-            }`}
-          >
-            <Sparkles className="h-3.5 w-3.5" />
-            <span>
-              Llamar Pareja / Evolucionar (E)
-              {availableUpgradesCount > 0 ? ` · ${availableUpgradesCount}` : ''}
+          {/* Zone 3: Llamar Pareja / Evolucionar (E), Pause & Quick Restart Controls */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={onToggleEditor}
+              className={`flex items-center gap-1.5 rounded-lg border px-3.5 py-2 text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                availableUpgradesCount > 0
+                  ? 'border-amber-300 bg-amber-400 text-slate-950 hover:bg-amber-300'
+                  : 'border-pink-400/40 bg-pink-950/60 text-pink-200 hover:bg-pink-900/70'
+              }`}
+            >
+              <Sparkles className="h-3.5 w-3.5" />
+              <span>
+                Llamar Pareja / Evolucionar (E)
+                {availableUpgradesCount > 0 ? ` · ${availableUpgradesCount}` : ''}
+              </span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onRestart}
+              title="Reiniciar partida"
+              className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-slate-500 hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span className="hidden sm:inline">Reiniciar</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={onTogglePause}
+              className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3.5 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Pause className="h-3.5 w-3.5" />
+              <span>Pausa (Esc)</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Compact Active Evolutionary Quest Card & Biome Indicator */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-500/20 bg-[#041524]/88 px-4 py-2 text-xs shadow-lg">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={`rounded border px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${
+                readyForLandTransition
+                  ? 'border-amber-400/50 bg-amber-500/20 text-amber-300'
+                  : 'border-cyan-500/30 bg-cyan-950/80 text-cyan-300'
+              }`}
+            >
+              {readyForLandTransition ? 'Transición Terrestre Lista' : 'Misión Evolutiva'}
             </span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onRestart}
-            title="Reiniciar partida"
-            className="flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-200 hover:border-slate-500 hover:bg-slate-800 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <RotateCcw className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Reiniciar</span>
-          </button>
-
-          <button
-            type="button"
-            onClick={onTogglePause}
-            className="flex items-center gap-1.5 rounded-lg bg-cyan-500 px-3.5 py-2 text-xs font-bold text-slate-950 hover:bg-cyan-400 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
-          >
-            <Pause className="h-3.5 w-3.5" />
-            <span>Pausa (Esc)</span>
-          </button>
+            <span className="font-semibold text-white">{activeQuestTitle}:</span>
+            <span className="text-slate-300">{activeQuestProgressText}</span>
+          </div>
+          <div className="flex items-center gap-2 text-slate-400">
+            <span>Bioma:</span>
+            <span className="font-semibold text-teal-300">{currentBiomeName}</span>
+            {currentBiomeName === 'Fosa Hidrotermal' && (
+              <span className="text-cyan-300 font-medium">
+                (Fumarolas +3 Energía/s)
+              </span>
+            )}
+          </div>
         </div>
-      </header>
 
-      {/* Subtle Event Banner / Starvation Alert */}
-      <div className="mx-auto flex flex-col items-center gap-2">
-        {stats.isStarving && (
-          <div className="rounded-lg border border-rose-500/40 bg-rose-950/90 px-4 py-1.5 text-xs font-semibold text-rose-200 shadow-lg">
-            Energía agotada: Tu célula pierde vida gradualmente. Consume nutrientes verdes o dorados.
-          </div>
-        )}
-        {recentEventMessage && !stats.isStarving && (
-          <div className="rounded-lg border border-cyan-500/30 bg-[#041524]/90 px-4 py-1.5 text-xs font-medium text-cyan-200 shadow-md">
-            {recentEventMessage}
-          </div>
-        )}
+        {/* Subtle Event Banner / Starvation Alert */}
+        <div className="mx-auto flex flex-col items-center gap-2">
+          {stats.isStarving && (
+            <div className="rounded-lg border border-rose-500/40 bg-rose-950/90 px-4 py-1.5 text-xs font-semibold text-rose-200 shadow-lg">
+              Energía agotada: Tu célula pierde vida gradualmente. Consume nutrientes verdes o dorados.
+            </div>
+          )}
+          {recentEventMessage && !stats.isStarving && (
+            <div className="rounded-lg border border-cyan-500/30 bg-[#041524]/90 px-4 py-1.5 text-xs font-medium text-cyan-200 shadow-md">
+              {recentEventMessage}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Unified Collapsible Bottom Control Dock */}

@@ -116,6 +116,7 @@ export class GameEngine {
   ];
 
   private readonly unlockedSlotIds = new Set<string>();
+  private static readonly STORAGE_KEY = 'evolife_cellular_save_v1';
 
   private animationFrameId: number | null = null;
   private uiSyncAccumulator = 0;
@@ -124,6 +125,9 @@ export class GameEngine {
   private poisonSpawnCooldownTimer = 0;
   private matingCallTimer = 0;
   private wasAbilityPressed = false;
+  private currentBiomeName = 'Pradera Bioluminiscente';
+  private completedQuestStep: 0 | 1 | 2 | 3 | 4 = 0;
+  private isEvaluatingQuests = false;
   private nearestSpeciesName = 'Mandíbula Rápida';
   private nearestPredatorState: PredatorBehaviorState = 'DEAMBULAR';
   private nearestPredatorDistance = 999;
@@ -176,6 +180,12 @@ export class GameEngine {
     );
 
     this.stats = this.createInitialStats();
+    this.loadFromLocalStorage();
+    this.currentBiomeName = this.environment.getBiomeAt(
+      this.player.position.x,
+      this.player.position.z
+    ).name;
+
     this.timer = new THREE.Timer();
     this.timer.connect(document);
 
@@ -218,6 +228,224 @@ export class GameEngine {
       activeStatusEffect: null,
       speed: 0,
       damageFlashTime: 0,
+    };
+  }
+
+  private saveToLocalStorage(): void {
+    if (this.status === 'gameover' || this.stats.health <= 0) return;
+    try {
+      const payload = {
+        stats: {
+          health: this.stats.health,
+          energy: this.stats.energy,
+          adn: this.stats.adn,
+          totalAdnEarned: this.stats.totalAdnEarned,
+          growthStage: this.stats.growthStage,
+          foodEaten: this.stats.foodEaten,
+          survivalTime: this.stats.survivalTime,
+        },
+        unlockedSlotIds: Array.from(this.unlockedSlotIds),
+        completedQuestStep: this.completedQuestStep,
+      };
+      localStorage.setItem(GameEngine.STORAGE_KEY, JSON.stringify(payload));
+    } catch {
+      // Ignore storage quota or private mode errors
+    }
+  }
+
+  private loadFromLocalStorage(): void {
+    try {
+      const raw = localStorage.getItem(GameEngine.STORAGE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (
+        !parsed ||
+        typeof parsed !== 'object' ||
+        !parsed.stats ||
+        typeof parsed.stats.health !== 'number' ||
+        parsed.stats.health <= 0
+      ) {
+        return;
+      }
+
+      this.unlockedSlotIds.clear();
+      if (Array.isArray(parsed.unlockedSlotIds)) {
+        for (const id of parsed.unlockedSlotIds) {
+          if (typeof id === 'string') {
+            this.unlockedSlotIds.add(id);
+          }
+        }
+      }
+
+      for (const slot of this.preparedEvolutionCatalog) {
+        slot.unlocked = this.unlockedSlotIds.has(slot.id);
+      }
+
+      const stageRaw = parsed.stats.growthStage;
+      const validStage: 1 | 2 | 3 =
+        stageRaw === 3 ? 3 : stageRaw === 2 ? 2 : 1;
+
+      this.stats.growthStage = validStage;
+      this.stats.adn = Math.max(0, Number(parsed.stats.adn) || 0);
+      this.stats.totalAdnEarned = Math.max(
+        this.stats.adn,
+        Number(parsed.stats.totalAdnEarned) || 0
+      );
+      this.stats.nextStageAdnThreshold = validStage === 1 ? 60 : 140;
+      this.stats.foodEaten = Math.max(0, Number(parsed.stats.foodEaten) || 0);
+      this.stats.survivalTime = Math.max(
+        0,
+        Number(parsed.stats.survivalTime) || 0
+      );
+      this.elapsedActiveTime = this.stats.survivalTime;
+      this.stats.diet = this.computeCurrentDiet();
+
+      this.recalculateVitalCaps();
+      this.stats.health = Math.min(
+        this.stats.maxHealth,
+        Math.max(1, Number(parsed.stats.health) || this.stats.maxHealth)
+      );
+      this.stats.energy = Math.min(
+        this.stats.maxEnergy,
+        Math.max(10, Number(parsed.stats.energy) || this.stats.maxEnergy)
+      );
+
+      const questStep = Number(parsed.completedQuestStep);
+      if (
+        questStep === 0 ||
+        questStep === 1 ||
+        questStep === 2 ||
+        questStep === 3 ||
+        questStep === 4
+      ) {
+        this.completedQuestStep = questStep;
+      }
+
+      this.player.setGrowthStage(validStage);
+      this.player.syncEvolutionParts(this.unlockedSlotIds);
+      this.evaluateQuests(true);
+      this.setEventMessage('Partida celular restaurada automáticamente');
+    } catch {
+      // Ignore corrupt storage data
+    }
+  }
+
+  private clearLocalStorage(): void {
+    try {
+      localStorage.removeItem(GameEngine.STORAGE_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private evaluateQuests(silent = false): boolean {
+    if (this.isEvaluatingQuests) return false;
+    this.isEvaluatingQuests = true;
+    let questAdvanced = false;
+
+    try {
+      // Misión 1: Primeros Nutrientes — Acumular 20 ADN totales (+10 ADN de recompensa)
+      if (this.completedQuestStep === 0 && this.stats.totalAdnEarned >= 20) {
+        this.completedQuestStep = 1;
+        questAdvanced = true;
+        this.addAdn(10);
+        if (!silent) {
+          this.setEventMessage(
+            '¡Misión 1 completada: Primeros Nutrientes! (+10 ADN de recompensa)'
+          );
+        }
+      }
+
+      // Misión 2: Adaptación Morfológica — Instalar al menos 1 órgano en el Editor (+15 ADN de recompensa)
+      if (this.completedQuestStep === 1 && this.unlockedSlotIds.size >= 1) {
+        this.completedQuestStep = 2;
+        questAdvanced = true;
+        this.addAdn(15);
+        if (!silent) {
+          this.setEventMessage(
+            '¡Misión 2 completada: Adaptación Morfológica! (+15 ADN de recompensa)'
+          );
+        }
+      }
+
+      // Misión 3: Supervivencia y Crecimiento — Alcanzar Fase 2 (60 ADN totales) y desbloquear >= 3 órganos (+20 ADN)
+      if (
+        this.completedQuestStep === 2 &&
+        this.stats.growthStage >= 2 &&
+        this.unlockedSlotIds.size >= 3
+      ) {
+        this.completedQuestStep = 3;
+        questAdvanced = true;
+        this.addAdn(20);
+        if (!silent) {
+          this.setEventMessage(
+            '¡Misión 3 completada: Supervivencia y Crecimiento! (+20 ADN de recompensa)'
+          );
+        }
+      }
+
+      // Misión 4: Salto Evolutivo: Cerebro Primitivo — Alcanzar Fase 3 y acumular 200 ADN totales
+      if (
+        this.completedQuestStep === 3 &&
+        this.stats.growthStage === 3 &&
+        this.stats.totalAdnEarned >= 200
+      ) {
+        this.completedQuestStep = 4;
+        questAdvanced = true;
+        if (!silent) {
+          this.setEventMessage(
+            '¡Salto Evolutivo completado! Cerebro Primitivo desarrollado: Listo para la Transición Terrestre'
+          );
+        }
+      }
+
+      if (questAdvanced && !silent) {
+        this.saveToLocalStorage();
+      }
+    } finally {
+      this.isEvaluatingQuests = false;
+    }
+
+    return questAdvanced;
+  }
+
+  private getActiveQuestInfo(): { title: string; progressText: string } {
+    if (this.completedQuestStep === 0) {
+      const current = Math.min(20, this.stats.totalAdnEarned);
+      return {
+        title: 'Misión 1/4 · Primeros Nutrientes',
+        progressText: `Acumula 20 ADN totales (${current}/20 ADN) · Recompensa: +10 ADN`,
+      };
+    }
+    if (this.completedQuestStep === 1) {
+      const organs = Math.min(1, this.unlockedSlotIds.size);
+      return {
+        title: 'Misión 2/4 · Adaptación Morfológica',
+        progressText: `Instala 1 órgano en el Editor con E (${organs}/1 órgano) · Recompensa: +15 ADN`,
+      };
+    }
+    if (this.completedQuestStep === 2) {
+      const organs = Math.min(3, this.unlockedSlotIds.size);
+      const stageStatus =
+        this.stats.growthStage >= 2 ? 'Fase 2 OK' : 'Alcanza Fase 2 (60 ADN)';
+      return {
+        title: 'Misión 3/4 · Supervivencia y Crecimiento',
+        progressText: `${stageStatus} y equipa 3 órganos (${organs}/3) · Recompensa: +20 ADN`,
+      };
+    }
+    if (this.completedQuestStep === 3) {
+      const currentAdn = Math.min(200, this.stats.totalAdnEarned);
+      const stageStatus =
+        this.stats.growthStage === 3 ? 'Fase 3 OK' : 'Alcanza Fase 3 (140 ADN)';
+      return {
+        title: 'Misión 4/4 · Salto Evolutivo: Cerebro Primitivo',
+        progressText: `${stageStatus} y acumula 200 ADN totales (${currentAdn}/200 ADN)`,
+      };
+    }
+    return {
+      title: 'Culminación Celular · Cerebro Primitivo Activo',
+      progressText:
+        '¡Listo para la Transición Terrestre! Has dominado el ecosistema microscópico',
     };
   }
 
@@ -265,6 +493,7 @@ export class GameEngine {
     const targetStage: 1 | 2 | 3 = total >= 140 ? 3 : total >= 60 ? 2 : 1;
     this.stats.nextStageAdnThreshold = targetStage === 1 ? 60 : 140;
 
+    let stageUp = false;
     if (targetStage > this.stats.growthStage) {
       const prevMax = this.stats.maxHealth;
       this.stats.growthStage = targetStage;
@@ -284,9 +513,15 @@ export class GameEngine {
           '¡Culminación Celular! Fase 3/3: Organismo Macrocelular (+40 Vida Máx.)'
         );
       }
-      return true;
+      stageUp = true;
     }
-    return false;
+
+    const questCompleted = this.evaluateQuests();
+    if (!questCompleted) {
+      this.saveToLocalStorage();
+    }
+
+    return stageUp || questCompleted;
   }
 
   public togglePause(): void {
@@ -306,6 +541,7 @@ export class GameEngine {
       this.matingCallTimer = 0;
       this.player.hideMateCell();
       this.inputController.resetInputs();
+      this.saveToLocalStorage();
     } else if (this.status === 'paused') {
       this.status = 'playing';
       this.timer.update();
@@ -382,7 +618,11 @@ export class GameEngine {
     }
 
     this.player.syncEvolutionParts(this.unlockedSlotIds);
-    this.setEventMessage(`Evolución completada: ${slot.name}`);
+    const questCompleted = this.evaluateQuests();
+    if (!questCompleted) {
+      this.setEventMessage(`Evolución completada: ${slot.name}`);
+      this.saveToLocalStorage();
+    }
     this.emitUISnapshot();
     return true;
   }
@@ -400,6 +640,7 @@ export class GameEngine {
     this.recalculateVitalCaps();
 
     this.player.syncEvolutionParts(this.unlockedSlotIds);
+    this.saveToLocalStorage();
     this.setEventMessage(
       `Órgano retirado: ${slot.name} (+${slot.costAdn} ADN reembolsado)`
     );
@@ -418,6 +659,7 @@ export class GameEngine {
   }
 
   public restartGame(): void {
+    this.clearLocalStorage();
     this.status = 'playing';
     for (const slot of this.preparedEvolutionCatalog) {
       slot.unlocked = false;
@@ -425,6 +667,8 @@ export class GameEngine {
     this.unlockedSlotIds.clear();
 
     this.stats = this.createInitialStats();
+    this.completedQuestStep = 0;
+    this.currentBiomeName = 'Pradera Bioluminiscente';
     this.elapsedActiveTime = 0;
     this.electricCooldownTimer = 0;
     this.poisonSpawnCooldownTimer = 0;
@@ -511,6 +755,16 @@ export class GameEngine {
       );
       this.stats.isBoosting = moveResult.isBoosting;
       this.stats.speed = Math.abs(this.player.currentSpeed);
+
+      // Detect Submarine Biome transition
+      const biomeInfo = this.environment.getBiomeAt(
+        this.player.position.x,
+        this.player.position.z
+      );
+      if (biomeInfo.name !== this.currentBiomeName) {
+        this.currentBiomeName = biomeInfo.name;
+        forceUIEmit = true;
+      }
 
       // Check Mating Call courtship completion -> transition to Creature Editor
       if (this.matingCallTimer > 0) {
@@ -626,13 +880,20 @@ export class GameEngine {
         this.stats.activeStatusEffect = null;
       }
 
-      // 2. Energy Consumption (Passive + Movement + Boost)
-      const passiveDrainRate = hasChloroplast
+      // 2. Energy Consumption (Passive + Movement + Boost) & Hydrothermal Vent Regeneration
+      const nearThermalVent = this.environment.isNearThermalVent(
+        this.player.position.x,
+        this.player.position.z
+      );
+
+      const passiveDrainRate = nearThermalVent
+        ? 0
+        : hasChloroplast
         ? GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC * 0.5
         : GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC;
 
       let energyDrain = passiveDrainRate * delta;
-      if (moveResult.isMoving) {
+      if (moveResult.isMoving && !nearThermalVent) {
         energyDrain += GAME_CONFIG.PLAYER.MOVEMENT_ENERGY_DRAIN_PER_SEC * delta;
       }
       if (moveResult.isBoosting) {
@@ -640,6 +901,14 @@ export class GameEngine {
       }
 
       this.stats.energy = Math.max(0, this.stats.energy - energyDrain);
+
+      // Hydrothermal Vent Energy Regeneration (+3 Energía/s when swimming near active vent in Fosa Hidrotermal)
+      if (nearThermalVent) {
+        this.stats.energy = Math.min(
+          this.stats.maxEnergy,
+          this.stats.energy + 3.0 * delta
+        );
+      }
 
       // 3. Starvation Consequence when Energy reaches 0
       if (this.stats.energy <= 0) {
@@ -862,9 +1131,14 @@ export class GameEngine {
         forceUIEmit = true;
       }
 
-      // 7. Update Camera & Underwater Environment
+      // 7. Update Camera & Underwater Environment (with Biome lighting & Hydrothermal bubbles)
       this.cameraController.update(delta, this.player);
-      this.environment.update(this.elapsedActiveTime, delta);
+      this.environment.update(
+        this.elapsedActiveTime,
+        delta,
+        this.player.position.x,
+        this.player.position.z
+      );
 
       if (this.eventMessageTimer > 0) {
         this.eventMessageTimer -= delta;
@@ -886,6 +1160,7 @@ export class GameEngine {
   }
 
   private footerDeathCleanup(): void {
+    this.clearLocalStorage();
     this.setEventMessage('Organismo celular eliminado');
   }
 
@@ -895,6 +1170,10 @@ export class GameEngine {
   }
 
   private emitUISnapshot(): void {
+    const questInfo = this.getActiveQuestInfo();
+    const readyForLandTransition =
+      this.stats.totalAdnEarned >= 200 && this.stats.growthStage === 3;
+
     this.onUISnapshot({
       status: this.status,
       stats: { ...this.stats },
@@ -904,6 +1183,10 @@ export class GameEngine {
       nearestSpeciesName: this.nearestSpeciesName,
       nearestPredatorState: this.nearestPredatorState,
       nearestPredatorDistance: this.nearestPredatorDistance,
+      currentBiomeName: this.currentBiomeName,
+      activeQuestTitle: questInfo.title,
+      activeQuestProgressText: questInfo.progressText,
+      readyForLandTransition,
       recentEventMessage: this.recentEventMessage,
       evolutionSlots: this.preparedEvolutionCatalog.map((slot) => ({ ...slot })),
     });

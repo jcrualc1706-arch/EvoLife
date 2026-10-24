@@ -15,6 +15,8 @@ export type FoodKind = 'plant' | 'meat' | 'dna_spore';
 
 export type EvolutionCategory = 'locomocion' | 'metabolismo' | 'defensa';
 
+export type BiomeType = 'pradera_luminosa' | 'fosa_termal' | 'arrecife_abisal';
+
 export interface PlayerStats {
   health: number;
   maxHealth: number;
@@ -63,6 +65,10 @@ export interface GameUISnapshot {
   nearestSpeciesName: string;
   nearestPredatorState: PredatorBehaviorState;
   nearestPredatorDistance: number;
+  currentBiomeName: string;
+  activeQuestTitle: string;
+  activeQuestProgressText: string;
+  readyForLandTransition: boolean;
   recentEventMessage: string | null;
   evolutionSlots: CellularEvolutionSlot[];
 }
