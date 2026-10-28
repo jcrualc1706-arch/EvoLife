@@ -4,6 +4,8 @@ import {
   ChevronDown,
   ChevronUp,
   Dna,
+  Footprints,
+  HeartHandshake,
   Pause,
   RotateCcw,
   ShieldAlert,
@@ -16,6 +18,7 @@ interface GameHUDProps {
   snapshot: GameUISnapshot;
   onTogglePause: () => void;
   onToggleEditor: () => void;
+  onEvolveToCreatureStage: () => void;
   onRestart: () => void;
   onControlInput: (key: keyof InputState, active: boolean) => void;
 }
@@ -24,6 +27,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   snapshot,
   onTogglePause,
   onToggleEditor,
+  onEvolveToCreatureStage,
   onRestart,
   onControlInput,
 }) => {
@@ -40,6 +44,8 @@ export const GameHUD: React.FC<GameHUDProps> = ({
     recentEventMessage,
     evolutionSlots,
   } = snapshot;
+
+  const isCreatureStage = stats.evolutionaryStage === 'creature_stage';
 
   const healthPct = Math.max(
     0,
@@ -89,12 +95,13 @@ export const GameHUD: React.FC<GameHUDProps> = ({
       ? 'text-rose-400'
       : 'text-emerald-400';
 
-  const growthStageLabel =
-    stats.growthStage === 3
-      ? 'Fase 3/3 · Macrocélula'
-      : stats.growthStage === 2
-      ? 'Fase 2/3 · Célula Desarrollada'
-      : 'Fase 1/3 · Microcélula';
+  const growthStageLabel = isCreatureStage
+    ? 'Estadio Criatura Terrestre'
+    : stats.growthStage === 3
+    ? 'Fase 3/3 · Macrocélula'
+    : stats.growthStage === 2
+    ? 'Fase 2/3 · Célula Desarrollada'
+    : 'Fase 1/3 · Microcélula';
 
   const growthProgressPct =
     stats.growthStage === 3
@@ -106,9 +113,9 @@ export const GameHUD: React.FC<GameHUDProps> = ({
   return (
     <div className="pointer-events-none fixed inset-0 z-10 flex flex-col justify-between p-4 sm:p-6">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-2.5">
-        {/* Top Status Bar: Brand + Core Vital Bars (Vida, Energía, ADN, Fase Evolutiva) + Llamar Pareja / Evolucionar & Pause Actions */}
+        {/* Top Status Bar */}
         <header className="pointer-events-auto flex w-full flex-wrap items-center justify-between gap-4 rounded-xl border border-cyan-500/20 bg-[#041524]/92 px-5 py-3.5 shadow-xl">
-          {/* Zone 1: Brand Title, Diet, Biome & Growth Stage */}
+          {/* Zone 1: Brand Title, Species Name, Diet, Biome & Stage */}
           <div className="flex items-center gap-3 shrink-0">
             <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-cyan-400/30 bg-cyan-950/80 text-cyan-300">
               <Dna className="h-5 w-5" />
@@ -116,18 +123,31 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             <div>
               <div className="flex items-center gap-2">
                 <h1 className="font-display text-lg font-bold tracking-tight text-white whitespace-nowrap">
-                  EvoLife
+                  {stats.speciesName || 'EvoLife'}
                 </h1>
-                <span className="rounded-md border border-cyan-500/30 bg-cyan-950/70 px-2 py-0.5 text-[11px] font-semibold text-cyan-300 whitespace-nowrap">
+                <span
+                  className={`rounded-md border px-2 py-0.5 text-[11px] font-semibold whitespace-nowrap ${
+                    isCreatureStage
+                      ? 'border-amber-400/50 bg-amber-950/80 text-amber-300'
+                      : 'border-cyan-500/30 bg-cyan-950/70 text-cyan-300'
+                  }`}
+                >
                   {growthStageLabel}
                 </span>
               </div>
               <p className="text-xs text-slate-400 whitespace-nowrap">
-                Dieta: <span className={`font-semibold ${dietColorClass}`}>{dietLabel}</span>
+                Dieta:{' '}
+                <span className={`font-semibold ${dietColorClass}`}>
+                  {dietLabel}
+                </span>
                 <span className="mx-1.5">·</span>
-                <span>{unlockedCount}/{evolutionSlots.length} Órganos</span>
+                <span>
+                  {unlockedCount}/{evolutionSlots.length} Órganos
+                </span>
                 <span className="mx-1.5">·</span>
-                <span className="font-medium text-teal-300">{currentBiomeName}</span>
+                <span className="font-medium text-teal-300">
+                  {currentBiomeName}
+                </span>
               </p>
             </div>
           </div>
@@ -189,14 +209,16 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               </div>
             </div>
 
-            {/* CRECIMIENTO EVOLUTIVO (Spore Growth Progress Bar) */}
+            {/* CRECIMIENTO EVOLUTIVO */}
             <div className="min-w-[145px] flex-1 max-w-[195px]">
               <div className="mb-1.5 flex items-center justify-between text-xs">
                 <span className="font-semibold text-amber-200 whitespace-nowrap">
-                  Crecimiento
+                  {isCreatureStage ? 'Adaptación Terrestre' : 'Crecimiento'}
                 </span>
                 <span className="font-mono font-bold tabular-nums text-amber-300">
-                  {stats.growthStage === 3
+                  {isCreatureStage
+                    ? '4 Patas Activas'
+                    : stats.growthStage === 3
                     ? 'MÁX (1.62x)'
                     : `${stats.totalAdnEarned} / ${stats.nextStageAdnThreshold} ADN`}
                 </span>
@@ -253,7 +275,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
             >
               <Sparkles className="h-3.5 w-3.5" />
               <span>
-                Llamar Pareja / Evolucionar (E)
+                Editor 3D / Evolucionar (E)
                 {availableUpgradesCount > 0 ? ` · ${availableUpgradesCount}` : ''}
               </span>
             </button>
@@ -280,28 +302,49 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         </header>
 
         {/* Compact Active Evolutionary Quest Card & Biome Indicator */}
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-500/20 bg-[#041524]/88 px-4 py-2 text-xs shadow-lg">
+        <div className="pointer-events-auto flex flex-wrap items-center justify-between gap-3 rounded-lg border border-cyan-500/20 bg-[#041524]/88 px-4 py-2 text-xs shadow-lg">
           <div className="flex flex-wrap items-center gap-2">
             <span
               className={`rounded border px-2 py-0.5 text-[11px] font-bold uppercase tracking-wide ${
-                readyForLandTransition
+                isCreatureStage
+                  ? 'border-emerald-400/50 bg-emerald-500/20 text-emerald-300'
+                  : readyForLandTransition
                   ? 'border-amber-400/50 bg-amber-500/20 text-amber-300'
                   : 'border-cyan-500/30 bg-cyan-950/80 text-cyan-300'
               }`}
             >
-              {readyForLandTransition ? 'Transición Terrestre Lista' : 'Misión Evolutiva'}
+              {isCreatureStage
+                ? 'Costa Terrestre'
+                : readyForLandTransition
+                ? 'Transición Terrestre Lista'
+                : 'Misión Evolutiva'}
             </span>
             <span className="font-semibold text-white">{activeQuestTitle}:</span>
             <span className="text-slate-300">{activeQuestProgressText}</span>
           </div>
-          <div className="flex items-center gap-2 text-slate-400">
-            <span>Bioma:</span>
-            <span className="font-semibold text-teal-300">{currentBiomeName}</span>
-            {currentBiomeName === 'Fosa Hidrotermal' && (
-              <span className="text-cyan-300 font-medium">
-                (Fumarolas +3 Energía/s)
-              </span>
+
+          <div className="flex items-center gap-3">
+            {readyForLandTransition && !isCreatureStage && (
+              <button
+                type="button"
+                onClick={onEvolveToCreatureStage}
+                className="flex items-center gap-1.5 rounded-lg bg-amber-400 px-3 py-1 text-xs font-bold text-slate-950 hover:bg-amber-300 transition-colors cursor-pointer"
+              >
+                <Footprints className="h-3.5 w-3.5" />
+                <span>Evolucionar a Criatura Terrestre</span>
+              </button>
             )}
+            <div className="flex items-center gap-2 text-slate-400">
+              <span>Entorno:</span>
+              <span className="font-semibold text-teal-300">
+                {currentBiomeName}
+              </span>
+              {currentBiomeName === 'Fosa Hidrotermal' && (
+                <span className="text-cyan-300 font-medium">
+                  (Fumarolas +3 Energía/s)
+                </span>
+              )}
+            </div>
           </div>
         </div>
 
@@ -309,7 +352,7 @@ export const GameHUD: React.FC<GameHUDProps> = ({
         <div className="mx-auto flex flex-col items-center gap-2">
           {stats.isStarving && (
             <div className="rounded-lg border border-rose-500/40 bg-rose-950/90 px-4 py-1.5 text-xs font-semibold text-rose-200 shadow-lg">
-              Energía agotada: Tu célula pierde vida gradualmente. Consume nutrientes verdes o dorados.
+              Energía agotada: Tu organismo pierde vida gradualmente. Consume nutrientes o descansa en el Nido.
             </div>
           )}
           {recentEventMessage && !stats.isStarving && (
@@ -424,13 +467,27 @@ export const GameHUD: React.FC<GameHUDProps> = ({
                 <span className="relative z-10 flex items-center gap-1.5">
                   <Zap className="h-3.5 w-3.5" />
                   <span>
-                    Q · {stats.activeStatusEffect ?? 'Habilidad Celular'}
+                    Q · {stats.activeStatusEffect ?? 'Habilidad'}
                     {hasActiveAbility && !abilityReady
                       ? ` (${Math.round(stats.abilityCooldownRatio * 100)}%)`
                       : ''}
                   </span>
                 </span>
               </button>
+
+              {/* C · Terrestrial Creature Stage Socialize Button */}
+              {isCreatureStage && (
+                <button
+                  type="button"
+                  onPointerDown={() => onControlInput('socialize', true)}
+                  onPointerUp={() => onControlInput('socialize', false)}
+                  onPointerLeave={() => onControlInput('socialize', false)}
+                  className="flex items-center gap-1.5 rounded-lg border border-amber-400/60 bg-amber-950/75 px-3.5 py-2 text-xs font-bold text-amber-200 hover:bg-amber-900/80 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <HeartHandshake className="h-3.5 w-3.5 text-amber-300" />
+                  <span>C · Socializar (+20 ADN)</span>
+                </button>
+              )}
             </div>
 
             {/* Control Instructions */}
@@ -440,8 +497,16 @@ export const GameHUD: React.FC<GameHUDProps> = ({
               <span>Espacio: Impulso</span>
               <span aria-hidden="true">·</span>
               <span>Q: Habilidad</span>
+              {isCreatureStage && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <span className="text-amber-300 font-medium">
+                    C: Socializar
+                  </span>
+                </>
+              )}
               <span aria-hidden="true">·</span>
-              <span>E: Evolucionar</span>
+              <span>E: Editor 3D</span>
             </div>
 
             {/* Ecosystem Species Sensor Readout */}

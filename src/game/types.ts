@@ -17,7 +17,17 @@ export type EvolutionCategory = 'locomocion' | 'metabolismo' | 'defensa';
 
 export type BiomeType = 'pradera_luminosa' | 'fosa_termal' | 'arrecife_abisal';
 
+export type CellBodyShape = 'fusiforme' | 'esferico' | 'alargado';
+
+export type CellColorTheme = 'cyan' | 'emerald' | 'crimson' | 'violet';
+
+export type EvolutionaryStage = 'cell_stage' | 'creature_stage';
+
 export interface PlayerStats {
+  speciesName: string;
+  bodyShape: CellBodyShape;
+  colorTheme: CellColorTheme;
+  evolutionaryStage: EvolutionaryStage;
   health: number;
   maxHealth: number;
   energy: number;
@@ -80,6 +90,7 @@ export interface InputState {
   right: boolean;
   boost: boolean;
   ability: boolean;
+  socialize: boolean;
 }
 
 export interface PoisonCloudHazard {
@@ -89,3 +100,4 @@ export interface PoisonCloudHazard {
 }
 
 import * as THREE from 'three';
+

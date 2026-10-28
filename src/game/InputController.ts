@@ -8,6 +8,7 @@ export class InputController {
     right: false,
     boost: false,
     ability: false,
+    socialize: false,
   };
 
   private onPauseToggleCallback: (() => void) | null = null;
@@ -29,6 +30,19 @@ export class InputController {
   }
 
   private handleKeyDown(event: KeyboardEvent): void {
+    const activeEl = document.activeElement as HTMLElement | null;
+    if (
+      activeEl &&
+      (activeEl.tagName === 'INPUT' ||
+        activeEl.tagName === 'TEXTAREA' ||
+        activeEl.isContentEditable)
+    ) {
+      if (event.code === 'Escape') {
+        activeEl.blur();
+      }
+      return;
+    }
+
     if (
       event.repeat &&
       (event.code === 'Escape' || event.code === 'KeyE')
@@ -60,6 +74,10 @@ export class InputController {
       case 'KeyQ':
         event.preventDefault();
         this.state.ability = true;
+        break;
+      case 'KeyC':
+        event.preventDefault();
+        this.state.socialize = true;
         break;
       case 'KeyE':
         event.preventDefault();
@@ -100,6 +118,9 @@ export class InputController {
       case 'KeyQ':
         this.state.ability = false;
         break;
+      case 'KeyC':
+        this.state.socialize = false;
+        break;
     }
   }
 
@@ -114,6 +135,7 @@ export class InputController {
     this.state.right = false;
     this.state.boost = false;
     this.state.ability = false;
+    this.state.socialize = false;
   }
 
   public dispose(): void {

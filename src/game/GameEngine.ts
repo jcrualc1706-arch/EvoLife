@@ -7,8 +7,11 @@ import { PlayerCell } from './PlayerCell';
 import { PredatorManager } from './PredatorManager';
 import { SceneEnvironment } from './SceneEnvironment';
 import {
+  CellBodyShape,
+  CellColorTheme,
   CellularEvolutionSlot,
   DietType,
+  EvolutionaryStage,
   GameStatus,
   GameUISnapshot,
   InputState,
@@ -123,8 +126,10 @@ export class GameEngine {
   private elapsedActiveTime = 0;
   private electricCooldownTimer = 0;
   private poisonSpawnCooldownTimer = 0;
+  private socializeCooldownTimer = 0;
   private matingCallTimer = 0;
   private wasAbilityPressed = false;
+  private wasSocializePressed = false;
   private currentBiomeName = 'Pradera Bioluminiscente';
   private completedQuestStep: 0 | 1 | 2 | 3 | 4 = 0;
   private isEvaluatingQuests = false;
@@ -181,10 +186,14 @@ export class GameEngine {
 
     this.stats = this.createInitialStats();
     this.loadFromLocalStorage();
-    this.currentBiomeName = this.environment.getBiomeAt(
-      this.player.position.x,
-      this.player.position.z
-    ).name;
+    if (this.stats.evolutionaryStage === 'creature_stage') {
+      this.currentBiomeName = 'Costa Terrestre Primigenia';
+    } else {
+      this.currentBiomeName = this.environment.getBiomeAt(
+        this.player.position.x,
+        this.player.position.z
+      ).name;
+    }
 
     this.timer = new THREE.Timer();
     this.timer.connect(document);
@@ -210,6 +219,10 @@ export class GameEngine {
 
   private createInitialStats(): PlayerStats {
     return {
+      speciesName: 'Organismo Primigenio',
+      bodyShape: 'fusiforme',
+      colorTheme: 'cyan',
+      evolutionaryStage: 'cell_stage',
       health: GAME_CONFIG.PLAYER.INITIAL_HEALTH,
       maxHealth: GAME_CONFIG.PLAYER.MAX_HEALTH,
       energy: GAME_CONFIG.PLAYER.INITIAL_ENERGY,
@@ -236,6 +249,10 @@ export class GameEngine {
     try {
       const payload = {
         stats: {
+          speciesName: this.stats.speciesName,
+          bodyShape: this.stats.bodyShape,
+          colorTheme: this.stats.colorTheme,
+          evolutionaryStage: this.stats.evolutionaryStage,
           health: this.stats.health,
           energy: this.stats.energy,
           adn: this.stats.adn,
@@ -281,9 +298,39 @@ export class GameEngine {
         slot.unlocked = this.unlockedSlotIds.has(slot.id);
       }
 
+      if (
+        typeof parsed.stats.speciesName === 'string' &&
+        parsed.stats.speciesName.trim().length > 0
+      ) {
+        this.stats.speciesName = parsed.stats.speciesName.trim().slice(0, 28);
+      }
+
+      const shapeRaw = parsed.stats.bodyShape;
+      this.stats.bodyShape =
+        shapeRaw === 'esferico' || shapeRaw === 'alargado'
+          ? shapeRaw
+          : 'fusiforme';
+
+      const colorRaw = parsed.stats.colorTheme;
+      this.stats.colorTheme =
+        colorRaw === 'emerald' || colorRaw === 'crimson' || colorRaw === 'violet'
+          ? colorRaw
+          : 'cyan';
+
+      const evoStageRaw = parsed.stats.evolutionaryStage;
+      const validEvoStage: EvolutionaryStage =
+        evoStageRaw === 'creature_stage' ? 'creature_stage' : 'cell_stage';
+      this.stats.evolutionaryStage = validEvoStage;
+
       const stageRaw = parsed.stats.growthStage;
       const validStage: 1 | 2 | 3 =
-        stageRaw === 3 ? 3 : stageRaw === 2 ? 2 : 1;
+        validEvoStage === 'creature_stage'
+          ? 3
+          : stageRaw === 3
+          ? 3
+          : stageRaw === 2
+          ? 2
+          : 1;
 
       this.stats.growthStage = validStage;
       this.stats.adn = Math.max(0, Number(parsed.stats.adn) || 0);
@@ -323,8 +370,15 @@ export class GameEngine {
 
       this.player.setGrowthStage(validStage);
       this.player.syncEvolutionParts(this.unlockedSlotIds);
+      this.player.applyMorphology(
+        this.stats.bodyShape,
+        this.stats.colorTheme,
+        validEvoStage === 'creature_stage'
+      );
+      this.environment.setStageEnvironment(validEvoStage);
+      this.predatorManager.setStageMode(validEvoStage);
       this.evaluateQuests(true);
-      this.setEventMessage('Partida celular restaurada automáticamente');
+      this.setEventMessage('Partida evolutiva restaurada automáticamente');
     } catch {
       // Ignore corrupt storage data
     }
@@ -410,6 +464,13 @@ export class GameEngine {
   }
 
   private getActiveQuestInfo(): { title: string; progressText: string } {
+    if (this.stats.evolutionaryStage === 'creature_stage') {
+      return {
+        title: 'Estadio de Criatura Terrestre · Dominio Costero',
+        progressText:
+          'Explora la Costa Terrestre, descansa en el Nido Central (0,0) o pulsa C cerca de Herbívoros Costeros para Socializar (+20 ADN)',
+      };
+    }
     if (this.completedQuestStep === 0) {
       const current = Math.min(20, this.stats.totalAdnEarned);
       return {
@@ -445,7 +506,7 @@ export class GameEngine {
     return {
       title: 'Culminación Celular · Cerebro Primitivo Activo',
       progressText:
-        '¡Listo para la Transición Terrestre! Has dominado el ecosistema microscópico',
+        '¡Pulsa E y activa "Evolucionar a Criatura Terrestre" para desarrollar patas y salir a la costa!',
     };
   }
 
@@ -524,6 +585,78 @@ export class GameEngine {
     return stageUp || questCompleted;
   }
 
+  public setSpeciesName(name: string): void {
+    const cleaned = name.slice(0, 28);
+    this.stats.speciesName = cleaned;
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public setBodyShape(shape: CellBodyShape): void {
+    this.stats.bodyShape = shape;
+    this.player.applyMorphology(
+      this.stats.bodyShape,
+      this.stats.colorTheme,
+      this.stats.evolutionaryStage === 'creature_stage'
+    );
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public setColorTheme(theme: CellColorTheme): void {
+    this.stats.colorTheme = theme;
+    this.player.applyMorphology(
+      this.stats.bodyShape,
+      this.stats.colorTheme,
+      this.stats.evolutionaryStage === 'creature_stage'
+    );
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public evolveToCreatureStage(): void {
+    if (this.stats.evolutionaryStage === 'creature_stage') {
+      this.closeEditor();
+      return;
+    }
+
+    this.stats.evolutionaryStage = 'creature_stage';
+    this.stats.growthStage = 3;
+    this.stats.totalAdnEarned = Math.max(200, this.stats.totalAdnEarned);
+    this.completedQuestStep = 4;
+
+    this.player.setGrowthStage(3);
+    this.player.applyMorphology(
+      this.stats.bodyShape,
+      this.stats.colorTheme,
+      true
+    );
+    this.recalculateVitalCaps();
+    this.stats.health = this.stats.maxHealth;
+    this.stats.energy = this.stats.maxEnergy;
+    this.stats.isStarving = false;
+
+    // Place creature right by its new Coastal Species Nest at (0, 0)
+    this.player.position.set(0, 0, 5.2);
+    this.player.updateEditorIdle(0, this.elapsedActiveTime);
+
+    this.environment.setStageEnvironment('creature_stage');
+    this.predatorManager.setStageMode('creature_stage');
+    this.currentBiomeName = 'Nido de la Especie (Regeneración Activa)';
+
+    this.status = 'playing';
+    this.matingCallTimer = 0;
+    this.player.hideMateCell();
+    this.inputController.resetInputs();
+    this.timer.update();
+
+    this.setEventMessage(
+      `¡Transición Terrestre completada! ${this.stats.speciesName || 'Tu especie'} camina sobre la Costa Terrestre`
+    );
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
   public togglePause(): void {
     if (this.status === 'gameover') return;
 
@@ -583,17 +716,23 @@ export class GameEngine {
     this.matingCallTimer = 0.85;
     this.player.startMatingCall();
     this.setEventMessage(
-      'Llamada de apareamiento: Pareja celular acudiendo...'
+      this.stats.evolutionaryStage === 'creature_stage'
+        ? 'Llamada de apareamiento terrestre: Pareja acudiendo al nido...'
+        : 'Llamada de apareamiento: Pareja celular acudiendo...'
     );
     this.emitUISnapshot();
   }
 
   public closeEditor(): void {
     if (this.status === 'editing' || this.matingCallTimer > 0) {
+      if (!this.stats.speciesName.trim()) {
+        this.stats.speciesName = 'Organismo Primigenio';
+      }
       this.status = 'playing';
       this.matingCallTimer = 0;
       this.player.hideMateCell();
       this.timer.update();
+      this.saveToLocalStorage();
       this.emitUISnapshot();
     }
   }
@@ -672,12 +811,16 @@ export class GameEngine {
     this.elapsedActiveTime = 0;
     this.electricCooldownTimer = 0;
     this.poisonSpawnCooldownTimer = 0;
+    this.socializeCooldownTimer = 0;
     this.matingCallTimer = 0;
     this.wasAbilityPressed = false;
+    this.wasSocializePressed = false;
     this.recentEventMessage = 'Nueva generación celular iniciada';
     this.eventMessageTimer = 2.8;
 
     this.inputController.resetInputs();
+    this.environment.setStageEnvironment('cell_stage');
+    this.predatorManager.setStageMode('cell_stage');
     this.player.reset();
     this.cameraController.resetImmediate(
       this.player.position,
@@ -710,11 +853,36 @@ export class GameEngine {
     // Clamp delta to avoid large jumps on tab switch
     const delta = Math.min(rawDelta, 0.1);
 
+    // Live 3D Creature Inspection Mode while inside the Editor ('editing')
+    if (this.status === 'editing') {
+      this.elapsedActiveTime += delta;
+      this.player.updateEditorIdle(delta, this.elapsedActiveTime);
+      this.cameraController.update(
+        delta,
+        this.player,
+        true,
+        this.elapsedActiveTime
+      );
+      this.environment.update(
+        this.elapsedActiveTime,
+        delta,
+        this.player.position.x,
+        this.player.position.z
+      );
+      this.renderer.render(
+        this.environment.scene,
+        this.cameraController.camera
+      );
+      return;
+    }
+
     if (this.status === 'playing') {
       this.elapsedActiveTime += delta;
       this.stats.survivalTime = this.elapsedActiveTime;
 
       let forceUIEmit = false;
+      const isCreatureStage =
+        this.stats.evolutionaryStage === 'creature_stage';
 
       const hasJaw = this.unlockedSlotIds.has('mouth_jaw');
       const hasProboscis = this.unlockedSlotIds.has('mouth_proboscis');
@@ -725,7 +893,7 @@ export class GameEngine {
       const hasArmor = this.unlockedSlotIds.has('membrane_armor');
       const hasElectricCell = this.unlockedSlotIds.has('electric_cell');
 
-      // Update ability cooldown timers
+      // Update ability & social cooldown timers
       if (this.electricCooldownTimer > 0) {
         this.electricCooldownTimer = Math.max(
           0,
@@ -738,11 +906,18 @@ export class GameEngine {
           this.poisonSpawnCooldownTimer - delta
         );
       }
+      if (this.socializeCooldownTimer > 0) {
+        this.socializeCooldownTimer = Math.max(
+          0,
+          this.socializeCooldownTimer - delta
+        );
+      }
 
       // 1. Update Player Movement & Propulsion
       const canBoost =
         this.stats.energy >= GAME_CONFIG.PLAYER.MIN_ENERGY_FOR_BOOST;
-      const speedMultiplier = hasFlagellum2 ? 1.25 : 1.0;
+      const speedMultiplier =
+        (hasFlagellum2 ? 1.25 : 1.0) * (isCreatureStage ? 1.12 : 1.0);
       const turnMultiplier = hasFlagellum2 ? 1.15 : 1.0;
 
       const moveResult = this.player.update(
@@ -756,13 +931,25 @@ export class GameEngine {
       this.stats.isBoosting = moveResult.isBoosting;
       this.stats.speed = Math.abs(this.player.currentSpeed);
 
-      // Detect Submarine Biome transition
-      const biomeInfo = this.environment.getBiomeAt(
-        this.player.position.x,
-        this.player.position.z
-      );
-      if (biomeInfo.name !== this.currentBiomeName) {
-        this.currentBiomeName = biomeInfo.name;
+      // Detect Biome or Coastal Nest transition
+      const nearSpeciesNest =
+        isCreatureStage &&
+        this.environment.isNearNest(
+          this.player.position.x,
+          this.player.position.z
+        );
+
+      const nextBiomeLabel = isCreatureStage
+        ? nearSpeciesNest
+          ? 'Nido de la Especie (Regeneración Activa)'
+          : 'Costa Terrestre Primigenia'
+        : this.environment.getBiomeAt(
+            this.player.position.x,
+            this.player.position.z
+          ).name;
+
+      if (nextBiomeLabel !== this.currentBiomeName) {
+        this.currentBiomeName = nextBiomeLabel;
         forceUIEmit = true;
       }
 
@@ -774,7 +961,7 @@ export class GameEngine {
           this.status = 'editing';
           this.inputController.resetInputs();
           this.setEventMessage(
-            'Pareja celular unida: Configura la nueva puesta genética'
+            'Pareja unida: Personaliza morfología, color y órganos en vivo'
           );
           this.emitUISnapshot();
           this.renderer.render(
@@ -785,12 +972,38 @@ export class GameEngine {
         }
       }
 
-      // 1B. Active Cellular Weapons (KeyQ + Auto Poison Trail)
+      // 1B. Active Cellular Weapons (KeyQ + Auto Poison Trail) & Terrestrial Socialize (KeyC)
       const abilityPressedNow = this.inputController.state.ability;
       const abilityJustTriggered = abilityPressedNow && !this.wasAbilityPressed;
       this.wasAbilityPressed = abilityPressedNow;
 
+      const socializePressedNow = this.inputController.state.socialize;
+      const socializeJustTriggered =
+        socializePressedNow && !this.wasSocializePressed;
+      this.wasSocializePressed = socializePressedNow;
+
       let electricPulseTriggered = false;
+      let socializeTriggered = false;
+
+      if (socializeJustTriggered) {
+        if (isCreatureStage) {
+          if (this.socializeCooldownTimer <= 0) {
+            this.player.triggerSocialWave();
+            socializeTriggered = true;
+            this.socializeCooldownTimer = 3.5;
+          } else {
+            this.setEventMessage(
+              `Canto Social recargándose (${this.socializeCooldownTimer.toFixed(1)}s)`
+            );
+            forceUIEmit = true;
+          }
+        } else {
+          this.setEventMessage(
+            'Evoluciona al Estadio de Criatura Terrestre para usar Canto Social (C)'
+          );
+          forceUIEmit = true;
+        }
+      }
 
       // Automatic or Boost-triggered Poison Cloud release (every 1.2s when boosting or threat < 12m)
       const predatorClose =
@@ -880,20 +1093,23 @@ export class GameEngine {
         this.stats.activeStatusEffect = null;
       }
 
-      // 2. Energy Consumption (Passive + Movement + Boost) & Hydrothermal Vent Regeneration
-      const nearThermalVent = this.environment.isNearThermalVent(
-        this.player.position.x,
-        this.player.position.z
-      );
+      // 2. Energy Consumption (Passive + Movement + Boost) & Hydrothermal Vent / Coastal Nest Regeneration
+      const nearThermalVent =
+        !isCreatureStage &&
+        this.environment.isNearThermalVent(
+          this.player.position.x,
+          this.player.position.z
+        );
 
-      const passiveDrainRate = nearThermalVent
-        ? 0
-        : hasChloroplast
-        ? GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC * 0.5
-        : GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC;
+      const passiveDrainRate =
+        nearThermalVent || nearSpeciesNest
+          ? 0
+          : hasChloroplast
+          ? GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC * 0.5
+          : GAME_CONFIG.PLAYER.PASSIVE_ENERGY_DRAIN_PER_SEC;
 
       let energyDrain = passiveDrainRate * delta;
-      if (moveResult.isMoving && !nearThermalVent) {
+      if (moveResult.isMoving && !nearThermalVent && !nearSpeciesNest) {
         energyDrain += GAME_CONFIG.PLAYER.MOVEMENT_ENERGY_DRAIN_PER_SEC * delta;
       }
       if (moveResult.isBoosting) {
@@ -902,11 +1118,23 @@ export class GameEngine {
 
       this.stats.energy = Math.max(0, this.stats.energy - energyDrain);
 
-      // Hydrothermal Vent Energy Regeneration (+3 Energía/s when swimming near active vent in Fosa Hidrotermal)
+      // Hydrothermal Vent Energy Regeneration (+3 Energía/s in Fosa Hidrotermal)
       if (nearThermalVent) {
         this.stats.energy = Math.min(
           this.stats.maxEnergy,
           this.stats.energy + 3.0 * delta
+        );
+      }
+
+      // Coastal Species Nest Regeneration (+6 Vida/s & +6 Energía/s when resting near Nest at (0,0))
+      if (nearSpeciesNest) {
+        this.stats.health = Math.min(
+          this.stats.maxHealth,
+          this.stats.health + 6.0 * delta
+        );
+        this.stats.energy = Math.min(
+          this.stats.maxEnergy,
+          this.stats.energy + 6.0 * delta
         );
       }
 
@@ -982,12 +1210,29 @@ export class GameEngine {
         this.player.getActivePoisonClouds(),
         electricPulseTriggered,
         9.5,
-        canDevourWeakenedHunters
+        canDevourWeakenedHunters,
+        socializeTriggered
       );
 
       this.nearestSpeciesName = ecosystemResult.nearestSpeciesName;
       this.nearestPredatorState = ecosystemResult.nearestState;
       this.nearestPredatorDistance = ecosystemResult.nearestDistance;
+
+      // 5-Social. Terrestrial Creature Stage Social Alliance feedback
+      if (socializeTriggered) {
+        if (ecosystemResult.socializedCount > 0) {
+          this.addAdn(ecosystemResult.socialAdnGained);
+          this.setEventMessage(
+            `¡Alianza Social establecida con Herbívoro Costero! (+${ecosystemResult.socialAdnGained} ADN de Alianza)`
+          );
+          forceUIEmit = true;
+        } else {
+          this.setEventMessage(
+            'Canto Social emitido: Acércate a un Herbívoro Costero (< 8.5m) para formar alianza (+20 ADN)'
+          );
+          forceUIEmit = true;
+        }
+      }
 
       // 5A-0. Stage 3 Macrocell devoured a stunned/poisoned Hunter
       if (ecosystemResult.huntersDevoured > 0) {
@@ -1001,7 +1246,7 @@ export class GameEngine {
         this.stats.foodEaten += ecosystemResult.huntersDevoured;
         this.addAdn(ecosystemResult.hunterAdnGained);
         this.setEventMessage(
-          `¡Depredador Mandíbula Rápida devorado! (+${ecosystemResult.hunterAdnGained} ADN · +${energyBonus} Energía)`
+          `¡Depredador devorado! (+${ecosystemResult.hunterAdnGained} ADN · +${energyBonus} Energía)`
         );
         forceUIEmit = true;
       }
@@ -1022,7 +1267,7 @@ export class GameEngine {
         }
         if (ecosystemResult.electrocutedHerbivoresCount > 0) {
           parts.push(
-            `${ecosystemResult.electrocutedHerbivoresCount} célula(s) electrocutada(s) (+${ecosystemResult.electrocutedAdnGained} ADN)`
+            `${ecosystemResult.electrocutedHerbivoresCount} criatura(s) electrocutada(s) (+${ecosystemResult.electrocutedAdnGained} ADN)`
           );
         }
         this.setEventMessage(`Descarga Bioeléctrica: ${parts.join(' · ')}`);
@@ -1048,7 +1293,7 @@ export class GameEngine {
         const leveledUp = this.addAdn(ecosystemResult.herbivoreAdnGained);
         if (!leveledUp) {
           this.setEventMessage(
-            `Célula Filtradora devorada (+${ecosystemResult.herbivoreAdnGained} ADN · +${energyBonus} Energía)`
+            `${isCreatureStage ? 'Herbívoro Costero' : 'Célula Filtradora'} devorado (+${ecosystemResult.herbivoreAdnGained} ADN · +${energyBonus} Energía)`
           );
         }
         forceUIEmit = true;
@@ -1057,7 +1302,7 @@ export class GameEngine {
         !this.recentEventMessage
       ) {
         this.setEventMessage(
-          'Evoluciona Mandíbula Aserrada o Probóscide (E) para depredar células'
+          'Evoluciona Mandíbula Aserrada o Probóscide (E) para depredar criaturas'
         );
         forceUIEmit = true;
       }
@@ -1067,13 +1312,13 @@ export class GameEngine {
         const leveledUp = this.addAdn(ecosystemResult.leviathanBonusAdn);
         if (!leveledUp) {
           this.setEventMessage(
-            `Megacélula Acorazada repelida (+${ecosystemResult.leviathanBonusAdn} ADN genético)`
+            `Coloso Acorazado repelido (+${ecosystemResult.leviathanBonusAdn} ADN genético)`
           );
         }
         forceUIEmit = true;
       } else if (ecosystemResult.repelledHunters > 0) {
         this.setEventMessage(
-          'Contraataque con Espolones Rostrales: Mandíbula Rápida repelida'
+          'Contraataque con Espolones Rostrales: Depredador repelido'
         );
         forceUIEmit = true;
       }
@@ -1093,7 +1338,8 @@ export class GameEngine {
 
         if (ecosystemResult.attackerPosition) {
           const knockbackStrength =
-            ecosystemResult.attackerSpeciesName === 'Megacélula Acorazada'
+            ecosystemResult.attackerSpeciesName === 'Megacélula Acorazada' ||
+            ecosystemResult.attackerSpeciesName === 'Coloso Acorazado'
               ? 21
               : 16;
           this.player.applyDamageKnockback(
@@ -1131,8 +1377,13 @@ export class GameEngine {
         forceUIEmit = true;
       }
 
-      // 7. Update Camera & Underwater Environment (with Biome lighting & Hydrothermal bubbles)
-      this.cameraController.update(delta, this.player);
+      // 7. Update Camera & Environment (Underwater Biomes or Coastal Land Stage)
+      this.cameraController.update(
+        delta,
+        this.player,
+        false,
+        this.elapsedActiveTime
+      );
       this.environment.update(
         this.elapsedActiveTime,
         delta,
@@ -1161,7 +1412,7 @@ export class GameEngine {
 
   private footerDeathCleanup(): void {
     this.clearLocalStorage();
-    this.setEventMessage('Organismo celular eliminado');
+    this.setEventMessage('Organismo eliminado');
   }
 
   private setEventMessage(msg: string): void {
@@ -1172,7 +1423,9 @@ export class GameEngine {
   private emitUISnapshot(): void {
     const questInfo = this.getActiveQuestInfo();
     const readyForLandTransition =
-      this.stats.totalAdnEarned >= 200 && this.stats.growthStage === 3;
+      (this.stats.totalAdnEarned >= 200 && this.stats.growthStage === 3) ||
+      this.completedQuestStep >= 4 ||
+      this.stats.evolutionaryStage === 'creature_stage';
 
     this.onUISnapshot({
       status: this.status,

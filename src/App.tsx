@@ -5,11 +5,20 @@ import { GameHUD } from './components/GameHUD';
 import { PauseModal } from './components/PauseModal';
 import { GAME_CONFIG } from './game/config';
 import { GameEngine } from './game/GameEngine';
-import { GameUISnapshot, InputState } from './game/types';
+import {
+  CellBodyShape,
+  CellColorTheme,
+  GameUISnapshot,
+  InputState,
+} from './game/types';
 
 const INITIAL_SNAPSHOT: GameUISnapshot = {
   status: 'playing',
   stats: {
+    speciesName: 'Organismo Primigenio',
+    bodyShape: 'fusiforme',
+    colorTheme: 'cyan',
+    evolutionaryStage: 'cell_stage',
     health: GAME_CONFIG.PLAYER.INITIAL_HEALTH,
     maxHealth: GAME_CONFIG.PLAYER.MAX_HEALTH,
     energy: GAME_CONFIG.PLAYER.INITIAL_ENERGY,
@@ -83,6 +92,22 @@ export default function App() {
     engineRef.current?.refundEvolutionSlot(slotId);
   }, []);
 
+  const handleChangeSpeciesName = useCallback((name: string) => {
+    engineRef.current?.setSpeciesName(name);
+  }, []);
+
+  const handleChangeBodyShape = useCallback((shape: CellBodyShape) => {
+    engineRef.current?.setBodyShape(shape);
+  }, []);
+
+  const handleChangeColorTheme = useCallback((theme: CellColorTheme) => {
+    engineRef.current?.setColorTheme(theme);
+  }, []);
+
+  const handleEvolveToCreatureStage = useCallback(() => {
+    engineRef.current?.evolveToCreatureStage();
+  }, []);
+
   const handleResume = useCallback(() => {
     engineRef.current?.resumeGame();
   }, []);
@@ -104,7 +129,7 @@ export default function App() {
       <div
         ref={canvasMountRef}
         className="h-full w-full"
-        aria-label="Escena 3D submarina de EvoLife"
+        aria-label="Escena 3D de EvoLife"
       />
 
       {/* Subtle Damage Flash Border Overlay */}
@@ -120,6 +145,7 @@ export default function App() {
         snapshot={snapshot}
         onTogglePause={handleTogglePause}
         onToggleEditor={handleToggleEditor}
+        onEvolveToCreatureStage={handleEvolveToCreatureStage}
         onRestart={handleRestart}
         onControlInput={handleControlInput}
       />
@@ -129,8 +155,13 @@ export default function App() {
         <CreatureEditorModal
           stats={snapshot.stats}
           slots={snapshot.evolutionSlots}
+          readyForLandTransition={snapshot.readyForLandTransition}
           onUnlockSlot={handleUnlockSlot}
           onRefundSlot={handleRefundSlot}
+          onChangeSpeciesName={handleChangeSpeciesName}
+          onChangeBodyShape={handleChangeBodyShape}
+          onChangeColorTheme={handleChangeColorTheme}
+          onEvolveToCreatureStage={handleEvolveToCreatureStage}
           onClose={handleCloseEditor}
         />
       )}

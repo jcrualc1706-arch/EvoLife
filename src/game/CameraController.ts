@@ -37,7 +37,92 @@ export class CameraController {
     this.camera.lookAt(this.currentLookTarget);
   }
 
-  public update(delta: number, player: PlayerCell): void {
+  public update(
+    delta: number,
+    player: PlayerCell,
+    isEditing = false,
+    elapsedTime = 0
+  ): void {
+    if (isEditing) {
+      const scale = player.currentScale;
+      const orbitSway = Math.sin(elapsedTime * 0.65) * 0.28;
+      const camAngle = player.headingAngle - 0.72 + orbitSway;
+      const dist = 5.4 * scale;
+
+      // Camera positioned in front-side quarter view of the creature
+      _desiredCamPos.set(
+        player.position.x - Math.sin(camAngle) * dist,
+        player.position.y + 2.85 * scale,
+        player.position.z - Math.cos(camAngle) * dist
+      );
+
+      // Compute camera right vector so lookTarget shifts right -> creature projects into left half of screen
+      const dirToPlayerX = player.position.x - _desiredCamPos.x;
+      const dirToPlayerZ = player.position.z - _desiredCamPos.z;
+      const lenXZ = Math.max(0.001, Math.hypot(dirToPlayerX, dirToPlayerZ));
+      const rightX = -dirToPlayerZ / lenXZ;
+      const rightZ = dirToPlayerX / lenXZ;
+
+      const rightShift = 1.65 * scale;
+      _desiredLookTarget.set(
+        player.position.x + rightX * rightShift,
+        player.position.y - 0.1 * scale,
+        player.position.z + rightZ * rightShift
+      );
+
+      this.camera.position.x = THREE.MathUtils.damp(
+        this.camera.position.x,
+        _desiredCamPos.x,
+        5.5,
+        delta
+      );
+      this.camera.position.y = THREE.MathUtils.damp(
+        this.camera.position.y,
+        _desiredCamPos.y,
+        5.5,
+        delta
+      );
+      this.camera.position.z = THREE.MathUtils.damp(
+        this.camera.position.z,
+        _desiredCamPos.z,
+        5.5,
+        delta
+      );
+
+      this.currentLookTarget.x = THREE.MathUtils.damp(
+        this.currentLookTarget.x,
+        _desiredLookTarget.x,
+        6.5,
+        delta
+      );
+      this.currentLookTarget.y = THREE.MathUtils.damp(
+        this.currentLookTarget.y,
+        _desiredLookTarget.y,
+        6.5,
+        delta
+      );
+      this.currentLookTarget.z = THREE.MathUtils.damp(
+        this.currentLookTarget.z,
+        _desiredLookTarget.z,
+        6.5,
+        delta
+      );
+
+      this.camera.lookAt(this.currentLookTarget);
+
+      const targetEditorFov = 44;
+      if (Math.abs(this.camera.fov - targetEditorFov) > 0.05) {
+        this.camera.fov = THREE.MathUtils.damp(
+          this.camera.fov,
+          targetEditorFov,
+          6.0,
+          delta
+        );
+        this.camera.updateProjectionMatrix();
+      }
+      return;
+    }
+
     _playerForward.set(
       -Math.sin(player.headingAngle),
       0,

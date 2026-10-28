@@ -1,9 +1,58 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from './config';
-import { InputState, PoisonCloudHazard } from './types';
+import {
+  CellBodyShape,
+  CellColorTheme,
+  InputState,
+  PoisonCloudHazard,
+} from './types';
 
 const _forwardDir = new THREE.Vector3();
 const _knockbackDecay = new THREE.Vector3();
+
+interface ColorPalette {
+  membraneColor: number;
+  membraneEmissive: number;
+  boostColor: number;
+  nucleusColor: number;
+  nucleusEmissive: number;
+  legColor: number;
+}
+
+const COLOR_THEMES: Record<CellColorTheme, ColorPalette> = {
+  cyan: {
+    membraneColor: 0x22d3ee,
+    membraneEmissive: 0x0891b2,
+    boostColor: 0x67e8f9,
+    nucleusColor: 0xa7f3d0,
+    nucleusEmissive: 0x10b981,
+    legColor: 0x06b6d4,
+  },
+  emerald: {
+    membraneColor: 0x34d399,
+    membraneEmissive: 0x059669,
+    boostColor: 0x6ee7b7,
+    nucleusColor: 0xfef08a,
+    nucleusEmissive: 0x84cc16,
+    legColor: 0x10b981,
+  },
+  crimson: {
+    membraneColor: 0xfb7185,
+    membraneEmissive: 0xe11d48,
+    boostColor: 0xfda4af,
+    nucleusColor: 0xfde047,
+    nucleusEmissive: 0xf97316,
+    legColor: 0xf43f5e,
+  },
+  violet: {
+    membraneColor: 0xc084fc,
+    membraneEmissive: 0x7e22ce,
+    boostColor: 0xd8b4fe,
+    nucleusColor: 0x67e8f9,
+    nucleusEmissive: 0x06b6d4,
+    legColor: 0x9333ea,
+  },
+};
 
 interface PooledPoisonCloud extends PoisonCloudHazard {
   mesh: THREE.Mesh;
@@ -23,12 +72,17 @@ export class PlayerCell {
   public targetScale = 1.0;
   public cameraZoomMultiplier = 1.0;
 
+  private bodyShape: CellBodyShape = 'fusiforme';
+  private colorTheme: CellColorTheme = 'cyan';
+  private isLandCreature = false;
+
   private readonly knockbackVelocity = new THREE.Vector3();
   private membraneMesh!: THREE.Mesh;
   private nucleusMesh!: THREE.Mesh;
   private membraneMat!: THREE.MeshPhysicalMaterial;
   private nucleusMat!: THREE.MeshStandardMaterial;
   private boostHaloMat!: THREE.MeshBasicMaterial;
+  private legMat!: THREE.MeshStandardMaterial;
   private tailSegments: THREE.Mesh[] = [];
   private ciliaLeft: THREE.Mesh[] = [];
   private ciliaRight: THREE.Mesh[] = [];
@@ -47,8 +101,10 @@ export class PlayerCell {
   private evoPoisonGlandGroup!: THREE.Group;
   private evoElectricGroup!: THREE.Group;
   private evoElectricNodes: THREE.Mesh[] = [];
+  private evoAmphibianLegsGroup!: THREE.Group;
+  private readonly amphibianLegs: THREE.Group[] = [];
 
-  // Pre-allocated World-Space Combat Effect Pools (Poison Clouds & Electric Pulse)
+  // Pre-allocated World-Space Combat & Social Effect Pools
   private readonly poisonCloudPool: PooledPoisonCloud[] = [];
   private poisonPoolCursor = 0;
   private electricWaveMesh!: THREE.Mesh;
@@ -57,6 +113,9 @@ export class PlayerCell {
   private electricDomeMat!: THREE.MeshBasicMaterial;
   private electricPulseTimer = 0;
   private readonly electricPulseDuration = 0.55;
+  private socialWaveMesh!: THREE.Mesh;
+  private socialWaveMat!: THREE.MeshBasicMaterial;
+  private socialWaveTimer = 0;
 
   // Pre-allocated Mating Call Acoustic Rings & Partner Cell (Spore Ritual)
   private readonly matingRingMeshes: THREE.Mesh[] = [];
@@ -430,6 +489,67 @@ export class PlayerCell {
     }
     this.group.add(this.evoElectricGroup);
 
+    // 8I. evoAmphibianLegsGroup: 4 Articulated Amphibian Legs with Webbed Feet (for Creature Stage)
+    this.evoAmphibianLegsGroup = new THREE.Group();
+    this.evoAmphibianLegsGroup.visible = false;
+
+    const thighGeo = new THREE.CapsuleGeometry(0.16, 0.45, 8, 10);
+    thighGeo.translate(0, -0.22, 0);
+    const shinGeo = new THREE.CapsuleGeometry(0.13, 0.44, 8, 10);
+    shinGeo.translate(0, -0.22, 0);
+    const footPadGeo = new THREE.CylinderGeometry(0.28, 0.34, 0.08, 10);
+    footPadGeo.scale(1.1, 1.0, 1.45);
+    const toeGeo = new THREE.ConeGeometry(0.06, 0.28, 6);
+    toeGeo.rotateX(-Math.PI / 2);
+
+    this.legMat = new THREE.MeshStandardMaterial({
+      color: 0x06b6d4,
+      emissive: 0x0891b2,
+      emissiveIntensity: 0.4,
+      roughness: 0.35,
+      metalness: 0.15,
+    });
+
+    const legSockets: [number, number, number, number][] = [
+      [-0.82, -0.22, -0.58, -1], // 0: Front-Left
+      [0.82, -0.22, -0.58, 1], // 1: Front-Right
+      [-0.86, -0.22, 0.56, -1], // 2: Rear-Left
+      [0.86, -0.22, 0.56, 1], // 3: Rear-Right
+    ];
+
+    for (const [lx, ly, lz, side] of legSockets) {
+      const legHip = new THREE.Group();
+      legHip.position.set(lx, ly, lz);
+
+      const thighMesh = new THREE.Mesh(thighGeo, this.legMat);
+      thighMesh.rotation.z = side * 0.45;
+      thighMesh.castShadow = true;
+      legHip.add(thighMesh);
+
+      const shinMesh = new THREE.Mesh(shinGeo, this.legMat);
+      shinMesh.position.set(side * 0.24, -0.38, 0.05);
+      shinMesh.rotation.z = side * -0.15;
+      shinMesh.castShadow = true;
+      legHip.add(shinMesh);
+
+      const footGroup = new THREE.Group();
+      footGroup.position.set(side * 0.32, -0.78, -0.06);
+      const padMesh = new THREE.Mesh(footPadGeo, this.legMat);
+      footGroup.add(padMesh);
+
+      for (let t = -1; t <= 1; t++) {
+        const toeMesh = new THREE.Mesh(toeGeo, this.legMat);
+        toeMesh.position.set(t * 0.12, -0.01, -0.28);
+        toeMesh.rotation.y = -t * 0.22;
+        footGroup.add(toeMesh);
+      }
+
+      legHip.add(footGroup);
+      this.evoAmphibianLegsGroup.add(legHip);
+      this.amphibianLegs.push(legHip);
+    }
+    this.group.add(this.evoAmphibianLegsGroup);
+
     this.disposableGeometries.push(
       membraneGeo,
       nucleusGeo,
@@ -447,7 +567,11 @@ export class PlayerCell {
       poisonBulbGeo,
       poisonNozzleGeo,
       elecPylonGeo,
-      elecOrbGeo
+      elecOrbGeo,
+      thighGeo,
+      shinGeo,
+      footPadGeo,
+      toeGeo
     );
     this.disposableMaterials.push(
       this.membraneMat,
@@ -466,7 +590,8 @@ export class PlayerCell {
       spineMat,
       poisonGlandMat,
       elecPylonMat,
-      elecOrbMat
+      elecOrbMat,
+      this.legMat
     );
   }
 
@@ -525,6 +650,18 @@ export class PlayerCell {
     this.electricDomeMesh = new THREE.Mesh(domeGeo, this.electricDomeMat);
     this.electricDomeMesh.visible = false;
     scene.add(this.electricDomeMesh);
+
+    // 2B. Pre-allocate Socialize Harmonic Ring (KeyC in Creature Stage)
+    this.socialWaveMat = new THREE.MeshBasicMaterial({
+      color: 0x4ade80,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    this.socialWaveMesh = new THREE.Mesh(waveRingGeo, this.socialWaveMat);
+    this.socialWaveMesh.visible = false;
+    scene.add(this.socialWaveMesh);
 
     // 3. Pre-allocate Mating Call Acoustic Rings (Pink & Cyan harmonic waves)
     for (let r = 0; r < 2; r++) {
@@ -609,10 +746,118 @@ export class PlayerCell {
     this.disposableMaterials.push(
       this.electricWaveMat,
       this.electricDomeMat,
+      this.socialWaveMat,
       mateBodyMat,
       mateCoreMat,
       mateEyeMat
     );
+  }
+
+  public applyMorphology(
+    bodyShape: CellBodyShape,
+    colorTheme: CellColorTheme,
+    isLandCreature: boolean
+  ): void {
+    this.bodyShape = bodyShape;
+    this.colorTheme = colorTheme;
+    this.isLandCreature = isLandCreature;
+
+    // 1. Adjust outer cytoplasmic membrane proportions
+    if (bodyShape === 'esferico') {
+      this.membraneMesh.scale.set(1.26, 1.12, 0.82);
+    } else if (bodyShape === 'alargado') {
+      this.membraneMesh.scale.set(0.8, 0.88, 1.28);
+    } else {
+      this.membraneMesh.scale.set(1.0, 1.0, 1.0);
+    }
+
+    // 2. Toggle 4 Amphibious Legs for Creature Stage
+    this.evoAmphibianLegsGroup.visible = isLandCreature;
+
+    // 3. Apply Bioluminescent Color Theme Palette
+    const palette = COLOR_THEMES[colorTheme] ?? COLOR_THEMES.cyan;
+    this.membraneMat.color.setHex(palette.membraneColor);
+    this.membraneMat.emissive.setHex(palette.membraneEmissive);
+    this.nucleusMat.color.setHex(palette.nucleusColor);
+    this.nucleusMat.emissive.setHex(palette.nucleusEmissive);
+    this.boostHaloMat.color.setHex(palette.membraneColor);
+    this.legMat.color.setHex(palette.legColor);
+    this.legMat.emissive.setHex(palette.membraneEmissive);
+  }
+
+  public triggerSocialWave(): void {
+    this.socialWaveTimer = 0.65;
+    this.socialWaveMesh.position.copy(this.position);
+    this.socialWaveMesh.position.y = GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.2;
+    this.socialWaveMesh.scale.setScalar(1.0);
+    this.socialWaveMesh.visible = true;
+  }
+
+  public updateEditorIdle(delta: number, elapsedTime: number): void {
+    this.currentScale = THREE.MathUtils.damp(
+      this.currentScale,
+      this.targetScale,
+      4.0,
+      delta
+    );
+    this.group.scale.setScalar(this.currentScale);
+
+    // Gentle breathing and flagellum motion while inspecting in 3D Editor
+    this.flagellumPhase += delta * 6.2;
+    for (let i = 0; i < this.tailSegments.length; i++) {
+      const seg = this.tailSegments[i];
+      const wave = Math.sin(this.flagellumPhase - i * 0.85);
+      const amplitude = 0.11 * (1 + i * 0.45);
+      seg.position.x = wave * amplitude;
+      seg.rotation.y = wave * 0.32;
+    }
+
+    if (this.evoFlagellumGroup.visible) {
+      for (let i = 0; i < this.evoLateralTailLeft.length; i++) {
+        const wave = Math.cos(this.flagellumPhase - i * 0.9);
+        const amp = 0.09 * (1 + i * 0.35);
+        this.evoLateralTailLeft[i].position.x = -0.55 - i * 0.08 + wave * amp;
+        this.evoLateralTailRight[i].position.x = 0.55 + i * 0.08 - wave * amp;
+      }
+    }
+
+    if (this.evoJawGroup.visible) {
+      const jawSnap = Math.sin(this.flagellumPhase * 0.85) * 0.14;
+      this.evoJawLeft.rotation.y = -0.25 + jawSnap;
+      this.evoJawRight.rotation.y = 0.25 - jawSnap;
+    }
+
+    if (this.evoElectricGroup.visible) {
+      const sparkScale = 1.0 + Math.sin(elapsedTime * 14.0) * 0.18;
+      for (const orb of this.evoElectricNodes) {
+        orb.scale.setScalar(sparkScale);
+        orb.rotation.y += delta * 4.5;
+      }
+    }
+
+    if (this.evoAmphibianLegsGroup.visible && this.amphibianLegs.length === 4) {
+      const legWave = Math.sin(this.flagellumPhase * 0.65) * 0.24;
+      this.amphibianLegs[0].rotation.x = legWave;
+      this.amphibianLegs[1].rotation.x = -legWave;
+      this.amphibianLegs[2].rotation.x = -legWave;
+      this.amphibianLegs[3].rotation.x = legWave;
+    }
+
+    for (let i = 0; i < this.ciliaLeft.length; i++) {
+      const flutter = Math.sin(this.flagellumPhase * 1.1 + i) * 0.24;
+      this.ciliaLeft[i].rotation.y = 0.35 + flutter;
+      this.ciliaRight[i].rotation.y = -0.35 - flutter;
+    }
+
+    const pulse = 1.0 + Math.sin(elapsedTime * 4.2) * 0.07;
+    this.nucleusMesh.scale.setScalar(pulse);
+
+    const palette = COLOR_THEMES[this.colorTheme] ?? COLOR_THEMES.cyan;
+    this.membraneMat.color.setHex(palette.membraneColor);
+    this.membraneMat.emissive.setHex(palette.membraneEmissive);
+    this.membraneMat.emissiveIntensity = 0.35;
+    this.boostHaloMat.color.setHex(palette.membraneColor);
+    this.boostHaloMat.opacity = 0.38;
   }
 
   public setGrowthStage(stage: 1 | 2 | 3): void {
@@ -818,9 +1063,24 @@ export class PlayerCell {
       this.currentSpeed *= 0.75;
     }
 
-    // Gentle vertical buoyancy oscillation in the water column
-    this.position.y =
-      GAME_CONFIG.WORLD.SWIM_PLANE_Y + Math.sin(elapsedTime * 2.4) * 0.16;
+    // Gentle vertical buoyancy or terrestrial stride bounce
+    const speedRatio = Math.min(
+      Math.abs(this.currentSpeed) / GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED,
+      2.5
+    );
+    const swimFreq = 5.5 + speedRatio * 10.5 + (this.isBoosting ? 8.0 : 0);
+    this.flagellumPhase += delta * swimFreq;
+
+    if (this.isLandCreature) {
+      const strideBounce =
+        Math.abs(Math.sin(this.flagellumPhase * 0.9)) *
+        0.22 *
+        Math.min(1, speedRatio * 1.4);
+      this.position.y = GAME_CONFIG.WORLD.SWIM_PLANE_Y + strideBounce;
+    } else {
+      this.position.y =
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y + Math.sin(elapsedTime * 2.4) * 0.16;
+    }
 
     // 5. Apply rotation + subtle banking tilt when turning
     const bankAngle = THREE.MathUtils.clamp(
@@ -830,20 +1090,24 @@ export class PlayerCell {
     );
     this.group.rotation.set(0, this.headingAngle, bankAngle);
 
-    // 6. Animate procedural flagellum, lateral flagella, jaws, electric nodes, cilia, and nucleus
-    const speedRatio = Math.min(
-      Math.abs(this.currentSpeed) / GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED,
-      2.5
-    );
-    const swimFreq = 5.5 + speedRatio * 10.5 + (this.isBoosting ? 8.0 : 0);
-    this.flagellumPhase += delta * swimFreq;
-
+    // 6. Animate procedural flagellum, lateral flagella, amphibian legs, jaws, electric nodes, cilia, and nucleus
     for (let i = 0; i < this.tailSegments.length; i++) {
       const seg = this.tailSegments[i];
       const wave = Math.sin(this.flagellumPhase - i * 0.85);
       const amplitude = (0.1 + speedRatio * 0.14) * (1 + i * 0.45);
       seg.position.x = wave * amplitude;
       seg.rotation.y = wave * 0.35;
+    }
+
+    // 6B. Quadruped Amphibian Gait Cycle (Diagonal pairs when moving in Creature Stage)
+    if (this.evoAmphibianLegsGroup.visible && this.amphibianLegs.length === 4) {
+      const strideAmp = 0.12 + Math.min(0.68, speedRatio * 0.55);
+      const strideWave = Math.sin(this.flagellumPhase * 0.9) * strideAmp;
+      // Front-Left (0) & Rear-Right (3) in phase; Front-Right (1) & Rear-Left (2) opposite phase
+      this.amphibianLegs[0].rotation.x = strideWave;
+      this.amphibianLegs[1].rotation.x = -strideWave;
+      this.amphibianLegs[2].rotation.x = -strideWave;
+      this.amphibianLegs[3].rotation.x = strideWave;
     }
 
     if (this.evoFlagellumGroup.visible) {
@@ -917,6 +1181,20 @@ export class PlayerCell {
       }
     }
 
+    // 8A-2. Update Socialize Harmonic Wave Ring
+    if (this.socialWaveTimer > 0) {
+      this.socialWaveTimer = Math.max(0, this.socialWaveTimer - delta);
+      const t = 1 - this.socialWaveTimer / 0.65;
+      const radius = 1.1 + t * 8.4;
+      this.socialWaveMesh.position.x = this.position.x;
+      this.socialWaveMesh.position.z = this.position.z;
+      this.socialWaveMesh.scale.setScalar(radius);
+      this.socialWaveMat.opacity = (1 - t) * 0.85;
+      if (this.socialWaveTimer <= 0) {
+        this.socialWaveMesh.visible = false;
+      }
+    }
+
     // 8B. Update Mating Call Acoustic Waves & Partner Cell Approach
     if (this.matingCallActive) {
       this.matingCallElapsed = Math.min(
@@ -978,6 +1256,8 @@ export class PlayerCell {
     const pulse = 1.0 + Math.sin(elapsedTime * 4.2) * 0.07;
     this.nucleusMesh.scale.setScalar(pulse);
 
+    const palette = COLOR_THEMES[this.colorTheme] ?? COLOR_THEMES.cyan;
+
     if (this.damageFlashTimer > 0) {
       this.damageFlashTimer = Math.max(0, this.damageFlashTimer - delta);
       this.membraneMat.color.setHex(0xf43f5e);
@@ -990,17 +1270,17 @@ export class PlayerCell {
       this.boostHaloMat.opacity = 0.75;
       this.boostHaloMat.color.setHex(0xf472b6);
     } else if (this.isBoosting) {
-      this.membraneMat.color.setHex(0x67e8f9);
-      this.membraneMat.emissive.setHex(0x06b6d4);
+      this.membraneMat.color.setHex(palette.boostColor);
+      this.membraneMat.emissive.setHex(palette.membraneColor);
       this.membraneMat.emissiveIntensity = 0.65;
       this.boostHaloMat.opacity = 0.65;
-      this.boostHaloMat.color.setHex(0x38bdf8);
+      this.boostHaloMat.color.setHex(palette.boostColor);
     } else {
-      this.membraneMat.color.setHex(0x22d3ee);
-      this.membraneMat.emissive.setHex(0x0891b2);
+      this.membraneMat.color.setHex(palette.membraneColor);
+      this.membraneMat.emissive.setHex(palette.membraneEmissive);
       this.membraneMat.emissiveIntensity = 0.25;
       this.boostHaloMat.opacity = 0.26;
-      this.boostHaloMat.color.setHex(0x22d3ee);
+      this.boostHaloMat.color.setHex(palette.membraneColor);
     }
 
     const isMoving =
@@ -1037,6 +1317,7 @@ export class PlayerCell {
     this.evoSpinesGroup.visible = false;
     this.evoPoisonGlandGroup.visible = false;
     this.evoElectricGroup.visible = false;
+    this.applyMorphology('fusiforme', 'cyan', false);
 
     for (const cloud of this.poisonCloudPool) {
       cloud.active = false;
@@ -1046,6 +1327,8 @@ export class PlayerCell {
     this.electricPulseTimer = 0;
     this.electricWaveMesh.visible = false;
     this.electricDomeMesh.visible = false;
+    this.socialWaveTimer = 0;
+    this.socialWaveMesh.visible = false;
     this.hideMateCell();
   }
 

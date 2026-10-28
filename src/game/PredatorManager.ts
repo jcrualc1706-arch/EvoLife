@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GAME_CONFIG } from './config';
 import {
+  EvolutionaryStage,
   PoisonCloudHazard,
   PredatorBehaviorState,
   PredatorTelemetry,
@@ -77,6 +78,7 @@ interface OrganismEntity {
   respawnTimer: number;
   stunTimer: number;
   poisonTimer: number;
+  socialCooldown: number;
   wanderTarget: THREE.Vector3;
   wanderRetargetTimer: number;
   attackCooldown: number;
@@ -85,6 +87,8 @@ interface OrganismEntity {
   mandibleLeft: THREE.Mesh | null;
   mandibleRight: THREE.Mesh | null;
   tailSegments: THREE.Mesh[];
+  legsGroup: THREE.Group;
+  legs: THREE.Mesh[];
   stateRingMat: THREE.MeshBasicMaterial;
   coreMat: THREE.MeshStandardMaterial;
 }
@@ -93,6 +97,7 @@ const _toTarget = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 
 export class PredatorManager {
+  private currentStage: EvolutionaryStage = 'cell_stage';
   private readonly organisms: OrganismEntity[] = [];
   private readonly telemetryCache: PredatorTelemetry[] = [];
   private readonly sharedGeometries: THREE.BufferGeometry[] = [];
@@ -109,6 +114,7 @@ export class PredatorManager {
   private leviathanPlateGeo!: THREE.BufferGeometry;
   private herbivoreBodyGeo!: THREE.BufferGeometry;
   private herbivoreCiliaGeo!: THREE.BufferGeometry;
+  private creatureLegGeo!: THREE.BufferGeometry;
 
   // Shared Static Materials
   private hunterBodyMat!: THREE.MeshPhysicalMaterial;
@@ -164,6 +170,10 @@ export class PredatorManager {
     this.herbivoreCiliaGeo = new THREE.CylinderGeometry(0.05, 0.12, 0.65, 6);
     this.herbivoreCiliaGeo.rotateZ(Math.PI / 2);
 
+    // 10: Terrestrial Creature Leg (used when stage === 'creature_stage')
+    this.creatureLegGeo = new THREE.CapsuleGeometry(0.14, 0.72, 6, 8);
+    this.creatureLegGeo.translate(0, -0.36, 0);
+
     this.sharedGeometries.push(
       this.predatorBodyGeo,
       this.predatorCoreGeo,
@@ -174,7 +184,8 @@ export class PredatorManager {
       this.ringGeo,
       this.leviathanPlateGeo,
       this.herbivoreBodyGeo,
-      this.herbivoreCiliaGeo
+      this.herbivoreCiliaGeo,
+      this.creatureLegGeo
     );
 
     // Shared Materials
@@ -423,6 +434,31 @@ export class PredatorManager {
       ringMesh.position.y = -0.95;
       group.add(ringMesh);
 
+      // 8. Pre-allocated Terrestrial Legs Group (4 legs, shown in Creature Stage)
+      const legsGroup = new THREE.Group();
+      legsGroup.visible = false;
+      const legs: THREE.Mesh[] = [];
+      const legMat =
+        speciesType === 'herbivore'
+          ? this.herbivoreCiliaMat
+          : speciesType === 'leviathan'
+          ? this.leviathanMandibleMat
+          : this.hunterMandibleMat;
+      const legSockets: [number, number, number, number][] = [
+        [-0.78, -0.2, -0.5, -1],
+        [0.78, -0.2, -0.5, 1],
+        [-0.82, -0.2, 0.5, -1],
+        [0.82, -0.2, 0.5, 1],
+      ];
+      for (const [lx, ly, lz, side] of legSockets) {
+        const legMesh = new THREE.Mesh(this.creatureLegGeo, legMat);
+        legMesh.position.set(lx, ly, lz);
+        legMesh.rotation.z = side * 0.28;
+        legsGroup.add(legMesh);
+        legs.push(legMesh);
+      }
+      group.add(legsGroup);
+
       scene.add(group);
 
       const entity: OrganismEntity = {
@@ -439,6 +475,7 @@ export class PredatorManager {
         respawnTimer: 0,
         stunTimer: 0,
         poisonTimer: 0,
+        socialCooldown: 0,
         wanderTarget: new THREE.Vector3(),
         wanderRetargetTimer: 0,
         attackCooldown: 0,
@@ -447,6 +484,8 @@ export class PredatorManager {
         mandibleLeft,
         mandibleRight,
         tailSegments,
+        legsGroup,
+        legs,
         stateRingMat,
         coreMat,
       };
@@ -462,6 +501,26 @@ export class PredatorManager {
     }
 
     this.resetAll();
+  }
+
+  public setStageMode(stage: EvolutionaryStage): void {
+    this.currentStage = stage;
+    const isLand = stage === 'creature_stage';
+    for (let i = 0; i < this.organisms.length; i++) {
+      const entity = this.organisms[i];
+      entity.legsGroup.visible = isLand;
+      if (isLand) {
+        entity.speciesName =
+          entity.species === 'hunter'
+            ? 'Raptor Costero'
+            : entity.species === 'leviathan'
+            ? 'Coloso Acorazado'
+            : 'Herbívoro Costero';
+      } else {
+        entity.speciesName = entity.profile.name;
+      }
+      this.telemetryCache[i].speciesName = entity.speciesName;
+    }
   }
 
   private pickWanderTarget(entity: OrganismEntity): void {
@@ -500,6 +559,7 @@ export class PredatorManager {
     entity.respawnTimer = 0;
     entity.stunTimer = 0;
     entity.poisonTimer = 0;
+    entity.socialCooldown = 0;
     entity.group.visible = true;
     entity.attackCooldown = 0;
     entity.lungeTimer = 0;
@@ -508,6 +568,7 @@ export class PredatorManager {
   }
 
   public resetAll(): void {
+    this.setStageMode('cell_stage');
     for (let i = 0; i < this.organisms.length; i++) {
       this.spawnOrganismAtSafeRadius(this.organisms[i], i);
     }
@@ -524,7 +585,8 @@ export class PredatorManager {
     activePoisonClouds: readonly PoisonCloudHazard[] = [],
     electricPulseTriggered = false,
     electricPulseRadius = 9.5,
-    canDevourWeakenedHunters = false
+    canDevourWeakenedHunters = false,
+    socializeTriggered = false
   ): {
     totalDamageDealt: number;
     attackerPosition: THREE.Vector3 | null;
@@ -545,6 +607,8 @@ export class PredatorManager {
     stunnedPredatorsCount: number;
     electrocutedHerbivoresCount: number;
     electrocutedAdnGained: number;
+    socializedCount: number;
+    socialAdnGained: number;
     telemetry: PredatorTelemetry[];
     nearestSpeciesName: string;
     nearestState: PredatorBehaviorState;
@@ -569,10 +633,15 @@ export class PredatorManager {
     let stunnedPredatorsCount = 0;
     let electrocutedHerbivoresCount = 0;
     let electrocutedAdnGained = 0;
+    let socializedCount = 0;
+    let socialAdnGained = 0;
 
     let nearestDistance = Infinity;
     let nearestState: PredatorBehaviorState = 'DEAMBULAR';
-    let nearestSpeciesName = 'Mandíbula Rápida';
+    let nearestSpeciesName =
+      this.currentStage === 'creature_stage'
+        ? 'Raptor Costero'
+        : 'Mandíbula Rápida';
 
     for (let i = 0; i < this.organisms.length; i++) {
       const p = this.organisms[i];
@@ -596,6 +665,9 @@ export class PredatorManager {
       }
       if (p.poisonTimer > 0) {
         p.poisonTimer = Math.max(0, p.poisonTimer - delta);
+      }
+      if (p.socialCooldown > 0) {
+        p.socialCooldown = Math.max(0, p.socialCooldown - delta);
       }
 
       const dxToPlayer = playerPosition.x - p.position.x;
@@ -716,10 +788,25 @@ export class PredatorManager {
       // 45% speed reduction when poisoned (poisonTimer > 0)
       const poisonSpeedFactor = p.poisonTimer > 0 ? 0.55 : 1.0;
 
-      // --- 1. HERBIVORE LOGIC ("Célula Filtradora") ---
+      // --- 1. HERBIVORE LOGIC ("Célula Filtradora" / "Herbívoro Costero") ---
       if (p.species === 'herbivore') {
+        // Socialize interaction in Creature Stage (Key C within 13.5m)
+        if (
+          this.currentStage === 'creature_stage' &&
+          socializeTriggered &&
+          distToPlayer <= 13.5 &&
+          p.socialCooldown <= 0
+        ) {
+          p.socialCooldown = 10.0;
+          p.state = 'DEAMBULAR';
+          p.stateRingMat.color.setHex(0x4ade80);
+          p.stateRingMat.opacity = 0.9;
+          socializedCount++;
+          socialAdnGained += 20;
+        }
+
         // Check player contact (dist <= 2.3m)
-        if (distToPlayer <= 2.3) {
+        if (distToPlayer <= 2.3 && p.socialCooldown <= 0) {
           if (canPredateHerbivores || canCounterAttack) {
             if (onCellKilled) {
               onCellKilled(p.position);
@@ -740,10 +827,10 @@ export class PredatorManager {
           }
         }
 
-        // Evaluate closest threat: either Player OR any nearby Carnivore ('hunter' / 'leviathan')
-        let closestThreatDx = dxToPlayer;
-        let closestThreatDz = dzToPlayer;
-        let closestThreatDist = distToPlayer;
+        // Evaluate closest threat: either Player (unless allied) OR any nearby Carnivore ('hunter' / 'leviathan')
+        let closestThreatDx = p.socialCooldown > 0 ? 999 : dxToPlayer;
+        let closestThreatDz = p.socialCooldown > 0 ? 999 : dzToPlayer;
+        let closestThreatDist = p.socialCooldown > 0 ? 999 : distToPlayer;
 
         for (let j = 0; j < this.organisms.length; j++) {
           const other = this.organisms[j];
@@ -789,9 +876,16 @@ export class PredatorManager {
             _toTarget.y = 0;
           }
 
-          p.stateRingMat.color.setHex(p.poisonTimer > 0 ? 0x84cc16 : 0x2dd4bf);
-          p.stateRingMat.opacity = p.poisonTimer > 0 ? 0.55 : 0.24;
-          p.coreMat.emissiveIntensity = 0.75;
+          p.stateRingMat.color.setHex(
+            p.socialCooldown > 0
+              ? 0x4ade80
+              : p.poisonTimer > 0
+              ? 0x84cc16
+              : 0x2dd4bf
+          );
+          p.stateRingMat.opacity =
+            p.socialCooldown > 0 ? 0.78 : p.poisonTimer > 0 ? 0.55 : 0.24;
+          p.coreMat.emissiveIntensity = p.socialCooldown > 0 ? 1.4 : 0.75;
         }
 
         if (_toTarget.lengthSq() > 0.001) {
@@ -832,6 +926,13 @@ export class PredatorManager {
         for (let t = 0; t < p.tailSegments.length; t++) {
           const seg = p.tailSegments[t];
           seg.position.x = Math.sin(p.swimPhase - t * 0.9) * 0.14;
+        }
+        if (p.legsGroup.visible && p.legs.length === 4) {
+          const legSwing = Math.sin(p.swimPhase * 0.85) * 0.42;
+          p.legs[0].rotation.x = legSwing;
+          p.legs[1].rotation.x = -legSwing;
+          p.legs[2].rotation.x = -legSwing;
+          p.legs[3].rotation.x = legSwing;
         }
 
         this.telemetryCache[i].state = p.state;
@@ -1060,6 +1161,14 @@ export class PredatorManager {
         seg.position.x = wave * (0.14 + t * 0.1);
       }
 
+      if (p.legsGroup.visible && p.legs.length === 4) {
+        const legSwing = Math.sin(p.swimPhase * 0.85) * 0.45;
+        p.legs[0].rotation.x = legSwing;
+        p.legs[1].rotation.x = -legSwing;
+        p.legs[2].rotation.x = -legSwing;
+        p.legs[3].rotation.x = legSwing;
+      }
+
       if (p.mandibleLeft && p.mandibleRight) {
         const jawSnap =
           p.lungeTimer > 0
@@ -1101,6 +1210,8 @@ export class PredatorManager {
       stunnedPredatorsCount,
       electrocutedHerbivoresCount,
       electrocutedAdnGained,
+      socializedCount,
+      socialAdnGained,
       telemetry: this.telemetryCache,
       nearestSpeciesName,
       nearestState,

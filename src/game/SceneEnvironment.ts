@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GAME_CONFIG } from './config';
-import { BiomeType } from './types';
+import { BiomeType, EvolutionaryStage } from './types';
 
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
@@ -47,6 +47,7 @@ const THERMAL_VENT_COORDS: readonly [number, number][] = [
 
 export class SceneEnvironment {
   public readonly scene: THREE.Scene;
+  private currentStage: EvolutionaryStage = 'cell_stage';
   private envTexture: THREE.Texture | null = null;
   private hemiLight!: THREE.HemisphereLight;
   private rimLight!: THREE.DirectionalLight;
@@ -54,12 +55,18 @@ export class SceneEnvironment {
   private bgColor!: THREE.Color;
 
   private seabedMesh!: THREE.Mesh;
+  private seabedMat!: THREE.MeshStandardMaterial;
   private rocksInstanced!: THREE.InstancedMesh;
   private rockCapsInstanced!: THREE.InstancedMesh;
   private kelpStalksInstanced!: THREE.InstancedMesh;
   private kelpBladesInstanced!: THREE.InstancedMesh;
   private planktonPoints!: THREE.Points;
   private causticRingMesh!: THREE.Mesh;
+
+  // 3D Species Nest at (0, 0) for Terrestrial Creature Stage
+  private nestGroup!: THREE.Group;
+  private nestAuraMat!: THREE.MeshBasicMaterial;
+  private readonly nestEggs: THREE.Mesh[] = [];
 
   // Hydrothermal Vents & Ascending Bubble Plumes
   private readonly ventPositions: THREE.Vector3[] = [];
@@ -106,10 +113,21 @@ export class SceneEnvironment {
     this.initAbyssalSilhouettes();
     this.initPlanktonParticles();
     this.initArenaBoundaryMarker();
+    this.initSpeciesNest();
   }
 
   public getBiomeAt(x: number, z: number): { id: BiomeType; name: string } {
     const radius = Math.sqrt(x * x + z * z);
+    if (this.currentStage === 'creature_stage') {
+      if (radius < 34) {
+        return { id: 'pradera_luminosa', name: 'Nido Costero Primigenio' };
+      }
+      if (x < 0) {
+        return { id: 'fosa_termal', name: 'Costa Termal Volcánica' };
+      }
+      return { id: 'arrecife_abisal', name: 'Pradera de Helechos Costeros' };
+    }
+
     if (radius < 34) {
       return { id: 'pradera_luminosa', name: 'Pradera Bioluminiscente' };
     }
@@ -129,6 +147,40 @@ export class SceneEnvironment {
       }
     }
     return false;
+  }
+
+  public isNearNest(x: number, z: number): boolean {
+    if (this.currentStage !== 'creature_stage') return false;
+    return x * x + z * z <= 7.2 * 7.2;
+  }
+
+  public setStageEnvironment(stage: EvolutionaryStage): void {
+    this.currentStage = stage;
+    const isLand = stage === 'creature_stage';
+
+    this.nestGroup.visible = isLand;
+    this.causticRingMesh.visible = !isLand;
+    for (const s of this.abyssalSilhouettes) {
+      s.group.visible = !isLand;
+    }
+
+    if (isLand) {
+      // Sunny coastal shore atmosphere
+      this.fogExp2.density = 0.0055;
+      this.seabedMat.color.setHex(0xfde68a); // Golden coastal sand & mossy terrain tint
+      this.hemiLight.groundColor.setHex(0x3f6212);
+      this.hemiLight.intensity = 1.45;
+      this.rimLight.color.setHex(0xfef08a);
+      this.rimLight.intensity = 1.1;
+    } else {
+      // Deep submarine atmosphere
+      this.fogExp2.density = GAME_CONFIG.WORLD.FOG_DENSITY;
+      this.seabedMat.color.setHex(0xffffff);
+      this.hemiLight.groundColor.setHex(0x062033);
+      this.hemiLight.intensity = 1.15;
+      this.rimLight.color.setHex(0x38bdf8);
+      this.rimLight.intensity = 0.85;
+    }
   }
 
   private initEnvironmentMap(renderer: THREE.WebGLRenderer): void {
@@ -216,18 +268,18 @@ export class SceneEnvironment {
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.computeVertexNormals();
 
-    const material = new THREE.MeshStandardMaterial({
+    this.seabedMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
       roughness: 0.88,
       metalness: 0.06,
     });
 
-    this.seabedMesh = new THREE.Mesh(geometry, material);
+    this.seabedMesh = new THREE.Mesh(geometry, this.seabedMat);
     this.seabedMesh.receiveShadow = true;
     this.scene.add(this.seabedMesh);
 
     this.disposableGeometries.push(geometry);
-    this.disposableMaterials.push(material);
+    this.disposableMaterials.push(this.seabedMat);
   }
 
   private initRocks(): void {
@@ -675,13 +727,110 @@ export class SceneEnvironment {
     this.disposableMaterials.push(ringMat);
   }
 
+  private initSpeciesNest(): void {
+    // 3D Terrestrial Species Nest at (0, 0) for Creature Stage
+    this.nestGroup = new THREE.Group();
+    this.nestGroup.position.set(0, GAME_CONFIG.WORLD.SWIM_PLANE_Y - 1.15, 0);
+    this.nestGroup.visible = false;
+
+    // 1. Warm mossy nest mound & woven rim
+    const moundGeo = new THREE.CylinderGeometry(4.4, 5.6, 0.55, 28);
+    const moundMat = new THREE.MeshStandardMaterial({
+      color: 0x3f6212,
+      emissive: 0x14532d,
+      emissiveIntensity: 0.35,
+      roughness: 0.8,
+    });
+    const moundMesh = new THREE.Mesh(moundGeo, moundMat);
+    moundMesh.receiveShadow = true;
+    this.nestGroup.add(moundMesh);
+
+    const nestRimGeo = new THREE.TorusGeometry(4.5, 0.55, 12, 32);
+    nestRimGeo.rotateX(Math.PI / 2);
+    const nestRimMat = new THREE.MeshStandardMaterial({
+      color: 0xa16207,
+      roughness: 0.85,
+    });
+    const nestRimMesh = new THREE.Mesh(nestRimGeo, nestRimMat);
+    nestRimMesh.position.y = 0.25;
+    this.nestGroup.add(nestRimMesh);
+
+    // 2. Circle of 10 coastal sanctuary stones
+    const stoneGeo = new THREE.DodecahedronGeometry(0.68, 1);
+    const stoneMat = new THREE.MeshStandardMaterial({
+      color: 0x78716c,
+      roughness: 0.75,
+      metalness: 0.1,
+    });
+    for (let i = 0; i < 10; i++) {
+      const angle = (i / 10) * Math.PI * 2;
+      const stone = new THREE.Mesh(stoneGeo, stoneMat);
+      stone.position.set(Math.cos(angle) * 4.8, 0.42, Math.sin(angle) * 4.8);
+      stone.scale.set(1.2, 0.85 + (i % 3) * 0.2, 1.1);
+      stone.rotation.y = angle;
+      this.nestGroup.add(stone);
+    }
+
+    // 3. Three bioluminescent evolutionary eggs in nest center
+    const eggGeo = new THREE.SphereGeometry(0.46, 14, 14);
+    eggGeo.scale(0.85, 1.28, 0.85);
+    const eggMat = new THREE.MeshStandardMaterial({
+      color: 0xfef08a,
+      emissive: 0xf59e0b,
+      emissiveIntensity: 0.85,
+      roughness: 0.25,
+    });
+    const eggOffsets: [number, number][] = [
+      [-0.65, -0.4],
+      [0.68, -0.35],
+      [0.0, 0.65],
+    ];
+    for (const [ex, ez] of eggOffsets) {
+      const egg = new THREE.Mesh(eggGeo, eggMat);
+      egg.position.set(ex, 0.55, ez);
+      this.nestGroup.add(egg);
+      this.nestEggs.push(egg);
+    }
+
+    // 4. Golden Sanctuary Regeneration Aura Ring (radius 7.2m)
+    const auraGeo = new THREE.RingGeometry(2.2, 7.2, 48);
+    auraGeo.rotateX(-Math.PI / 2);
+    this.nestAuraMat = new THREE.MeshBasicMaterial({
+      color: 0xfacc15,
+      transparent: true,
+      opacity: 0.28,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const auraMesh = new THREE.Mesh(auraGeo, this.nestAuraMat);
+    auraMesh.position.y = 0.12;
+    this.nestGroup.add(auraMesh);
+
+    this.scene.add(this.nestGroup);
+
+    this.disposableGeometries.push(
+      moundGeo,
+      nestRimGeo,
+      stoneGeo,
+      eggGeo,
+      auraGeo
+    );
+    this.disposableMaterials.push(
+      moundMat,
+      nestRimMat,
+      stoneMat,
+      eggMat,
+      this.nestAuraMat
+    );
+  }
+
   public update(
     elapsedTime: number,
     delta: number,
     playerX = 0,
     playerZ = 0
   ): void {
-    // 1. Smoothly interpolate Biome Fog & Lighting tint based on player position
+    // 1. Smoothly interpolate Biome Fog & Lighting tint based on stage & player position
     const biome = this.getBiomeAt(playerX, playerZ);
     let targetBgR = 0.016;
     let targetBgG = 0.098;
@@ -691,7 +840,31 @@ export class SceneEnvironment {
     let targetHemiG = 0.918;
     let targetHemiB = 0.831; // 0x5eead4
 
-    if (biome.id === 'fosa_termal') {
+    if (this.currentStage === 'creature_stage') {
+      // Sunny coastal sky (0x38bdf8 / 0x0ea5e9) and warm golden sunlight
+      targetBgR = 0.12;
+      targetBgG = 0.48;
+      targetBgB = 0.68;
+      targetHemiR = 0.99;
+      targetHemiG = 0.94;
+      targetHemiB = 0.54;
+
+      if (biome.id === 'fosa_termal') {
+        targetBgR = 0.22;
+        targetBgG = 0.42;
+        targetBgB = 0.55;
+      } else if (biome.id === 'arrecife_abisal') {
+        targetBgR = 0.1;
+        targetBgG = 0.52;
+        targetBgB = 0.58;
+      }
+
+      this.nestAuraMat.opacity = 0.22 + Math.sin(elapsedTime * 3.2) * 0.1;
+      for (let e = 0; e < this.nestEggs.length; e++) {
+        const pulse = 1.0 + Math.sin(elapsedTime * 3.5 + e) * 0.06;
+        this.nestEggs[e].scale.set(0.85 * pulse, 1.28 * pulse, 0.85 * pulse);
+      }
+    } else if (biome.id === 'fosa_termal') {
       // Warm deep hydrothermal tint
       targetBgR = 0.055;
       targetBgG = 0.095;
