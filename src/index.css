@@ -14,8 +14,29 @@ body,
   margin: 0;
   padding: 0;
   overflow: hidden;
-  background-color: #03131f;
-  color: #f1f5f9;
+  background-color: #031521;
+  color: #ecfeff;
   font-family: var(--font-sans);
   user-select: none;
+}
+
+/* Custom Organic Bioluminescent Scrollbars for Spore Palette */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(4, 26, 41, 0.45);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(45, 212, 191, 0.45), rgba(34, 211, 238, 0.35));
+  border-radius: 9999px;
+  border: 1px solid rgba(165, 243, 252, 0.25);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(45, 212, 191, 0.7), rgba(34, 211, 238, 0.6));
 }
