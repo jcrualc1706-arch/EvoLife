@@ -1,7 +1,16 @@
 import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GAME_CONFIG } from './config';
+import { SpatialHashGrid } from './SpatialHashGrid';
 import { BiomeType, CellularGrowthStage, EvolutionaryStage } from './types';
+
+export interface EnvironmentObstacle {
+  x: number;
+  z: number;
+  minY: number;
+  maxY: number;
+  radius: number;
+}
 
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
@@ -120,6 +129,11 @@ export class SceneEnvironment {
   private readonly kelpCount = 220;
   private readonly planktonCount = 720;
   private readonly planktonPositions: Float32Array;
+  private readonly obstacles: EnvironmentObstacle[] = [];
+  private readonly treeObstacleRefList: EnvironmentObstacle[] = [];
+  private readonly obstacleSpatialGrid = new SpatialHashGrid<EnvironmentObstacle>();
+  private readonly rawCellObstaclesBuffer: EnvironmentObstacle[] = [];
+  private readonly nearbyObstaclesResult: EnvironmentObstacle[] = [];
   private readonly disposableGeometries: THREE.BufferGeometry[] = [];
   private readonly disposableMaterials: THREE.Material[] = [];
 
@@ -149,6 +163,65 @@ export class SceneEnvironment {
     this.initArenaBoundaryMarker();
     this.initSpeciesNest();
     this.initEditorSandbox();
+    this.rebuildObstacleSpatialGrid();
+  }
+
+  private registerObstacle(
+    x: number,
+    z: number,
+    minY: number,
+    maxY: number,
+    radius: number
+  ): EnvironmentObstacle {
+    const obs: EnvironmentObstacle = { x, z, minY, maxY, radius };
+    this.obstacles.push(obs);
+    return obs;
+  }
+
+  private rebuildObstacleSpatialGrid(): void {
+    this.obstacleSpatialGrid.clear();
+    for (let i = 0; i < this.obstacles.length; i++) {
+      const obs = this.obstacles[i];
+      this.obstacleSpatialGrid.insert(obs, obs.x, obs.z);
+    }
+  }
+
+  /**
+   * Queries nearby solid 2D circular obstacles (rocks, chloroplast tree trunks, hydrothermal vents, and reef formations)
+   * using the O(1) SpatialHashGrid so cells and AI organisms can slide smoothly around them.
+   */
+  public getNearbyObstacles(
+    x: number,
+    z: number,
+    searchRadius: number
+  ): EnvironmentObstacle[] {
+    this.nearbyObstaclesResult.length = 0;
+    if (this.isEditorSandboxActive) {
+      return this.nearbyObstaclesResult;
+    }
+
+    const cellRadius = Math.max(
+      1,
+      Math.ceil((searchRadius + 3.5) / GAME_CONFIG.WORLD.SPATIAL_GRID_CELL_SIZE)
+    );
+    const candidates = this.obstacleSpatialGrid.queryCells(
+      x,
+      z,
+      cellRadius,
+      this.rawCellObstaclesBuffer
+    );
+
+    for (let i = 0; i < candidates.length; i++) {
+      const obs = candidates[i];
+      const dx = x - obs.x;
+      const dz = z - obs.z;
+      const maxDist = searchRadius + obs.radius;
+      if (dx * dx + dz * dz <= maxDist * maxDist) {
+        this.nearbyObstaclesResult.push(obs);
+      }
+    }
+
+    return this.nearbyObstaclesResult;
   }
 
   public getBiomeAt(x: number, z: number): { id: BiomeType; name: string } {
@@ -519,6 +592,17 @@ export class SceneEnvironment {
       this.rocksInstanced.setMatrixAt(i, _dummy.matrix);
       this.rockCapsInstanced.setMatrixAt(i, _dummy.matrix);
 
+      // Register rock collider (0.8m - 1.5m radius) ONLY if it actually reaches the aquatic swimming layer
+      const rockTopY = ry + scaleY * 2.2;
+      if (isRim || rockTopY >= 0.8) {
+        const rockColliderRadius = THREE.MathUtils.clamp(
+          scaleXZ * 0.55,
+          0.8,
+          1.5
+        );
+        this.registerObstacle(rx, rz, ry, rockTopY, rockColliderRadius);
+      }
+
       const shade = 0.72 + (i % 5) * 0.08;
       _color.setRGB(0.12 * shade, 0.26 * shade, 0.34 * shade);
       this.rocksInstanced.setColorAt(i, _color);
@@ -548,33 +632,33 @@ export class SceneEnvironment {
 
   private initUnderwaterFlora(): void {
     // Procedural Chloroplast Tree System:
-    // 1. Translucent Cellulose Trunk with organic curve & upper bifurcation
-    const stalkGeo = new THREE.CylinderGeometry(0.14, 0.34, 5.4, 9, 6);
-    stalkGeo.translate(0, 2.7, 0);
+    // 1. Translucent Cellulose Trunk with organic curve & upper bifurcation (11.8m towering height)
+    const stalkGeo = new THREE.CylinderGeometry(0.18, 0.44, 11.8, 10, 8);
+    stalkGeo.translate(0, 5.9, 0);
     const stalkPos = stalkGeo.attributes.position as THREE.BufferAttribute;
     for (let v = 0; v < stalkPos.count; v++) {
       const vy = stalkPos.getY(v);
-      const heightRatio = vy / 5.4;
+      const heightRatio = vy / 11.8;
       // Organic sinusoidal S-curve along the cellulose trunk + flared root base
-      const curveX = Math.sin(heightRatio * Math.PI * 1.35) * 0.28;
-      const curveZ = Math.cos(heightRatio * Math.PI * 0.9) * 0.16 - 0.16;
-      const rootFlare = heightRatio < 0.18 ? 1.0 + (0.18 - heightRatio) * 1.9 : 1.0;
-      const crownFlare = heightRatio > 0.78 ? 1.0 + (heightRatio - 0.78) * 2.2 : 1.0;
+      const curveX = Math.sin(heightRatio * Math.PI * 1.25) * 0.42;
+      const curveZ = Math.cos(heightRatio * Math.PI * 0.95) * 0.32 - 0.32;
+      const rootFlare = heightRatio < 0.16 ? 1.0 + (0.16 - heightRatio) * 2.1 : 1.0;
+      const crownFlare = heightRatio > 0.82 ? 1.0 + (heightRatio - 0.82) * 2.4 : 1.0;
       stalkPos.setX(v, stalkPos.getX(v) * rootFlare * crownFlare + curveX);
       stalkPos.setZ(v, stalkPos.getZ(v) * rootFlare * crownFlare + curveZ);
     }
     stalkGeo.computeVertexNormals();
 
-    // 2. Chloroplast Canopy Fronds (clustered flattened lenticular capsules at the crown)
-    const bladeGeo = new THREE.SphereGeometry(0.92, 14, 12);
-    bladeGeo.scale(1.45, 0.58, 1.25);
-    bladeGeo.translate(0.22, 5.45, 0);
+    // 2. Bioluminescent Chloroplast Canopy Fronds (elevated high above normal swim plane)
+    const bladeGeo = new THREE.SphereGeometry(1.65, 16, 12);
+    bladeGeo.scale(1.85, 0.52, 1.65);
+    bladeGeo.translate(0.35, 12.0, 0);
 
     // 3. Inner Thylakoid Grana Core (glowing photosynthetic discs visible inside the canopy)
-    const coreGeo = new THREE.TorusKnotGeometry(0.46, 0.13, 28, 7, 2, 3);
+    const coreGeo = new THREE.TorusKnotGeometry(0.72, 0.2, 32, 8, 2, 3);
     coreGeo.rotateX(Math.PI / 2);
-    coreGeo.scale(1.15, 0.45, 1.15);
-    coreGeo.translate(0.22, 5.45, 0);
+    coreGeo.scale(1.35, 0.45, 1.35);
+    coreGeo.translate(0.35, 12.0, 0);
 
     const stalkMat = new THREE.MeshPhysicalMaterial({
       color: 0x0d9488,
@@ -593,17 +677,17 @@ export class SceneEnvironment {
     this.chloroplastFrondMat = new THREE.MeshStandardMaterial({
       color: 0x34d399,
       emissive: 0x10b981,
-      emissiveIntensity: 0.78,
-      roughness: 0.22,
+      emissiveIntensity: 0.85,
+      roughness: 0.2,
       metalness: 0.08,
       transparent: true,
-      opacity: 0.86,
+      opacity: 0.88,
     });
 
     const coreMat = new THREE.MeshBasicMaterial({
       color: 0xa7f3d0,
       transparent: true,
-      opacity: 0.75,
+      opacity: 0.78,
     });
 
     this.kelpStalksInstanced = new THREE.InstancedMesh(
@@ -657,7 +741,7 @@ export class SceneEnvironment {
       const ky = getGroundHeightAt(kx, kz) - 0.15;
       const baseScaleY = isGiantKelpZone
         ? 1.35 + (i % 6) * 0.18
-        : 0.85 + (i % 7) * 0.2;
+        : 0.95 + (i % 7) * 0.18;
       const baseScaleXZ = isGiantKelpZone
         ? 1.15 + (i % 4) * 0.2
         : 0.85 + (i % 4) * 0.16;
@@ -675,6 +759,22 @@ export class SceneEnvironment {
         rotZ,
         isGiantZone: isGiantKelpZone,
       });
+
+      // Register solid trunk collider (0.75m - 1.2m radius) only for physical trunk span
+      const initialTrunkRadius = THREE.MathUtils.clamp(
+        baseScaleXZ * 0.82,
+        0.75,
+        1.2
+      );
+      const treeTopY = ky + 11.8 * baseScaleY * 0.88;
+      const treeObs = this.registerObstacle(
+        kx,
+        kz,
+        ky,
+        treeTopY,
+        initialTrunkRadius
+      );
+      this.treeObstacleRefList.push(treeObs);
 
       const hueShift = (i % 5) * 0.025;
       _color.setHSL(0.44 + hueShift, 0.78, 0.38 + (i % 3) * 0.05);
@@ -713,28 +813,28 @@ export class SceneEnvironment {
 
   /**
    * Scales Chloroplast Trees across the 5 evolutionary cellular stages:
-   * - Stage 1: Small chloroplast sprouts (2m-3m)
-   * - Stage 2: Branched chloroplast colonies (5m)
-   * - Stage 3: Medium chloroplast trees (8m-10m)
-   * - Stage 4: Giant underwater chloroplast forests (14m)
-   * - Stage 5: Colossal ancestral chloroplast trees (18m-22m)
+   * - Stage 1: Small chloroplast sprouts (6m-11m)
+   * - Stage 2: Branched chloroplast colonies (12m-14m)
+   * - Stage 3: Medium chloroplast trees (15m-18m)
+   * - Stage 4: Giant underwater chloroplast forests (19m-22m)
+   * - Stage 5: Colossal ancestral chloroplast trees (23m-27m)
    */
   private updateChloroplastTreesForStage(stage: CellularGrowthStage): void {
     if (!this.kelpStalksInstanced || !this.kelpBladesInstanced) return;
 
     const stageHeightMultipliers: Record<CellularGrowthStage, number> = {
-      1: 0.52,
-      2: 0.85,
-      3: 1.25,
-      4: 1.72,
-      5: 2.25,
+      1: 0.92,
+      2: 1.22,
+      3: 1.55,
+      4: 1.9,
+      5: 2.3,
     };
     const stageWidthMultipliers: Record<CellularGrowthStage, number> = {
-      1: 0.68,
-      2: 0.88,
-      3: 1.12,
+      1: 0.85,
+      2: 1.0,
+      3: 1.18,
       4: 1.38,
-      5: 1.68,
+      5: 1.65,
     };
 
     const hMult = stageHeightMultipliers[stage] ?? 1.0;
@@ -756,6 +856,17 @@ export class SceneEnvironment {
       this.kelpStalksInstanced.setMatrixAt(i, _dummy.matrix);
       this.kelpBladesInstanced.setMatrixAt(i, _dummy.matrix);
       this.chloroplastCoreInstanced.setMatrixAt(i, _dummy.matrix);
+
+      const treeObs = this.treeObstacleRefList[i];
+      if (treeObs) {
+        treeObs.minY = pos.y;
+        treeObs.maxY = pos.y + 11.8 * cfg.scaleY * hMult * 0.88;
+        treeObs.radius = THREE.MathUtils.clamp(
+          cfg.scaleXZ * wMult * 0.82,
+          0.75,
+          1.2
+        );
+      }
     }
 
     this.kelpStalksInstanced.instanceMatrix.needsUpdate = true;
@@ -763,7 +874,6 @@ export class SceneEnvironment {
     this.chloroplastCoreInstanced.instanceMatrix.needsUpdate = true;
     this.kelpStalksInstanced.computeBoundingSphere();
     this.kelpBladesInstanced.computeBoundingSphere();
-    this.chloroplastCoreInstanced.computeBoundingSphere();
   }
 
   /**
@@ -822,7 +932,7 @@ export class SceneEnvironment {
     this.electricCoralInstanced.computeBoundingSphere();
     this.scene.add(this.electricCoralInstanced);
 
-    // 2. Brain Corals & Giant Anemones
+    // 2. Brain Corals & Giant Anemones (Pure visual benthic reef decor, hasCollision = false)
     const reefPropCount = 85;
     const brainGeo = new THREE.IcosahedronGeometry(1.15, 2);
     brainGeo.scale(1.2, 0.72, 1.2);
@@ -896,7 +1006,7 @@ export class SceneEnvironment {
     this.scene.add(this.brainCoralInstanced);
     this.scene.add(this.giantAnemoneInstanced);
 
-    // 3. Abyssal Fossil Fields (Giant Ammonite Shells & Tectonic Ribs in North Sector)
+    // 3. Abyssal Fossil Fields (Giant Ammonite Shells & Tectonic Ribs, hasCollision = false)
     const fossilCount = 65;
     const shellGeo = new THREE.TorusGeometry(1.65, 0.58, 10, 22, Math.PI * 1.65);
     shellGeo.translate(0, 0.9, 0);
@@ -984,6 +1094,9 @@ export class SceneEnvironment {
       const vy = getGroundHeightAt(vx, vz) - 0.3;
       const ventPos = new THREE.Vector3(vx, vy, vz);
       this.ventPositions.push(ventPos);
+
+      // Register solid 1.35m collider for each hydrothermal vent chimney with vertical span
+      this.registerObstacle(vx, vz, vy, vy + 5.4, 1.35);
 
       const ventGroup = new THREE.Group();
       ventGroup.position.copy(ventPos);

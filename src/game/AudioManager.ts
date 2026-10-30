@@ -535,9 +535,10 @@ export class AudioManager {
   }
 
   /**
-   * Chitinous/metallic shield deflection sound when armor, shield plates, or mucus absorb incoming damage.
+   * Chitinous/metallic shield deflection sound when armor, shield plates, or mucus absorb incoming damage,
+   * or attenuated impact sound when colliding at high speed with solid environment obstacles.
    */
-  public playShieldDeflect(): void {
+  public playShieldDeflect(attenuation = 1.0): void {
     const vol = this.getEffectiveSfxVolume();
     if (vol <= 0.01) return;
     const nowMs = performance.now();
@@ -548,29 +549,31 @@ export class AudioManager {
     const dest = this.getSfxDestination();
     if (!ctx || !dest) return;
 
+    const scale = Math.max(0.15, Math.min(1.0, attenuation));
+    const pitchScale = 0.65 + 0.35 * scale;
     const t = ctx.currentTime;
 
-    // Resonant chitinous ricochet ping
+    // Resonant chitinous ricochet ping (attenuated and lower-pitched for rock/trunk impacts)
     const osc1 = ctx.createOscillator();
     const osc2 = ctx.createOscillator();
     const filter = ctx.createBiquadFilter();
     const gain = ctx.createGain();
 
     osc1.type = 'triangle';
-    osc1.frequency.setValueAtTime(640, t);
-    osc1.frequency.exponentialRampToValueAtTime(1120, t + 0.045);
-    osc1.frequency.exponentialRampToValueAtTime(480, t + 0.18);
+    osc1.frequency.setValueAtTime(640 * pitchScale, t);
+    osc1.frequency.exponentialRampToValueAtTime(1120 * pitchScale, t + 0.045);
+    osc1.frequency.exponentialRampToValueAtTime(480 * pitchScale, t + 0.18);
 
     osc2.type = 'sine';
-    osc2.frequency.setValueAtTime(1480, t);
-    osc2.frequency.exponentialRampToValueAtTime(920, t + 0.16);
+    osc2.frequency.setValueAtTime(1480 * pitchScale, t);
+    osc2.frequency.exponentialRampToValueAtTime(920 * pitchScale, t + 0.16);
 
     filter.type = 'bandpass';
-    filter.frequency.setValueAtTime(1050, t);
+    filter.frequency.setValueAtTime(1050 * pitchScale, t);
     filter.Q.value = 4.2;
 
     gain.gain.setValueAtTime(0.001, t);
-    gain.gain.linearRampToValueAtTime(0.24, t + 0.006);
+    gain.gain.linearRampToValueAtTime(0.24 * scale, t + 0.006);
     gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.19);
 
     osc1.connect(filter);

@@ -4,12 +4,13 @@ import { PlayerCell } from './PlayerCell';
 
 const _desiredCamPos = new THREE.Vector3();
 const _desiredLookTarget = new THREE.Vector3();
-const _playerForward = new THREE.Vector3();
 
 export class CameraController {
   public readonly camera: THREE.PerspectiveCamera;
   private readonly currentLookTarget = new THREE.Vector3();
   private currentZoomMultiplier = 1.0;
+
+  // Editor workshop orbit state (only used when isEditing === true)
   private editorOrbitOffset = 0;
   private editorPitchAngle = 0.96; // Radians above horizontal plane (~55 deg)
   private shakeTimer = 0;
@@ -23,7 +24,10 @@ export class CameraController {
       0.1,
       420
     );
-    this.resetImmediate(new THREE.Vector3(0, GAME_CONFIG.WORLD.SWIM_PLANE_Y, 0), 0);
+    this.resetImmediate(
+      new THREE.Vector3(0, GAME_CONFIG.WORLD.SWIM_PLANE_Y, 0),
+      0
+    );
   }
 
   public setAtmosphericAltitudeFactor(
@@ -33,23 +37,23 @@ export class CameraController {
   ): void {
     this.atmosphericAltitudeFactor = THREE.MathUtils.clamp(factor, 0, 1);
     if (snapImmediate && player) {
-      _playerForward.set(
-        -Math.sin(player.headingAngle),
-        0,
-        -Math.cos(player.headingAngle)
-      );
-      const effectiveOffsetBack =
+      const zoom = player.cameraZoomMultiplier;
+      const offsetBack =
         GAME_CONFIG.CAMERA.OFFSET_BACK *
-        player.cameraZoomMultiplier *
-        (1 - this.atmosphericAltitudeFactor * 0.55);
-      const effectiveOffsetUp =
-        GAME_CONFIG.CAMERA.OFFSET_UP * player.cameraZoomMultiplier +
+        zoom *
+        (1 - this.atmosphericAltitudeFactor * 0.45);
+      const offsetUp =
+        GAME_CONFIG.CAMERA.OFFSET_UP * zoom +
         this.atmosphericAltitudeFactor * 54.0;
 
-      this.camera.position
-        .copy(player.position)
-        .addScaledVector(_playerForward, -effectiveOffsetBack);
-      this.camera.position.y = player.position.y + effectiveOffsetUp;
+      const forwardX = -Math.sin(player.headingAngle);
+      const forwardZ = -Math.cos(player.headingAngle);
+
+      this.camera.position.set(
+        player.position.x - forwardX * offsetBack,
+        player.position.y + offsetUp,
+        player.position.z - forwardZ * offsetBack
+      );
       this.currentLookTarget.copy(player.position);
       this.camera.lookAt(this.currentLookTarget);
     }
@@ -78,23 +82,34 @@ export class CameraController {
     this.editorPitchAngle = 0.96;
   }
 
-  public resetImmediate(playerPosition: THREE.Vector3, headingAngle: number): void {
+  public resetImmediate(
+    playerPosition: THREE.Vector3,
+    headingAngle = 0
+  ): void {
     this.currentZoomMultiplier = 1.0;
     this.editorOrbitOffset = 0;
     this.editorPitchAngle = 0.96;
     this.shakeTimer = 0;
     this.atmosphericAltitudeFactor = 0;
-    _playerForward.set(-Math.sin(headingAngle), 0, -Math.cos(headingAngle));
 
-    this.camera.position
-      .copy(playerPosition)
-      .addScaledVector(_playerForward, -GAME_CONFIG.CAMERA.OFFSET_BACK);
-    this.camera.position.y = playerPosition.y + GAME_CONFIG.CAMERA.OFFSET_UP;
+    const forwardX = -Math.sin(headingAngle);
+    const forwardZ = -Math.cos(headingAngle);
 
-    this.currentLookTarget
-      .copy(playerPosition)
-      .addScaledVector(_playerForward, GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE);
+    const offsetBack = GAME_CONFIG.CAMERA.OFFSET_BACK;
+    const offsetUp = GAME_CONFIG.CAMERA.OFFSET_UP;
 
+    this.camera.position.set(
+      playerPosition.x - forwardX * offsetBack,
+      playerPosition.y + offsetUp,
+      playerPosition.z - forwardZ * offsetBack
+    );
+
+    const lookDist = GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE;
+    this.currentLookTarget.set(
+      playerPosition.x + forwardX * lookDist,
+      playerPosition.y,
+      playerPosition.z + forwardZ * lookDist
+    );
     this.camera.lookAt(this.currentLookTarget);
   }
 
@@ -180,9 +195,7 @@ export class CameraController {
   ): void {
     if (isEditing) {
       const scale = player.currentScale;
-      // Static manual orbit angle (no automatic sway)
       const camAzimuth = player.headingAngle + this.editorOrbitOffset;
-      // Zoomed-out ~48% further so the creature and 3D spine handles have generous breathing room
       const orbitDistance = 11.4 * scale;
       const horizontalDist = Math.cos(this.editorPitchAngle) * orbitDistance;
       const verticalHeight = Math.sin(this.editorPitchAngle) * orbitDistance;
@@ -193,7 +206,6 @@ export class CameraController {
         player.position.z + Math.cos(camAzimuth) * horizontalDist
       );
 
-      // Look straight at the center of the cell so it stays centered in the 3D workshop
       _desiredLookTarget.set(
         player.position.x,
         player.position.y,
@@ -253,13 +265,7 @@ export class CameraController {
       return;
     }
 
-    _playerForward.set(
-      -Math.sin(player.headingAngle),
-      0,
-      -Math.cos(player.headingAngle)
-    );
-
-    // Smoothly interpolate Spore-style camera zoom-out multiplier across Growth Stages 1 -> 2 -> 3
+    // 1. Smoothly interpolate Spore-style camera zoom-out multiplier across Growth Stages 1..5
     this.currentZoomMultiplier = THREE.MathUtils.damp(
       this.currentZoomMultiplier,
       player.cameraZoomMultiplier,
@@ -268,24 +274,31 @@ export class CameraController {
     );
 
     const altFactor = this.atmosphericAltitudeFactor;
-    const effectiveOffsetBack =
+    const zoom = this.currentZoomMultiplier;
+    const offsetBack =
       GAME_CONFIG.CAMERA.OFFSET_BACK *
-      this.currentZoomMultiplier *
-      (1.0 - altFactor * 0.55);
-    const effectiveOffsetUp =
-      GAME_CONFIG.CAMERA.OFFSET_UP * this.currentZoomMultiplier +
+      zoom *
+      (1.0 - altFactor * 0.45);
+    const offsetUp =
+      GAME_CONFIG.CAMERA.OFFSET_UP * zoom +
       altFactor * altFactor * 54.0;
 
-    // Desired camera position behind & above the cell (or high in the atmosphere during transition)
-    _desiredCamPos
-      .copy(player.position)
-      .addScaledVector(_playerForward, -effectiveOffsetBack);
-    _desiredCamPos.y = player.position.y + effectiveOffsetUp;
+    // Dirección hacia la que mira la célula
+    const forwardX = -Math.sin(player.headingAngle);
+    const forwardZ = -Math.cos(player.headingAngle);
+
+    // Posición fija directamente arriba y detrás según la orientación de la célula
+    _desiredCamPos.set(
+      player.position.x - forwardX * offsetBack,
+      player.position.y + offsetUp,
+      player.position.z - forwardZ * offsetBack
+    );
 
     const posDamp =
-      altFactor > 0.01 ? 9.5 : GAME_CONFIG.CAMERA.POSITION_DAMPING;
+      altFactor > 0.01
+        ? 9.5
+        : GAME_CONFIG.CAMERA.POSITION_DAMPING;
 
-    // Smooth exponential damping for camera position (zero vibration)
     this.camera.position.x = THREE.MathUtils.damp(
       this.camera.position.x,
       _desiredCamPos.x,
@@ -313,15 +326,13 @@ export class CameraController {
       this.camera.position.z += Math.cos(elapsedTime * 52) * amp;
     }
 
-    // Desired lookAt point slightly ahead of the cell
-    _desiredLookTarget
-      .copy(player.position)
-      .addScaledVector(
-        _playerForward,
-        GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE *
-          this.currentZoomMultiplier *
-          (1.0 - altFactor * 0.7)
-      );
+    // Objetivo de enfoque: centro de la célula con un leve avance frontal
+    const lookDist = GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE * zoom;
+    _desiredLookTarget.set(
+      player.position.x + forwardX * lookDist,
+      player.position.y,
+      player.position.z + forwardZ * lookDist
+    );
 
     this.currentLookTarget.x = THREE.MathUtils.damp(
       this.currentLookTarget.x,

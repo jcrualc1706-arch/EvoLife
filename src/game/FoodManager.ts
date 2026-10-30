@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
+import { EnvironmentObstacle } from './SceneEnvironment';
 import { SpatialHashGrid } from './SpatialHashGrid';
 import { DietType, FoodKind } from './types';
 
@@ -218,6 +219,11 @@ export class FoodManager {
   private meatDropCursor = 0;
   private dynamicNoduleCursor = 0;
   private readonly chemoreceptorTarget = new THREE.Vector3();
+  private getNearbyObstacles?: (
+    x: number,
+    z: number,
+    searchRadius: number
+  ) => readonly EnvironmentObstacle[];
 
   constructor(scene: THREE.Scene) {
     // Generate procedural PBR CanvasTextures once at startup
@@ -438,7 +444,7 @@ export class FoodManager {
 
       const energyValue =
         kind === 'meat'
-          ? 28
+          ? 34
           : kind === 'plant'
           ? GAME_CONFIG.FOOD.ENERGY_RESTORE_SMALL
           : GAME_CONFIG.FOOD.ENERGY_RESTORE_LARGE;
@@ -446,7 +452,7 @@ export class FoodManager {
         kind === 'dna_spore'
           ? GAME_CONFIG.FOOD.ADN_REWARD_LARGE
           : kind === 'meat'
-          ? 7
+          ? 10
           : GAME_CONFIG.FOOD.ADN_REWARD_SMALL;
 
       const item: FoodItem = {
@@ -468,7 +474,7 @@ export class FoodManager {
         adnValue,
       };
 
-      this.placeFoodRandomly(item, i < 18);
+      this.placeFoodRandomly(item, i < 6);
       this.items.push(item);
     }
 
@@ -501,6 +507,38 @@ export class FoodManager {
     }
   }
 
+  public setObstacleQuery(
+    queryFn: (
+      x: number,
+      z: number,
+      searchRadius: number
+    ) => readonly EnvironmentObstacle[]
+  ): void {
+    this.getNearbyObstacles = queryFn;
+  }
+
+  private pushOutOfObstacles(pos: THREE.Vector3, margin = 0.85): void {
+    if (!this.getNearbyObstacles) return;
+    const obstacles = this.getNearbyObstacles(pos.x, pos.z, 3.8);
+    for (let i = 0; i < obstacles.length; i++) {
+      const o = obstacles[i];
+      if (pos.y < o.minY - 0.35 || pos.y > o.maxY + 0.35) {
+        continue;
+      }
+      const dx = pos.x - o.x;
+      const dz = pos.z - o.z;
+      const distSq = dx * dx + dz * dz;
+      const minDist = o.radius + margin;
+      if (distSq < minDist * minDist) {
+        const dist = Math.sqrt(distSq);
+        const nx = dist > 0.001 ? dx / dist : 1;
+        const nz = dist > 0.001 ? dz / dist : 0;
+        pos.x = o.x + nx * minDist;
+        pos.z = o.z + nz * minDist;
+      }
+    }
+  }
+
   /**
    * Registers the world positions of active Chloroplast Trees and the current stage's active arena radius
    * so edible chloroplasts (`plant`) sprout around tree canopies and roots.
@@ -518,9 +556,8 @@ export class FoodManager {
   }
 
   private placeFoodRandomly(item: FoodItem, nearCenter = false): void {
-    // Cluster 72% of edible chloroplasts ('plant') around active Chloroplast Trees
+    // Cluster >= 72% of edible chloroplasts ('plant') closely around towering Chloroplast Trees (grazing zone)
     if (
-      !nearCenter &&
       item.kind === 'plant' &&
       this.chloroplastTreeCoords.length > 0 &&
       Math.random() < 0.72
@@ -530,7 +567,8 @@ export class FoodManager {
           Math.floor(Math.random() * this.chloroplastTreeCoords.length)
         ];
       const angle = Math.random() * Math.PI * 2;
-      const spread = 2.0 + Math.random() * 6.5;
+      // Accessible grazing ring (1.3m - 3.4m) around the tree's trunk, hanging under the elevated canopy
+      const spread = 1.3 + Math.random() * 2.1;
       const tx = THREE.MathUtils.clamp(
         treePos.x + Math.cos(angle) * spread,
         -(this.activeArenaRadius - 4),
@@ -541,7 +579,10 @@ export class FoodManager {
         -(this.activeArenaRadius - 4),
         this.activeArenaRadius - 4
       );
-      item.basePosition.set(tx, GAME_CONFIG.WORLD.SWIM_PLANE_Y, tz);
+      const ty =
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y + (Math.random() - 0.5) * 1.4;
+      item.basePosition.set(tx, ty, tz);
+      this.pushOutOfObstacles(item.basePosition, 0.75);
       item.group.position.copy(item.basePosition);
       item.active = true;
       item.respawnTimer = 0;
@@ -549,9 +590,9 @@ export class FoodManager {
       return;
     }
 
-    const minRadius = nearCenter ? 4.5 : 8.5;
+    const minRadius = nearCenter ? 6.0 : 12.0;
     const maxRadius = nearCenter
-      ? 26.0
+      ? 24.0
       : Math.max(45.0, this.activeArenaRadius - 5.0);
 
     const r = minRadius + Math.sqrt(Math.random()) * (maxRadius - minRadius);
@@ -562,6 +603,7 @@ export class FoodManager {
       GAME_CONFIG.WORLD.SWIM_PLANE_Y,
       Math.sin(theta) * r
     );
+    this.pushOutOfObstacles(item.basePosition, 0.9);
     item.group.position.copy(item.basePosition);
     item.active = true;
     item.respawnTimer = 0;
@@ -569,8 +611,20 @@ export class FoodManager {
   }
 
   public resetAll(): void {
+    let passiveMeatCount = 0;
     for (let i = 0; i < this.items.length; i++) {
-      this.placeFoodRandomly(this.items[i], i < 18);
+      const item = this.items[i];
+      if (item.kind === 'meat') {
+        passiveMeatCount++;
+        // Keep half of the meat pool inactive in reserve for active hunting drops so open water has scarce free carrion
+        if (passiveMeatCount % 2 === 0) {
+          item.active = false;
+          item.group.visible = false;
+          item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC * 1.6;
+          continue;
+        }
+      }
+      this.placeFoodRandomly(item, i < 6);
     }
     for (let n = 0; n < this.geneticNodules.length; n++) {
       const nod = this.geneticNodules[n];
@@ -800,6 +854,7 @@ export class FoodManager {
       // Physical radial scatter impulse when meat/spores burst out of a defeated creature
       if (item.scatterVelocity.lengthSq() > 0.01) {
         item.basePosition.addScaledVector(item.scatterVelocity, delta);
+        this.pushOutOfObstacles(item.basePosition, 0.75);
         item.scatterVelocity.x = THREE.MathUtils.damp(
           item.scatterVelocity.x,
           0,

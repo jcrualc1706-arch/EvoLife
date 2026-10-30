@@ -187,8 +187,14 @@ export class GameEngine {
     this.player = new PlayerCell(this.environment.scene);
     this.cameraController = new CameraController(width / Math.max(height, 1));
     this.foodManager = new FoodManager(this.environment.scene);
+    this.foodManager.setObstacleQuery((x, z, r) =>
+      this.environment.getNearbyObstacles(x, z, r)
+    );
     this.fossilMeteorManager = new FossilMeteorManager(this.environment.scene);
     this.predatorManager = new PredatorManager(this.environment.scene);
+    this.predatorManager.setObstacleQuery((x, z, r) =>
+      this.environment.getNearbyObstacles(x, z, r)
+    );
     this.inputController = new InputController(
       () => this.togglePause(),
       () => this.toggleEditor()
@@ -562,9 +568,21 @@ export class GameEngine {
 
   private getCustomMutatedOrganCount(): number {
     let count = 0;
+    const initialMouthId =
+      this.stats.diet === 'carnivore'
+        ? 'mouth_jaw'
+        : this.stats.diet === 'omnivore'
+        ? 'mouth_proboscis'
+        : 'mouth_filter';
+
     for (const [id, stacks] of Object.entries(this.installedAdaptations)) {
       if (stacks <= 0) continue;
-      const initialBase = INITIAL_INSTALLED_ADAPTATIONS[id] ?? 0;
+      const initialBase =
+        id === initialMouthId ||
+        id === 'simple_flagellum' ||
+        id === 'eye_photoreceptor'
+          ? 1
+          : 0;
       if (stacks > initialBase) {
         count += stacks - initialBase;
       }
@@ -1853,16 +1871,16 @@ export class GameEngine {
       return;
     }
 
-    if (this.status !== 'editing') return;
-
-    // Right mouse button (button === 2): start manual 3D camera orbit
-    if (e.button === 2) {
+    // Right mouse button (button === 2): manual 3D inspection orbit in Evolution Editor ONLY
+    if (e.button === 2 && this.status === 'editing') {
       e.preventDefault();
       this.isRightClickOrbiting = true;
       this.orbitLastClientPos = { x: e.clientX, y: e.clientY };
       this.renderer.domElement.style.cursor = 'grabbing';
       return;
     }
+
+    if (this.status !== 'editing') return;
 
     if (e.button !== 0) return;
 
@@ -1954,29 +1972,32 @@ export class GameEngine {
   }
 
   private handleWindowPointerMove(e: PointerEvent): void {
-    this.lastGameplayPointerPos = {
-      x: e.clientX,
-      y: e.clientY,
-      active: true,
-    };
+    if (!this.isRightClickOrbiting) {
+      this.lastGameplayPointerPos = {
+        x: e.clientX,
+        y: e.clientY,
+        active: true,
+      };
+    }
 
     if (this.status === 'menu') {
       this.solarSystemView.handlePointerMove(e, this.renderer.domElement);
       return;
     }
 
-    if (this.status !== 'editing') return;
-
-    // Case 0: Manual 3D Camera Orbit while holding Right Click
+    // Manual 3D Camera Orbit in Editor mode while holding Right Click
     if (this.isRightClickOrbiting) {
-      if ((e.buttons & 2) === 0) {
+      if ((e.buttons & 2) === 0 || this.status !== 'editing') {
         this.isRightClickOrbiting = false;
         this.renderer.domElement.style.cursor = 'default';
       } else {
-        const dx = e.clientX - this.orbitLastClientPos.x;
-        const dy = e.clientY - this.orbitLastClientPos.y;
+        const rawDx = e.clientX - this.orbitLastClientPos.x;
+        const rawDy = e.clientY - this.orbitLastClientPos.y;
+        const dx = rawDx !== 0 ? rawDx : e.movementX || 0;
+        const dy = rawDy !== 0 ? rawDy : e.movementY || 0;
         this.orbitLastClientPos = { x: e.clientX, y: e.clientY };
         const inv = this.settings.invertEditorCamera ? -1 : 1;
+
         this.cameraController.orbitEditorCamera(
           -dx * 0.0075 * inv,
           dy * 0.0065 * inv
@@ -1984,6 +2005,8 @@ export class GameEngine {
         return;
       }
     }
+
+    if (this.status !== 'editing') return;
 
     const hasPlaneHit = this.updateRaycasterFromClientCoords(
       e.clientX,
@@ -2177,7 +2200,6 @@ export class GameEngine {
       this.repositioningInstanceId = null;
       this.draggingSpineArrow = null;
       this.draggingOrientationInstanceId = null;
-      this.isRightClickOrbiting = false;
       return;
     }
 
@@ -2239,6 +2261,10 @@ export class GameEngine {
   private handleCanvasWheel(e: WheelEvent): void {
     if (this.status === 'menu') {
       this.solarSystemView.handleWheel(e);
+      return;
+    }
+
+    if (this.status === 'playing') {
       return;
     }
 
@@ -3174,6 +3200,7 @@ export class GameEngine {
 
       if (
         this.settings.steeringMode === 'mouse' &&
+        !this.isRightClickOrbiting &&
         this.lastGameplayPointerPos.active &&
         !this.inputController.state.left &&
         !this.inputController.state.right
@@ -3201,13 +3228,19 @@ export class GameEngine {
         }
       }
 
+      const nearbyPlayerObstacles = this.environment.getNearbyObstacles(
+        this.player.position.x,
+        this.player.position.z,
+        6.5
+      );
       const moveResult = this.player.update(
         delta,
         this.elapsedActiveTime,
         this.inputController.state,
         canBoost,
         speedMultiplier,
-        turnMultiplier
+        turnMultiplier,
+        nearbyPlayerObstacles
       );
       this.stats.isBoosting = moveResult.isBoosting;
       this.stats.speed = Math.abs(this.player.currentSpeed);

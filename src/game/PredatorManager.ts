@@ -3,6 +3,7 @@ import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
 import { createOrganVisual, OrganVisualInstance } from './OrganFactory3D';
 import { PooledAcidProjectile } from './PlayerCell';
+import { EnvironmentObstacle } from './SceneEnvironment';
 import { SpatialHashGrid } from './SpatialHashGrid';
 import {
   CellularGrowthStage,
@@ -413,6 +414,11 @@ export class PredatorManager {
   private floatingDamageCursor = 0;
   private readonly deathParticlePool: DeathBurstParticle[] = [];
   private deathParticleCursor = 0;
+  private getNearbyObstacles?: (
+    x: number,
+    z: number,
+    searchRadius: number
+  ) => readonly EnvironmentObstacle[];
 
   // Shared Geometries
   private predatorBodyGeo!: THREE.BufferGeometry;
@@ -462,6 +468,97 @@ export class PredatorManager {
     this.initSharedAssets();
     this.initCombatVfxPools(scene);
     this.spawnEcosystem(scene);
+  }
+
+  public setObstacleQuery(
+    queryFn: (
+      x: number,
+      z: number,
+      searchRadius: number
+    ) => readonly EnvironmentObstacle[]
+  ): void {
+    this.getNearbyObstacles = queryFn;
+  }
+
+  private resolveEntityObstacleCollisions(
+    entity: OrganismEntity,
+    effectiveScale: number,
+    safeDelta: number
+  ): void {
+    if (!this.getNearbyObstacles) return;
+    const entityRadius = 1.25 * Math.max(0.7, effectiveScale);
+    const obstacles = this.getNearbyObstacles(
+      entity.position.x,
+      entity.position.z,
+      entityRadius + 3.8
+    );
+
+    for (let i = 0; i < obstacles.length; i++) {
+      const o = obstacles[i];
+      if (
+        entity.position.y < o.minY - 0.4 ||
+        entity.position.y > o.maxY + 0.4
+      ) {
+        continue;
+      }
+      const dx = entity.position.x - o.x;
+      const dz = entity.position.z - o.z;
+      const distSq = dx * dx + dz * dz;
+      const minDist = entityRadius + o.radius;
+
+      if (distSq < minDist * minDist) {
+        const dist = Math.sqrt(distSq);
+        const nx = dist > 0.0001 ? dx / dist : 1;
+        const nz = dist > 0.0001 ? dz / dist : 0;
+
+        // Push AI organism out along the obstacle normal
+        entity.position.x = o.x + nx * minDist;
+        entity.position.z = o.z + nz * minDist;
+
+        // Project knockback velocity onto the obstacle tangent
+        const kbNormal =
+          entity.knockbackVelocity.x * nx + entity.knockbackVelocity.z * nz;
+        if (kbNormal < 0) {
+          entity.knockbackVelocity.x -= kbNormal * nx;
+          entity.knockbackVelocity.z -= kbNormal * nz;
+        }
+
+        // Deflect heading smoothly along the obstacle tangent so the AI skirts around rocks/trees
+        const fx = -Math.sin(entity.headingAngle);
+        const fz = -Math.cos(entity.headingAngle);
+        const fNormal = fx * nx + fz * nz;
+
+        if (fNormal < 0) {
+          let tx = fx - fNormal * nx;
+          let tz = fz - fNormal * nz;
+          const tLen = Math.hypot(tx, tz);
+          if (tLen > 0.001) {
+            tx /= tLen;
+            tz /= tLen;
+          } else {
+            // Head-on impact: pick perpendicular tangent based on entity id parity
+            const side = entity.id % 2 === 0 ? 1 : -1;
+            tx = -nz * side;
+            tz = nx * side;
+          }
+
+          const tangentHeading = Math.atan2(-tx, -tz);
+          let angleDiff = tangentHeading - entity.headingAngle;
+          while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
+          while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
+          entity.headingAngle += angleDiff * Math.min(1, safeDelta * 9.5);
+
+          if (entity.state === 'DEAMBULAR') {
+            entity.wanderTarget.set(
+              entity.position.x + tx * 16.0,
+              GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+              entity.position.z + tz * 16.0
+            );
+            entity.wanderRetargetTimer = 2.8;
+          }
+        }
+      }
+    }
   }
 
   public setPlayerGrowthStage(stage: CellularGrowthStage): void {
@@ -1666,6 +1763,11 @@ export class PredatorManager {
       Math.sin(angle) * radius
     );
     entity.headingAngle = angle + Math.PI / 2;
+    this.resolveEntityObstacleCollisions(
+      entity,
+      entity.profile.scaleMultiplier,
+      0.016
+    );
     entity.currentSpeed = entity.profile.wanderSpeed;
     entity.state = 'DEAMBULAR';
     entity.active = true;
@@ -2680,6 +2782,7 @@ export class PredatorManager {
 
         _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
         p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
+        this.resolveEntityObstacleCollisions(p, effectiveScale, safeDelta);
 
         const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
         const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 3.0;
@@ -2960,6 +3063,7 @@ export class PredatorManager {
 
       _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
       p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
+      this.resolveEntityObstacleCollisions(p, effectiveScale, safeDelta);
 
       const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
       const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 2.0;

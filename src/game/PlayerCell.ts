@@ -3,6 +3,7 @@ import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
 import { normalizeAdaptationId } from './evolutionData';
 import { createOrganVisual, OrganVisualInstance } from './OrganFactory3D';
+import { EnvironmentObstacle } from './SceneEnvironment';
 import {
   AcidSpitProjectile,
   CellBodyShape,
@@ -188,6 +189,7 @@ export class PlayerCell {
 
   private flagellumPhase = 0;
   private damageFlashTimer = 0;
+  private obstacleBumpCooldown = 0;
 
   private readonly disposableGeometries: THREE.BufferGeometry[] = [];
   private readonly disposableMaterials: THREE.Material[] = [];
@@ -315,6 +317,7 @@ export class PlayerCell {
       const leftFin = new THREE.Mesh(ciliaGeo, ciliaMat);
       leftFin.position.set(-0.98, 0, zPos);
       leftFin.rotation.y = 0.35;
+      leftFin.visible = false;
       this.group.add(leftFin);
       this.ciliaLeft.push(leftFin);
 
@@ -322,6 +325,7 @@ export class PlayerCell {
       rightFin.position.set(0.98, 0, zPos);
       rightFin.rotation.z = Math.PI;
       rightFin.rotation.y = -0.35;
+      rightFin.visible = false;
       this.group.add(rightFin);
       this.ciliaRight.push(rightFin);
     }
@@ -1777,6 +1781,18 @@ export class PlayerCell {
     if (!this.hasChemoreceptorInstalled) {
       this.chemoreceptorCompassGroup.visible = false;
     }
+
+    const ciliaCount =
+      getCount('cilia_waves') +
+      getCount('movement_ribbon_fin') +
+      getCount('movement_macro_cilia_skirt');
+    const showCilia = ciliaCount > 0;
+    for (const c of this.ciliaLeft) {
+      c.visible = showCilia;
+    }
+    for (const c of this.ciliaRight) {
+      c.visible = showCilia;
+    }
   }
 
   public setCamouflageActive(active: boolean): void {
@@ -1822,9 +1838,16 @@ export class PlayerCell {
     input: InputState,
     canBoost: boolean,
     speedMultiplier = 1.0,
-    turnMultiplier = 1.0
+    turnMultiplier = 1.0,
+    nearbyObstacles: readonly EnvironmentObstacle[] = []
   ): { isMoving: boolean; isBoosting: boolean } {
     const safeDelta = Math.min(Math.max(delta, 0.001), 0.05);
+    if (this.obstacleBumpCooldown > 0) {
+      this.obstacleBumpCooldown = Math.max(
+        0,
+        this.obstacleBumpCooldown - safeDelta
+      );
+    }
 
     this.currentScale = THREE.MathUtils.damp(
       this.currentScale,
@@ -1905,6 +1928,82 @@ export class PlayerCell {
         5.2,
         safeDelta
       );
+    }
+
+    // 3B. Solid Environment Obstacle Slide Collisions (Rocks, Chloroplast Tree Trunks, Hydrothermal Vents & Reefs)
+    if (
+      nearbyObstacles.length > 0 &&
+      !(this.isLandCreature && this.heightOffset > 2.2)
+    ) {
+      const cellRadius =
+        GAME_CONFIG.PLAYER.COLLISION_RADIUS *
+        (0.76 + 0.24 * this.currentScale);
+      const py = this.position.y;
+
+      for (let i = 0; i < nearbyObstacles.length; i++) {
+        const o = nearbyObstacles[i];
+
+        // 3D Height Check (Y axis): cell only collides if within the obstacle's physical vertical span
+        if (py < o.minY - 0.4 || py > o.maxY + 0.4) {
+          continue;
+        }
+
+        const dx = this.position.x - o.x;
+        const dz = this.position.z - o.z;
+        const distSq = dx * dx + dz * dz;
+        const minDist = cellRadius + o.radius;
+
+        if (distSq < minDist * minDist) {
+          const dist = Math.sqrt(distSq);
+          const nx = dist > 0.0001 ? dx / dist : 1;
+          const nz = dist > 0.0001 ? dz / dist : 0;
+
+          // Push cell position outward along the obstacle normal
+          this.position.x = o.x + nx * minDist;
+          this.position.z = o.z + nz * minDist;
+
+          // Compute current velocity vector in XZ and project onto the obstacle tangent for smooth sliding
+          const vx =
+            -Math.sin(this.headingAngle) * this.currentSpeed +
+            this.knockbackVelocity.x;
+          const vz =
+            -Math.cos(this.headingAngle) * this.currentSpeed +
+            this.knockbackVelocity.z;
+          const vNormal = vx * nx + vz * nz;
+
+          if (vNormal < 0) {
+            // High-speed impact feedback when boosting or ramming into a rock/trunk
+            const impactSpeed = -vNormal;
+            if (
+              this.obstacleBumpCooldown <= 0 &&
+              (impactSpeed > 8.5 || (this.isBoosting && impactSpeed > 5.2))
+            ) {
+              const atten = THREE.MathUtils.clamp(impactSpeed / 24.0, 0.25, 0.55);
+              audioManager.playShieldDeflect(atten);
+              this.obstacleBumpCooldown = 0.36;
+            }
+
+            // Tangential velocity vector along the obstacle contour
+            const tx = vx - vNormal * nx;
+            const tz = vz - vNormal * nz;
+            const tangentSpeed = Math.hypot(tx, tz);
+
+            // Project knockback onto tangent
+            const kbNormal =
+              this.knockbackVelocity.x * nx + this.knockbackVelocity.z * nz;
+            if (kbNormal < 0) {
+              this.knockbackVelocity.x -= kbNormal * nx;
+              this.knockbackVelocity.z -= kbNormal * nz;
+            }
+
+            // Preserve tangential glide momentum without altering headingAngle
+            const signSpeed = this.currentSpeed >= 0 ? 1 : -1;
+            this.currentSpeed =
+              signSpeed *
+              Math.min(Math.abs(this.currentSpeed), tangentSpeed * 0.94);
+          }
+        }
+      }
     }
 
     // 4. Soft arena boundary containment (expands progressively across the 5 cellular growth stages)
@@ -2247,6 +2346,12 @@ export class PlayerCell {
     this.electricDomeMesh.visible = false;
     this.socialWaveTimer = 0;
     this.socialWaveMesh.visible = false;
+    for (const c of this.ciliaLeft) {
+      c.visible = false;
+    }
+    for (const c of this.ciliaRight) {
+      c.visible = false;
+    }
     this.hideMateCell();
   }
 
