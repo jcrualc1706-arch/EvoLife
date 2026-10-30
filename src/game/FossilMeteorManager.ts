@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
 import { SpatialHashGrid } from './SpatialHashGrid';
 
@@ -380,6 +381,7 @@ export class FossilMeteorManager {
       const dz = m.group.position.z - playerPosition.z;
       if (dx * dx + dz * dz <= hitRadiusSq) {
         this.triggerImplosionBurst(m.group.position);
+        audioManager.playMeteorDiscovery();
         m.active = false;
         m.group.visible = false;
         // Respawn in another remote zone after 45s

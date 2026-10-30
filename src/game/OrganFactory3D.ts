@@ -369,13 +369,34 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       segments.push(seg);
     }
 
+    let flagellumLocalPhase = 0;
+    let flagellumLastTime = -1;
     animateFn = (elapsedTime, speedRatio, isBoosting) => {
-      const freq = 8.0 + speedRatio * 8.0 + (isBoosting ? 6.0 : 0);
+      const dt =
+        flagellumLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - flagellumLastTime), 0.05);
+      flagellumLastTime = elapsedTime;
+      const clampedSpeed = THREE.MathUtils.clamp(speedRatio, 0, 1.5);
+      const targetFreq = Math.min(18.0, 6.5 + clampedSpeed * 6.5 + (isBoosting ? 4.0 : 0));
+      flagellumLocalPhase = (flagellumLocalPhase + dt * targetFreq) % (Math.PI * 200);
       for (let i = 0; i < segments.length; i++) {
-        const wave = Math.sin(elapsedTime * freq - i * 0.85);
-        const amp = (0.07 + speedRatio * 0.08) * (1 + i * 0.45);
-        segments[i].position.x = wave * amp;
-        segments[i].rotation.y = wave * 0.32;
+        const wave = Math.sin(flagellumLocalPhase - i * 0.78);
+        const amp = (0.055 + clampedSpeed * 0.055) * (1 + i * 0.32);
+        const targetX = wave * amp;
+        const targetRotY = wave * 0.24;
+        segments[i].position.x = THREE.MathUtils.damp(
+          segments[i].position.x,
+          targetX,
+          16.0,
+          dt
+        );
+        segments[i].rotation.y = THREE.MathUtils.damp(
+          segments[i].rotation.y,
+          targetRotY,
+          16.0,
+          dt
+        );
       }
     };
   } else if (id === 'hydro_siphon') {
@@ -415,12 +436,27 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     const jetMesh = new THREE.Mesh(jetGeo, jetMat);
     group.add(jetMesh);
 
+    let siphonLocalPhase = 0;
+    let siphonLastTime = -1;
     animateFn = (elapsedTime, _speedRatio, isBoosting) => {
-      const rate = isBoosting ? 18.0 : 7.0;
-      const contract = 1.0 + Math.sin(elapsedTime * rate) * 0.16;
+      const dt =
+        siphonLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - siphonLastTime), 0.05);
+      siphonLastTime = elapsedTime;
+      const rate = isBoosting ? 12.0 : 6.5;
+      siphonLocalPhase = (siphonLocalPhase + dt * rate) % (Math.PI * 200);
+      const contract = 1.0 + Math.sin(siphonLocalPhase) * 0.12;
       funnelMesh.scale.set(contract, contract, 1.0 / contract);
-      jetMesh.scale.set(1, 1, isBoosting ? 1.55 : 0.75 + Math.sin(elapsedTime * rate) * 0.25);
-      jetMat.opacity = isBoosting ? 0.85 : 0.38;
+      const targetJetZ = isBoosting
+        ? 1.38
+        : 0.75 + Math.sin(siphonLocalPhase) * 0.2;
+      jetMesh.scale.set(
+        1,
+        1,
+        THREE.MathUtils.damp(jetMesh.scale.z, targetJetZ, 14.0, dt)
+      );
+      jetMat.opacity = isBoosting ? 0.82 : 0.38;
     };
   } else if (id === 'cilia_waves') {
     // 8. Cilios Ondulantes: Translucent lateral fin-hairs vibrating at high frequency
@@ -451,10 +487,25 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       hairs.push(h);
     }
 
+    let ciliaLocalPhase = 0;
+    let ciliaLastTime = -1;
     animateFn = (elapsedTime, speedRatio) => {
-      const freq = 14.0 + speedRatio * 10.0;
+      const dt =
+        ciliaLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - ciliaLastTime), 0.05);
+      ciliaLastTime = elapsedTime;
+      const clampedSpeed = THREE.MathUtils.clamp(speedRatio, 0, 1.5);
+      const freq = 10.0 + clampedSpeed * 6.5;
+      ciliaLocalPhase = (ciliaLocalPhase + dt * freq) % (Math.PI * 200);
       for (let i = 0; i < hairs.length; i++) {
-        hairs[i].rotation.y = Math.sin(elapsedTime * freq + i * 0.9) * 0.34;
+        const targetRotY = Math.sin(ciliaLocalPhase + i * 0.9) * 0.28;
+        hairs[i].rotation.y = THREE.MathUtils.damp(
+          hairs[i].rotation.y,
+          targetRotY,
+          16.0,
+          dt
+        );
       }
     };
   } else if (id === 'electric_cell') {
@@ -845,9 +896,18 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     }
     group.add(radulaBand);
 
+    let radulaPhase = 0;
+    let radulaLastTime = -1;
     animateFn = (elapsedTime, speedRatio) => {
-      radulaBand.position.z =
-        Math.sin(elapsedTime * (7 + speedRatio * 5)) * 0.045;
+      const dt =
+        radulaLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - radulaLastTime), 0.05);
+      radulaLastTime = elapsedTime;
+      radulaPhase =
+        (radulaPhase + dt * (6.5 + THREE.MathUtils.clamp(speedRatio, 0, 1.5) * 4.0)) %
+        (Math.PI * 200);
+      radulaBand.position.z = Math.sin(radulaPhase) * 0.045;
     };
   } else if (id === 'mouth_suction_cup') {
     // 20. Ventosa Osmótica: Fleshy circular disc with retractile ringed rim and pulsing central orifice
@@ -924,8 +984,18 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       pivots.push(pivot);
     }
 
+    let crusherPhase = 0;
+    let crusherLastTime = -1;
     animateFn = (elapsedTime, speedRatio) => {
-      const snap = Math.abs(Math.sin(elapsedTime * (4.5 + speedRatio * 4))) * 0.32;
+      const dt =
+        crusherLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - crusherLastTime), 0.05);
+      crusherLastTime = elapsedTime;
+      crusherPhase =
+        (crusherPhase + dt * (4.2 + THREE.MathUtils.clamp(speedRatio, 0, 1.5) * 3.2)) %
+        (Math.PI * 200);
+      const snap = Math.abs(Math.sin(crusherPhase)) * 0.32;
       pivots[0].rotation.y = 0.22 - snap;
       pivots[1].rotation.y = -0.22 + snap;
     };
@@ -1089,9 +1159,18 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     }
     group.add(drillGroup);
 
+    let drillPhase = 0;
+    let drillLastTime = -1;
     animateFn = (elapsedTime, speedRatio, isBoosting) => {
-      const rotSpeed = 10 + speedRatio * 12 + (isBoosting ? 14 : 0);
-      drillGroup.rotation.z = elapsedTime * rotSpeed;
+      const dt =
+        drillLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - drillLastTime), 0.05);
+      drillLastTime = elapsedTime;
+      const rotSpeed =
+        9.0 + THREE.MathUtils.clamp(speedRatio, 0, 1.5) * 8.0 + (isBoosting ? 7.0 : 0);
+      drillPhase = (drillPhase + dt * rotSpeed) % (Math.PI * 200);
+      drillGroup.rotation.z = drillPhase;
     };
   } else if (id === 'weapon_caustic_acid_blister') {
     // 26. Vesícula de Ácido Cáustico: Yellow-green semi-transparent blister with corrosive glowing core
@@ -1202,8 +1281,24 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     }
     group.add(clubGroup);
 
+    let clubPhase = 0;
+    let clubLastTime = -1;
     animateFn = (elapsedTime, speedRatio) => {
-      clubGroup.rotation.y = Math.sin(elapsedTime * (4.5 + speedRatio * 5)) * 0.28;
+      const dt =
+        clubLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - clubLastTime), 0.05);
+      clubLastTime = elapsedTime;
+      clubPhase =
+        (clubPhase + dt * (4.2 + THREE.MathUtils.clamp(speedRatio, 0, 1.5) * 3.8)) %
+        (Math.PI * 200);
+      const targetRotY = Math.sin(clubPhase) * 0.24;
+      clubGroup.rotation.y = THREE.MathUtils.damp(
+        clubGroup.rotation.y,
+        targetRotY,
+        15.0,
+        dt
+      );
     };
   } else if (id === 'defense_silica_spicules') {
     // 29. Espículas de Sílice: Cluster of 3 crystalline translucent silica needles
@@ -1366,11 +1461,31 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       finSegs.push(seg);
     }
 
+    let ribbonPhase = 0;
+    let ribbonLastTime = -1;
     animateFn = (elapsedTime, speedRatio) => {
-      const freq = 7 + speedRatio * 8;
+      const dt =
+        ribbonLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - ribbonLastTime), 0.05);
+      ribbonLastTime = elapsedTime;
+      const freq = 6.5 + THREE.MathUtils.clamp(speedRatio, 0, 1.5) * 5.5;
+      ribbonPhase = (ribbonPhase + dt * freq) % (Math.PI * 200);
       for (let s = 0; s < finSegs.length; s++) {
-        finSegs[s].position.y = Math.sin(elapsedTime * freq + s * 0.9) * 0.09;
-        finSegs[s].rotation.z = Math.cos(elapsedTime * freq + s * 0.9) * 0.25;
+        const targetY = Math.sin(ribbonPhase + s * 0.9) * 0.08;
+        const targetRotZ = Math.cos(ribbonPhase + s * 0.9) * 0.22;
+        finSegs[s].position.y = THREE.MathUtils.damp(
+          finSegs[s].position.y,
+          targetY,
+          16.0,
+          dt
+        );
+        finSegs[s].rotation.z = THREE.MathUtils.damp(
+          finSegs[s].rotation.z,
+          targetRotZ,
+          16.0,
+          dt
+        );
       }
     };
   } else if (id === 'movement_macro_cilia_skirt') {
@@ -1395,10 +1510,24 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     }
     group.add(wheelGroup);
 
+    let oarPhase = 0;
+    let oarLastTime = -1;
     animateFn = (elapsedTime, speedRatio) => {
-      const freq = 9 + speedRatio * 9;
+      const dt =
+        oarLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - oarLastTime), 0.05);
+      oarLastTime = elapsedTime;
+      const freq = 7.5 + THREE.MathUtils.clamp(speedRatio, 0, 1.5) * 6.0;
+      oarPhase = (oarPhase + dt * freq) % (Math.PI * 200);
       for (let i = 0; i < oars.length; i++) {
-        oars[i].rotation.y = Math.sin(elapsedTime * freq + i * 0.8) * 0.45;
+        const targetRotY = Math.sin(oarPhase + i * 0.8) * 0.36;
+        oars[i].rotation.y = THREE.MathUtils.damp(
+          oars[i].rotation.y,
+          targetRotY,
+          16.0,
+          dt
+        );
       }
     };
   } else if (id === 'movement_whip_flagella') {
@@ -1428,12 +1557,33 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       rightSegments.push(rSeg);
     }
 
+    let whipPhase = 0;
+    let whipLastTime = -1;
     animateFn = (elapsedTime, speedRatio, isBoosting) => {
-      const freq = 10 + speedRatio * 10 + (isBoosting ? 8 : 0);
+      const dt =
+        whipLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - whipLastTime), 0.05);
+      whipLastTime = elapsedTime;
+      const clampedSpeed = THREE.MathUtils.clamp(speedRatio, 0, 1.5);
+      const freq = Math.min(18.0, 7.5 + clampedSpeed * 6.5 + (isBoosting ? 4.0 : 0));
+      whipPhase = (whipPhase + dt * freq) % (Math.PI * 200);
       for (let i = 0; i < leftSegments.length; i++) {
-        const wave = Math.sin(elapsedTime * freq - i * 0.85) * (0.06 + i * 0.035);
-        leftSegments[i].position.x = -0.08 - i * 0.03 + wave;
-        rightSegments[i].position.x = 0.08 + i * 0.03 - wave;
+        const wave = Math.sin(whipPhase - i * 0.78) * (0.048 + i * 0.025);
+        const targetLeftX = -0.08 - i * 0.03 + wave;
+        const targetRightX = 0.08 + i * 0.03 - wave;
+        leftSegments[i].position.x = THREE.MathUtils.damp(
+          leftSegments[i].position.x,
+          targetLeftX,
+          16.0,
+          dt
+        );
+        rightSegments[i].position.x = THREE.MathUtils.damp(
+          rightSegments[i].position.x,
+          targetRightX,
+          16.0,
+          dt
+        );
       }
     };
   } else if (id === 'movement_pneumatic_vesicle') {
@@ -1488,11 +1638,26 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     glowRing.position.z = 0.5;
     group.add(funnelMesh, glowRing);
 
+    let nozzlePhase = 0;
+    let nozzleLastTime = -1;
     animateFn = (elapsedTime, _speedRatio, isBoosting) => {
-      const contract = isBoosting
-        ? 0.78 + Math.sin(elapsedTime * 22) * 0.15
-        : 1.0 + Math.sin(elapsedTime * 5) * 0.08;
-      glowRing.scale.setScalar(contract);
+      const dt =
+        nozzleLastTime < 0
+          ? 0.016
+          : Math.min(Math.max(0.001, elapsedTime - nozzleLastTime), 0.05);
+      nozzleLastTime = elapsedTime;
+      const rate = isBoosting ? 13.0 : 5.0;
+      nozzlePhase = (nozzlePhase + dt * rate) % (Math.PI * 200);
+      const targetContract = isBoosting
+        ? 0.84 + Math.sin(nozzlePhase) * 0.1
+        : 1.0 + Math.sin(nozzlePhase) * 0.06;
+      const dampedScale = THREE.MathUtils.damp(
+        glowRing.scale.x,
+        targetContract,
+        14.0,
+        dt
+      );
+      glowRing.scale.setScalar(dampedScale);
     };
   } else if (id === 'sense_stalk_compound_eye') {
     // 39. Ojo Compuesto Pedunculado: Faceted eye on a flexible cylindrical stalk

@@ -22,6 +22,7 @@ import {
   Zap,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { audioManager } from '../game/AudioManager';
 import {
   computeStackedMultiplier,
   normalizeAdaptationId,
@@ -816,7 +817,9 @@ export function CreatureEditorModal({
                 <button
                   key={tab.id}
                   type="button"
+                  onPointerEnter={() => audioManager.playButtonHover()}
                   onClick={() => {
+                    audioManager.playButtonClick();
                     setActiveTab(tab.id);
                     onSelectPlacedOrgan(null);
                   }}
@@ -849,7 +852,11 @@ export function CreatureEditorModal({
                         <button
                           key={theme.id}
                           type="button"
-                          onClick={() => onChangeColorTheme(theme.id)}
+                          onPointerEnter={() => audioManager.playButtonHover()}
+                          onClick={() => {
+                            audioManager.playButtonClick();
+                            onChangeColorTheme(theme.id);
+                          }}
                           className={`flex items-center gap-2.5 rounded-full border px-3.5 py-2.5 text-left text-xs font-bold cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150 ${
                             active
                               ? theme.ringClass
@@ -878,7 +885,11 @@ export function CreatureEditorModal({
                         <button
                           key={shape.id}
                           type="button"
-                          onClick={() => onChangeBodyShape(shape.id)}
+                          onPointerEnter={() => audioManager.playButtonHover()}
+                          onClick={() => {
+                            audioManager.playButtonClick();
+                            onChangeBodyShape(shape.id);
+                          }}
                           className={`flex w-full items-center justify-between rounded-full border px-4 py-2.5 text-left cursor-pointer hover:scale-[1.02] active:scale-95 transition-all duration-150 ${
                             active
                               ? 'border-cyan-200/80 border-t-white/80 bg-gradient-to-b from-cyan-400/30 to-teal-900/55 text-white shadow-[0_0_16px_rgba(34,211,238,0.3)]'
@@ -967,11 +978,13 @@ export function CreatureEditorModal({
                     <div
                       key={slot.id}
                       onPointerEnter={() => {
+                        audioManager.playButtonHover();
                         if (!selectedPlacedInstanceId) {
                           setInspectedSlotId(slot.id);
                         }
                       }}
                       onPointerDown={(e) => {
+                        audioManager.playButtonClick();
                         onSelectPlacedOrgan(null);
                         setInspectedSlotId(slot.id);
                         if (canDragOrInstall && e.button === 0) {
@@ -1100,7 +1113,10 @@ export function CreatureEditorModal({
                   maxLength={28}
                   value={stats.speciesName}
                   onChange={(e) => onChangeSpeciesName(e.target.value)}
-                  onKeyDown={(e) => e.stopPropagation()}
+                  onKeyDown={(e) => {
+                    e.stopPropagation();
+                    audioManager.playKeyType();
+                  }}
                   className="mt-1 w-full rounded-full border border-cyan-300/35 bg-[#031521]/80 px-3.5 py-1.5 font-display text-sm font-extrabold text-white outline-none focus:border-cyan-200 focus:shadow-[0_0_12px_rgba(34,211,238,0.3)]"
                   placeholder="Organismo Primigenio"
                 />
@@ -1609,7 +1625,11 @@ export function CreatureEditorModal({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => onRotateEditorCamera(-0.45)}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onRotateEditorCamera(-0.45);
+            }}
             className="flex items-center gap-1.5 rounded-full border border-cyan-400/40 border-t-cyan-200/60 bg-cyan-500/20 hover:bg-cyan-500/35 px-3.5 py-1.5 text-xs font-bold text-cyan-100 shadow-[0_2px_10px_rgba(34,211,238,0.2)] cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150"
             title="Rotar cámara a la izquierda"
           >
@@ -1618,7 +1638,11 @@ export function CreatureEditorModal({
           </button>
           <button
             type="button"
-            onClick={() => onRotateEditorCamera(0.45)}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onRotateEditorCamera(0.45);
+            }}
             className="flex items-center gap-1.5 rounded-full border border-cyan-400/40 border-t-cyan-200/60 bg-cyan-500/20 hover:bg-cyan-500/35 px-3.5 py-1.5 text-xs font-bold text-cyan-100 shadow-[0_2px_10px_rgba(34,211,238,0.2)] cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150"
             title="Rotar cámara a la derecha"
           >
@@ -1645,7 +1669,11 @@ export function CreatureEditorModal({
           {readyForLandTransition && !isCreatureStage && (
             <button
               type="button"
-              onClick={onEvolveToCreatureStage}
+              onPointerEnter={() => audioManager.playButtonHover()}
+              onClick={() => {
+                audioManager.playButtonClick();
+                onEvolveToCreatureStage();
+              }}
               className="flex items-center gap-1.5 rounded-full border border-emerald-200/80 bg-gradient-to-b from-emerald-300 via-teal-400 to-emerald-500 px-4 py-2 font-display text-xs font-extrabold text-slate-950 shadow-[0_4px_16px_rgba(52,211,153,0.45),inset_0_1px_2px_rgba(255,255,255,0.75)] cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150"
             >
               <Footprints className="h-4 w-4" />
@@ -1655,7 +1683,11 @@ export function CreatureEditorModal({
 
           <button
             type="button"
-            onClick={onClose}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onClose();
+            }}
             className="flex items-center gap-2 rounded-full border border-amber-100/85 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 px-5 py-2 font-display text-xs font-extrabold text-slate-950 shadow-[0_4px_16px_rgba(251,191,36,0.45),inset_0_1px_2px_rgba(255,255,255,0.75)] cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150"
           >
             <Sparkles className="h-4 w-4" />

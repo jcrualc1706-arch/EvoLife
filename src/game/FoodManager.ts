@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
 import { SpatialHashGrid } from './SpatialHashGrid';
 import { DietType, FoodKind } from './types';
@@ -9,6 +10,7 @@ interface FoodItem {
   coreMesh: THREE.Mesh;
   haloMesh: THREE.Mesh;
   basePosition: THREE.Vector3;
+  scatterVelocity: THREE.Vector3;
   active: boolean;
   respawnTimer: number;
   phaseOffset: number;
@@ -453,6 +455,7 @@ export class FoodManager {
         coreMesh,
         haloMesh,
         basePosition: new THREE.Vector3(),
+        scatterVelocity: new THREE.Vector3(),
         active: true,
         respawnTimer: 0,
         phaseOffset: Math.random() * Math.PI * 2,
@@ -591,27 +594,45 @@ export class FoodManager {
   }
 
   /**
-   * Spawns a fresh Meat Fragment & a Golden DNA Spore right where an organism was killed.
+   * Spawns 1 to 3 fresh Meat Fragments expelled in a radial fan with physical water impulse,
+   * plus a Golden DNA Spore right where an organism was defeated.
    * These only restore Energy and ADN — never unlock adaptations.
    */
-  public spawnMeatDrop(originPosition: THREE.Vector3): void {
+  public spawnMeatDrop(originPosition: THREE.Vector3, requestedCount?: number): number {
+    const count =
+      requestedCount ?? (1 + Math.floor(Math.random() * 3)); // 1 to 3 meat chunks
     const meatItems = this.items.filter((it) => it.kind === 'meat');
-    if (meatItems.length > 0) {
-      const chosenMeat =
-        meatItems.find((it) => !it.active) ??
-        meatItems[this.meatDropCursor % meatItems.length];
-      this.meatDropCursor++;
+    const baseAngle = Math.random() * Math.PI * 2;
 
-      const angle = Math.random() * Math.PI * 2;
-      chosenMeat.basePosition.set(
-        originPosition.x + Math.cos(angle) * 1.1,
-        GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-        originPosition.z + Math.sin(angle) * 1.1
-      );
-      chosenMeat.group.position.copy(chosenMeat.basePosition);
-      chosenMeat.active = true;
-      chosenMeat.respawnTimer = 0;
-      chosenMeat.group.visible = true;
+    if (meatItems.length > 0) {
+      for (let m = 0; m < count; m++) {
+        const chosenMeat =
+          meatItems.find((it) => !it.active) ??
+          meatItems[this.meatDropCursor % meatItems.length];
+        this.meatDropCursor++;
+
+        const fanSpread =
+          count === 1
+            ? 0
+            : ((m / (count - 1)) - 0.5) * (Math.PI * 0.85);
+        const angle = baseAngle + fanSpread + (Math.random() - 0.5) * 0.35;
+        const speed = 5.5 + Math.random() * 4.2;
+
+        chosenMeat.basePosition.set(
+          originPosition.x + Math.cos(angle) * 0.45,
+          GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+          originPosition.z + Math.sin(angle) * 0.45
+        );
+        chosenMeat.scatterVelocity.set(
+          Math.cos(angle) * speed,
+          0,
+          Math.sin(angle) * speed
+        );
+        chosenMeat.group.position.copy(chosenMeat.basePosition);
+        chosenMeat.active = true;
+        chosenMeat.respawnTimer = 0;
+        chosenMeat.group.visible = true;
+      }
     }
 
     const sporeItems = this.items.filter((it) => it.kind === 'dna_spore');
@@ -620,17 +641,24 @@ export class FoodManager {
         sporeItems.find((it) => !it.active) ??
         sporeItems[this.meatDropCursor % sporeItems.length];
 
-      const angle = Math.random() * Math.PI * 2;
+      const angle = baseAngle + Math.PI + (Math.random() - 0.5) * 0.6;
       chosenSpore.basePosition.set(
-        originPosition.x + Math.cos(angle) * 1.4,
+        originPosition.x + Math.cos(angle) * 0.6,
         GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-        originPosition.z + Math.sin(angle) * 1.4
+        originPosition.z + Math.sin(angle) * 0.6
+      );
+      chosenSpore.scatterVelocity.set(
+        Math.cos(angle) * 4.5,
+        0,
+        Math.sin(angle) * 4.5
       );
       chosenSpore.group.position.copy(chosenSpore.basePosition);
       chosenSpore.active = true;
       chosenSpore.respawnTimer = 0;
       chosenSpore.group.visible = true;
     }
+
+    return count;
   }
 
   /**
@@ -769,6 +797,25 @@ export class FoodManager {
         continue;
       }
 
+      // Physical radial scatter impulse when meat/spores burst out of a defeated creature
+      if (item.scatterVelocity.lengthSq() > 0.01) {
+        item.basePosition.addScaledVector(item.scatterVelocity, delta);
+        item.scatterVelocity.x = THREE.MathUtils.damp(
+          item.scatterVelocity.x,
+          0,
+          4.2,
+          delta
+        );
+        item.scatterVelocity.z = THREE.MathUtils.damp(
+          item.scatterVelocity.z,
+          0,
+          4.2,
+          delta
+        );
+        item.group.position.x = item.basePosition.x;
+        item.group.position.z = item.basePosition.z;
+      }
+
       // Only animate rotation/bobbing for items reasonably close to player (< 115m) to save CPU
       const dx = item.basePosition.x - playerPosition.x;
       const dz = item.basePosition.z - playerPosition.z;
@@ -847,6 +894,7 @@ export class FoodManager {
           item.group.visible = false;
           item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
           itemsEaten++;
+          audioManager.playFoodEaten(item.kind);
           if (item.kind === 'plant') {
             plantsEaten++;
             const basePlantEnergy = hasFilterMouthBonus
@@ -913,6 +961,7 @@ export class FoodManager {
             speciesName: droppedSpeciesName || 'Especie Abisal',
           });
         }
+        audioManager.playFoodEaten('genetic_nodule');
         adnGained += 15;
         energyGained += 15;
       }

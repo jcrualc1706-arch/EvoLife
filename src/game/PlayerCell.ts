@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
 import { normalizeAdaptationId } from './evolutionData';
 import { createOrganVisual, OrganVisualInstance } from './OrganFactory3D';
@@ -100,6 +101,7 @@ export class PlayerCell {
   private torsoRadii: [number, number, number] = [1.0, 1.0, 1.0];
   private isLandCreature = false;
   private isEditingMode = false;
+  private isRespawnInvulnerable = false;
 
   private readonly knockbackVelocity = new THREE.Vector3();
   private membraneMesh!: THREE.Mesh;
@@ -1781,6 +1783,10 @@ export class PlayerCell {
     this.isCamouflaged = active;
   }
 
+  public setInvulnerableBlinking(active: boolean): void {
+    this.isRespawnInvulnerable = active;
+  }
+
   public applyDamageKnockback(fromPosition: THREE.Vector3, strength = 15): void {
     _knockbackDecay.subVectors(this.position, fromPosition);
     _knockbackDecay.y = 0;
@@ -1789,8 +1795,25 @@ export class PlayerCell {
     } else {
       _knockbackDecay.normalize();
     }
+    this.currentSpeed *= 0.25;
     this.knockbackVelocity.copy(_knockbackDecay).multiplyScalar(strength);
     this.damageFlashTimer = 0.42;
+  }
+
+  /**
+   * Physical recoil when biting or colliding in melee combat: brakes forward momentum
+   * and pushes the cell back ~2.5m-3.5m to prevent overlapping with the target.
+   */
+  public applyCombatBounce(targetPosition: THREE.Vector3, recoilStrength = 14): void {
+    _knockbackDecay.subVectors(this.position, targetPosition);
+    _knockbackDecay.y = 0;
+    if (_knockbackDecay.lengthSq() < 0.001) {
+      _knockbackDecay.set(Math.sin(this.headingAngle), 0, Math.cos(this.headingAngle));
+    } else {
+      _knockbackDecay.normalize();
+    }
+    this.currentSpeed *= 0.18;
+    this.knockbackVelocity.copy(_knockbackDecay).multiplyScalar(recoilStrength);
   }
 
   public update(
@@ -1801,13 +1824,16 @@ export class PlayerCell {
     speedMultiplier = 1.0,
     turnMultiplier = 1.0
   ): { isMoving: boolean; isBoosting: boolean } {
+    const safeDelta = Math.min(Math.max(delta, 0.001), 0.05);
+
     this.currentScale = THREE.MathUtils.damp(
       this.currentScale,
       this.targetScale,
       3.5,
-      delta
+      safeDelta
     );
     this.group.scale.setScalar(this.currentScale);
+    this.placedOrgansGroup.scale.set(1, 1, 1);
 
     // 1. Smooth angular turning (A / D)
     let targetTurnRate = 0;
@@ -1819,12 +1845,16 @@ export class PlayerCell {
       this.angularVelocity,
       targetTurnRate,
       GAME_CONFIG.PLAYER.TURN_DAMPING,
-      delta
+      safeDelta
     );
-    this.headingAngle += this.angularVelocity * delta;
+    this.headingAngle += this.angularVelocity * safeDelta;
 
     // 2. Smooth forward/backward thrust (W / S) + Space Boost (or Wing Jump/Glide in Creature Stage)
+    const wasBoosting = this.isBoosting;
     this.isBoosting = input.boost && canBoost;
+    if (this.isBoosting && !wasBoosting) {
+      audioManager.playBoostThrust();
+    }
     const isWingGliding =
       this.isLandCreature && this.hasWingsInstalled && this.isBoosting;
 
@@ -1854,26 +1884,26 @@ export class PlayerCell {
       this.currentSpeed,
       targetSpeed,
       dampingLambda,
-      delta
+      safeDelta
     );
 
     // 3. Apply forward velocity + decaying knockback velocity
     _forwardDir.set(-Math.sin(this.headingAngle), 0, -Math.cos(this.headingAngle));
-    this.position.addScaledVector(_forwardDir, this.currentSpeed * delta);
+    this.position.addScaledVector(_forwardDir, this.currentSpeed * safeDelta);
 
     if (this.knockbackVelocity.lengthSq() > 0.01) {
-      this.position.addScaledVector(this.knockbackVelocity, delta);
+      this.position.addScaledVector(this.knockbackVelocity, safeDelta);
       this.knockbackVelocity.x = THREE.MathUtils.damp(
         this.knockbackVelocity.x,
         0,
-        6.5,
-        delta
+        5.2,
+        safeDelta
       );
       this.knockbackVelocity.z = THREE.MathUtils.damp(
         this.knockbackVelocity.z,
         0,
-        6.5,
-        delta
+        5.2,
+        safeDelta
       );
     }
 
@@ -1893,10 +1923,13 @@ export class PlayerCell {
 
     const speedRatio = Math.min(
       Math.abs(this.currentSpeed) / GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED,
-      2.5
+      1.5
     );
-    const swimFreq = 5.5 + speedRatio * 10.5 + (this.isBoosting ? 8.0 : 0);
-    this.flagellumPhase += delta * swimFreq;
+    const swimFreq = Math.min(
+      17.5,
+      5.0 + speedRatio * 7.2 + (this.isBoosting ? 4.0 : 0)
+    );
+    this.flagellumPhase = (this.flagellumPhase + safeDelta * swimFreq) % (Math.PI * 200);
 
     if (this.isLandCreature) {
       const targetHeight = isWingGliding ? 3.8 : 0.0;
@@ -1905,7 +1938,7 @@ export class PlayerCell {
         this.heightOffset,
         targetHeight,
         heightLambda,
-        delta
+        safeDelta
       );
 
       const strideBounce =
@@ -1950,18 +1983,48 @@ export class PlayerCell {
       const strideAmp =
         this.heightOffset > 0.6
           ? 0.22
-          : 0.12 + Math.min(0.68, speedRatio * 0.55);
+          : 0.12 + Math.min(0.55, speedRatio * 0.42);
       const strideWave = Math.sin(this.flagellumPhase * 0.9) * strideAmp;
-      this.amphibianLegs[0].rotation.x = strideWave;
-      this.amphibianLegs[1].rotation.x = -strideWave;
-      this.amphibianLegs[2].rotation.x = -strideWave;
-      this.amphibianLegs[3].rotation.x = strideWave;
+      this.amphibianLegs[0].rotation.x = THREE.MathUtils.damp(
+        this.amphibianLegs[0].rotation.x,
+        strideWave,
+        15.0,
+        safeDelta
+      );
+      this.amphibianLegs[1].rotation.x = THREE.MathUtils.damp(
+        this.amphibianLegs[1].rotation.x,
+        -strideWave,
+        15.0,
+        safeDelta
+      );
+      this.amphibianLegs[2].rotation.x = THREE.MathUtils.damp(
+        this.amphibianLegs[2].rotation.x,
+        -strideWave,
+        15.0,
+        safeDelta
+      );
+      this.amphibianLegs[3].rotation.x = THREE.MathUtils.damp(
+        this.amphibianLegs[3].rotation.x,
+        strideWave,
+        15.0,
+        safeDelta
+      );
     }
 
     for (let i = 0; i < this.ciliaLeft.length; i++) {
-      const flutter = Math.sin(this.flagellumPhase * 1.2 + i) * 0.28;
-      this.ciliaLeft[i].rotation.y = 0.35 + flutter;
-      this.ciliaRight[i].rotation.y = -0.35 - flutter;
+      const flutter = Math.sin(this.flagellumPhase * 1.1 + i) * 0.24;
+      this.ciliaLeft[i].rotation.y = THREE.MathUtils.damp(
+        this.ciliaLeft[i].rotation.y,
+        0.35 + flutter,
+        16.0,
+        safeDelta
+      );
+      this.ciliaRight[i].rotation.y = THREE.MathUtils.damp(
+        this.ciliaRight[i].rotation.y,
+        -0.35 - flutter,
+        16.0,
+        safeDelta
+      );
     }
 
     // 7. Update Pooled Poison Clouds
@@ -2102,6 +2165,13 @@ export class PlayerCell {
       this.membraneMat.color.setHex(0xf43f5e);
       this.membraneMat.emissive.setHex(0xe11d48);
       this.membraneMat.emissiveIntensity = 0.9;
+    } else if (this.isRespawnInvulnerable) {
+      const blinkOn = Math.sin(elapsedTime * 28.0) > 0;
+      this.membraneMat.color.setHex(blinkOn ? 0xffffff : palette.membraneColor);
+      this.membraneMat.emissive.setHex(blinkOn ? 0x38bdf8 : palette.membraneEmissive);
+      this.membraneMat.emissiveIntensity = blinkOn ? 1.1 : 0.2;
+      this.boostHaloMat.opacity = blinkOn ? 0.85 : 0.15;
+      this.boostHaloMat.color.setHex(0x38bdf8);
     } else if (this.matingCallActive) {
       this.membraneMat.color.setHex(0xf472b6);
       this.membraneMat.emissive.setHex(0xec4899);
@@ -2121,7 +2191,13 @@ export class PlayerCell {
       this.boostHaloMat.opacity = this.isCamouflaged ? 0.06 : 0.26;
       this.boostHaloMat.color.setHex(palette.membraneColor);
     }
-    this.membraneMat.opacity = this.isCamouflaged ? 0.22 : 0.88;
+    this.membraneMat.opacity = this.isRespawnInvulnerable
+      ? Math.sin(elapsedTime * 28.0) > 0
+        ? 0.95
+        : 0.32
+      : this.isCamouflaged
+      ? 0.22
+      : 0.88;
 
     const isMoving =
       input.forward ||
@@ -2150,6 +2226,7 @@ export class PlayerCell {
     this.group.scale.setScalar(1.0);
     this.knockbackVelocity.set(0, 0, 0);
     this.damageFlashTimer = 0;
+    this.isRespawnInvulnerable = false;
     this.group.rotation.set(0, 0, 0);
     this.haloMesh.position.y = -0.95;
     this.setEditorMode(false);

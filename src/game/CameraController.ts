@@ -14,6 +14,7 @@ export class CameraController {
   private editorPitchAngle = 0.96; // Radians above horizontal plane (~55 deg)
   private shakeTimer = 0;
   private shakeIntensity = 0;
+  private atmosphericAltitudeFactor = 0;
 
   constructor(aspect: number) {
     this.camera = new THREE.PerspectiveCamera(
@@ -23,6 +24,35 @@ export class CameraController {
       420
     );
     this.resetImmediate(new THREE.Vector3(0, GAME_CONFIG.WORLD.SWIM_PLANE_Y, 0), 0);
+  }
+
+  public setAtmosphericAltitudeFactor(
+    factor: number,
+    player?: PlayerCell,
+    snapImmediate = false
+  ): void {
+    this.atmosphericAltitudeFactor = THREE.MathUtils.clamp(factor, 0, 1);
+    if (snapImmediate && player) {
+      _playerForward.set(
+        -Math.sin(player.headingAngle),
+        0,
+        -Math.cos(player.headingAngle)
+      );
+      const effectiveOffsetBack =
+        GAME_CONFIG.CAMERA.OFFSET_BACK *
+        player.cameraZoomMultiplier *
+        (1 - this.atmosphericAltitudeFactor * 0.55);
+      const effectiveOffsetUp =
+        GAME_CONFIG.CAMERA.OFFSET_UP * player.cameraZoomMultiplier +
+        this.atmosphericAltitudeFactor * 54.0;
+
+      this.camera.position
+        .copy(player.position)
+        .addScaledVector(_playerForward, -effectiveOffsetBack);
+      this.camera.position.y = player.position.y + effectiveOffsetUp;
+      this.currentLookTarget.copy(player.position);
+      this.camera.lookAt(this.currentLookTarget);
+    }
   }
 
   public triggerScreenShake(intensity = 0.38, duration = 0.32): void {
@@ -53,6 +83,7 @@ export class CameraController {
     this.editorOrbitOffset = 0;
     this.editorPitchAngle = 0.96;
     this.shakeTimer = 0;
+    this.atmosphericAltitudeFactor = 0;
     _playerForward.set(-Math.sin(headingAngle), 0, -Math.cos(headingAngle));
 
     this.camera.position
@@ -236,34 +267,41 @@ export class CameraController {
       delta
     );
 
+    const altFactor = this.atmosphericAltitudeFactor;
     const effectiveOffsetBack =
-      GAME_CONFIG.CAMERA.OFFSET_BACK * this.currentZoomMultiplier;
+      GAME_CONFIG.CAMERA.OFFSET_BACK *
+      this.currentZoomMultiplier *
+      (1.0 - altFactor * 0.55);
     const effectiveOffsetUp =
-      GAME_CONFIG.CAMERA.OFFSET_UP * this.currentZoomMultiplier;
+      GAME_CONFIG.CAMERA.OFFSET_UP * this.currentZoomMultiplier +
+      altFactor * altFactor * 54.0;
 
-    // Desired camera position behind & above the cell
+    // Desired camera position behind & above the cell (or high in the atmosphere during transition)
     _desiredCamPos
       .copy(player.position)
       .addScaledVector(_playerForward, -effectiveOffsetBack);
     _desiredCamPos.y = player.position.y + effectiveOffsetUp;
 
+    const posDamp =
+      altFactor > 0.01 ? 9.5 : GAME_CONFIG.CAMERA.POSITION_DAMPING;
+
     // Smooth exponential damping for camera position (zero vibration)
     this.camera.position.x = THREE.MathUtils.damp(
       this.camera.position.x,
       _desiredCamPos.x,
-      GAME_CONFIG.CAMERA.POSITION_DAMPING,
+      posDamp,
       delta
     );
     this.camera.position.y = THREE.MathUtils.damp(
       this.camera.position.y,
       _desiredCamPos.y,
-      GAME_CONFIG.CAMERA.POSITION_DAMPING,
+      posDamp,
       delta
     );
     this.camera.position.z = THREE.MathUtils.damp(
       this.camera.position.z,
       _desiredCamPos.z,
-      GAME_CONFIG.CAMERA.POSITION_DAMPING,
+      posDamp,
       delta
     );
 
@@ -280,7 +318,9 @@ export class CameraController {
       .copy(player.position)
       .addScaledVector(
         _playerForward,
-        GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE * this.currentZoomMultiplier
+        GAME_CONFIG.CAMERA.LOOK_AHEAD_DISTANCE *
+          this.currentZoomMultiplier *
+          (1.0 - altFactor * 0.7)
       );
 
     this.currentLookTarget.x = THREE.MathUtils.damp(
@@ -304,10 +344,11 @@ export class CameraController {
 
     this.camera.lookAt(this.currentLookTarget);
 
-    // Subtle FOV widening when boosting
-    const targetFov = player.isBoosting
+    // Subtle FOV widening when boosting or diving through planetary atmosphere
+    const baseTargetFov = player.isBoosting
       ? GAME_CONFIG.CAMERA.BOOST_FOV
       : GAME_CONFIG.CAMERA.BASE_FOV;
+    const targetFov = baseTargetFov + altFactor * 14.0;
     if (Math.abs(this.camera.fov - targetFov) > 0.05) {
       this.camera.fov = THREE.MathUtils.damp(
         this.camera.fov,

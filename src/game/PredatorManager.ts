@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
 import { createOrganVisual, OrganVisualInstance } from './OrganFactory3D';
 import { PooledAcidProjectile } from './PlayerCell';
@@ -294,12 +295,23 @@ interface OrganismEntity {
   respawnTimer: number;
   stunTimer: number;
   poisonTimer: number;
+  poisonTickTimer: number;
   socialCooldown: number;
   wanderTarget: THREE.Vector3;
   wanderRetargetTimer: number;
   attackCooldown: number;
   lungeTimer: number;
   swimPhase: number;
+  maxHealth: number;
+  health: number;
+  combatRevealTimer: number;
+  hitFlashTimer: number;
+  biteImmunityTimer: number;
+  dyingTimer: number;
+  dyingKilledByPlayer: boolean;
+  knockbackVelocity: THREE.Vector3;
+  healthRingMesh: THREE.Mesh;
+  healthRingMat: THREE.ShaderMaterial;
   mandibleLeft: THREE.Mesh | null;
   mandibleRight: THREE.Mesh | null;
   tailSegments: THREE.Mesh[];
@@ -315,6 +327,76 @@ interface OrganismEntity {
   geneMarkerCrystal: THREE.Mesh;
 }
 
+interface FloatingDamagePopup {
+  sprite: THREE.Sprite;
+  material: THREE.SpriteMaterial;
+  texture: THREE.CanvasTexture;
+  canvas: HTMLCanvasElement;
+  ctx: CanvasRenderingContext2D | null;
+  active: boolean;
+  life: number;
+  maxLife: number;
+  velocityY: number;
+}
+
+interface DeathBurstParticle {
+  mesh: THREE.Mesh;
+  mat: THREE.MeshBasicMaterial;
+  velocity: THREE.Vector3;
+  active: boolean;
+  life: number;
+  maxLife: number;
+}
+
+const HEALTH_RING_VERTEX_SHADER = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const HEALTH_RING_FRAGMENT_SHADER = /* glsl */ `
+  uniform float uHealthRatio;
+  uniform float uOpacity;
+  uniform float uFlash;
+  varying vec2 vUv;
+
+  void main() {
+    vec2 centered = vUv - vec2(0.5);
+    float dist = length(centered);
+
+    // Smooth radial ring mask
+    float innerEdge = smoothstep(0.32, 0.35, dist);
+    float outerEdge = 1.0 - smoothstep(0.45, 0.48, dist);
+    float ringMask = innerEdge * outerEdge;
+    if (ringMask <= 0.01) discard;
+
+    // Clockwise angle starting from top (+Y in UV)
+    float angle = atan(centered.x, centered.y);
+    float normAngle = (angle + 3.14159265) / 6.2831853;
+
+    // Background track (dark crimson-slate translucent)
+    vec3 bgCol = vec3(0.06, 0.09, 0.16);
+    float bgAlpha = 0.72;
+
+    // Active health arc (bright scarlet-rose #f43f5e -> #ef4444)
+    float fillMask = 1.0 - smoothstep(uHealthRatio - 0.012, uHealthRatio + 0.012, normAngle);
+    vec3 healthCol = mix(vec3(0.94, 0.22, 0.32), vec3(0.99, 0.44, 0.52), normAngle);
+    healthCol = mix(healthCol, vec3(1.0, 0.96, 0.85), uFlash * 0.75);
+
+    // Subtle glowing tip at the edge of current health
+    float tipDist = abs(normAngle - uHealthRatio);
+    float tipGlow = smoothstep(0.035, 0.0, tipDist) * step(0.02, uHealthRatio);
+    healthCol += vec3(1.0, 0.88, 0.75) * tipGlow * 0.65;
+
+    vec3 finalCol = mix(bgCol, healthCol, fillMask);
+    float finalAlpha = ringMask * mix(bgAlpha, 0.96, fillMask) * uOpacity;
+
+    gl_FragColor = vec4(finalCol, finalAlpha);
+  }
+`;
+
 const _toTarget = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 
@@ -327,6 +409,10 @@ export class PredatorManager {
   private readonly nearbyEntitiesBuffer: OrganismEntity[] = [];
   private readonly sharedGeometries: THREE.BufferGeometry[] = [];
   private readonly disposableMaterials: THREE.Material[] = [];
+  private readonly floatingDamagePool: FloatingDamagePopup[] = [];
+  private floatingDamageCursor = 0;
+  private readonly deathParticlePool: DeathBurstParticle[] = [];
+  private deathParticleCursor = 0;
 
   // Shared Geometries
   private predatorBodyGeo!: THREE.BufferGeometry;
@@ -340,6 +426,8 @@ export class PredatorManager {
   private eyeGeo!: THREE.BufferGeometry;
   private tailGeo!: THREE.BufferGeometry;
   private ringGeo!: THREE.BufferGeometry;
+  private healthRingPlaneGeo!: THREE.BufferGeometry;
+  private deathSphereGeo!: THREE.BufferGeometry;
   private uncataloguedRimGeo!: THREE.BufferGeometry;
   private leviathanPlateGeo!: THREE.BufferGeometry;
   private herbivoreBodyGeo!: THREE.BufferGeometry;
@@ -372,6 +460,7 @@ export class PredatorManager {
 
   constructor(scene: THREE.Scene) {
     this.initSharedAssets();
+    this.initCombatVfxPools(scene);
     this.spawnEcosystem(scene);
   }
 
@@ -446,6 +535,11 @@ export class PredatorManager {
     this.geneHaloGeo = new THREE.RingGeometry(0.4, 0.56, 20);
     this.geneHaloGeo.rotateX(-Math.PI / 2);
 
+    this.healthRingPlaneGeo = new THREE.PlaneGeometry(3.4, 3.4);
+    this.healthRingPlaneGeo.rotateX(-Math.PI / 2);
+
+    this.deathSphereGeo = new THREE.SphereGeometry(0.24, 10, 10);
+
     this.sharedGeometries.push(
       this.predatorBodyGeo,
       this.sphericalBodyGeo,
@@ -458,6 +552,8 @@ export class PredatorManager {
       this.eyeGeo,
       this.tailGeo,
       this.ringGeo,
+      this.healthRingPlaneGeo,
+      this.deathSphereGeo,
       this.uncataloguedRimGeo,
       this.leviathanPlateGeo,
       this.herbivoreBodyGeo,
@@ -670,6 +766,176 @@ export class PredatorManager {
       this.geneCrystalMat,
       this.geneHaloMat
     );
+  }
+
+  private initCombatVfxPools(scene: THREE.Scene): void {
+    // 1. Pool of 20 3D Floating Damage Number Sprites
+    for (let i = 0; i < 20; i++) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 192;
+      canvas.height = 96;
+      const ctx = canvas.getContext('2d');
+      const texture = new THREE.CanvasTexture(canvas);
+      texture.minFilter = THREE.LinearFilter;
+      texture.magFilter = THREE.LinearFilter;
+
+      const material = new THREE.SpriteMaterial({
+        map: texture,
+        transparent: true,
+        depthTest: false,
+        depthWrite: false,
+      });
+      this.disposableMaterials.push(material);
+
+      const sprite = new THREE.Sprite(material);
+      sprite.scale.set(2.4, 1.2, 1.0);
+      sprite.renderOrder = 25;
+      sprite.visible = false;
+      scene.add(sprite);
+
+      this.floatingDamagePool.push({
+        sprite,
+        material,
+        texture,
+        canvas,
+        ctx,
+        active: false,
+        life: 0,
+        maxLife: 0.8,
+        velocityY: 2.6,
+      });
+    }
+
+    // 2. Pool of 48 Bioluminescent Micro-Spheres for Cell Death Rupture Animation
+    for (let i = 0; i < 48; i++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: 0x67e8f9,
+        transparent: true,
+        opacity: 0.9,
+        depthWrite: false,
+      });
+      this.disposableMaterials.push(mat);
+      const mesh = new THREE.Mesh(this.deathSphereGeo, mat);
+      mesh.visible = false;
+      scene.add(mesh);
+
+      this.deathParticlePool.push({
+        mesh,
+        mat,
+        velocity: new THREE.Vector3(),
+        active: false,
+        life: 0,
+        maxLife: 0.65,
+      });
+    }
+  }
+
+  /**
+   * Spawns a 3D floating damage number at the given world coordinate that rises along +Y and fades over 0.8s.
+   */
+  public spawnFloatingDamageNumber(
+    worldPos: THREE.Vector3,
+    damageAmount: number,
+    style: 'enemy_hit' | 'critical_hit' | 'player_hit' = 'enemy_hit'
+  ): void {
+    const rounded = Math.max(1, Math.round(damageAmount));
+    const popup =
+      this.floatingDamagePool.find((p) => !p.active) ??
+      this.floatingDamagePool[
+        this.floatingDamageCursor % this.floatingDamagePool.length
+      ];
+    this.floatingDamageCursor++;
+
+    const ctx = popup.ctx;
+    if (ctx) {
+      ctx.clearRect(0, 0, popup.canvas.width, popup.canvas.height);
+      ctx.save();
+      ctx.font = '900 46px "Space Grotesk", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+
+      const text = style === 'critical_hit' ? `-${rounded}!` : `-${rounded}`;
+      ctx.shadowColor =
+        style === 'player_hit'
+          ? 'rgba(225, 29, 72, 0.95)'
+          : style === 'critical_hit'
+          ? 'rgba(245, 158, 11, 0.95)'
+          : 'rgba(239, 68, 68, 0.95)';
+      ctx.shadowBlur = 12;
+      ctx.lineWidth = 6;
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.strokeText(text, 96, 48);
+
+      ctx.fillStyle =
+        style === 'player_hit'
+          ? '#fda4af'
+          : style === 'critical_hit'
+          ? '#fde047'
+          : '#ff4d6d';
+      ctx.fillText(text, 96, 48);
+      ctx.restore();
+      popup.texture.needsUpdate = true;
+    }
+
+    const jitterX = (Math.random() - 0.5) * 0.75;
+    const jitterZ = (Math.random() - 0.5) * 0.75;
+    popup.sprite.position.set(
+      worldPos.x + jitterX,
+      worldPos.y + 1.55,
+      worldPos.z + jitterZ
+    );
+    const baseScale = style === 'critical_hit' ? 2.85 : 2.35;
+    popup.sprite.scale.set(baseScale, baseScale * 0.5, 1);
+    popup.material.opacity = 1.0;
+    popup.active = true;
+    popup.life = 0.8;
+    popup.maxLife = 0.8;
+    popup.velocityY = style === 'critical_hit' ? 3.1 : 2.45;
+    popup.sprite.visible = true;
+  }
+
+  private spawnDeathMicroSpheres(
+    origin: THREE.Vector3,
+    isHerbivore: boolean,
+    scaleMultiplier: number
+  ): void {
+    const count = 10;
+    for (let i = 0; i < count; i++) {
+      const part =
+        this.deathParticlePool.find((p) => !p.active) ??
+        this.deathParticlePool[
+          this.deathParticleCursor % this.deathParticlePool.length
+        ];
+      this.deathParticleCursor++;
+
+      const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.4;
+      const speed = (4.8 + Math.random() * 5.2) * Math.max(0.8, scaleMultiplier);
+      const upSpeed = 0.8 + Math.random() * 1.8;
+
+      part.mesh.position.set(
+        origin.x + Math.cos(angle) * 0.35,
+        origin.y + 0.2,
+        origin.z + Math.sin(angle) * 0.35
+      );
+      part.velocity.set(
+        Math.cos(angle) * speed,
+        upSpeed,
+        Math.sin(angle) * speed
+      );
+      part.mat.color.setHex(
+        i % 3 === 0
+          ? 0xfef08a
+          : isHerbivore
+          ? 0x2dd4bf
+          : 0xfb7185
+      );
+      part.mat.opacity = 0.95;
+      part.mesh.scale.setScalar(0.7 + Math.random() * 0.65);
+      part.active = true;
+      part.maxLife = 0.55 + Math.random() * 0.25;
+      part.life = part.maxLife;
+      part.mesh.visible = true;
+    }
   }
 
   private attachOrganToCreature(
@@ -1252,7 +1518,40 @@ export class PredatorManager {
       geneMarkerGroup.add(geneMarkerHalo);
       group.add(geneMarkerGroup);
 
+      // 3D Circular Health Bar Ring (ShaderMaterial around/above the organism, visible only when damaged/in combat)
+      const healthRingMat = new THREE.ShaderMaterial({
+        vertexShader: HEALTH_RING_VERTEX_SHADER,
+        fragmentShader: HEALTH_RING_FRAGMENT_SHADER,
+        uniforms: {
+          uHealthRatio: { value: 1.0 },
+          uOpacity: { value: 0.0 },
+          uFlash: { value: 0.0 },
+        },
+        transparent: true,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      this.disposableMaterials.push(healthRingMat);
+
+      const healthRingMesh = new THREE.Mesh(
+        this.healthRingPlaneGeo,
+        healthRingMat
+      );
+      healthRingMesh.position.set(0, 0.82, 0);
+      healthRingMesh.visible = false;
+      healthRingMesh.renderOrder = 12;
+      group.add(healthRingMesh);
+
       scene.add(group);
+
+      const tierMaxHealth =
+        profile.tier === 1
+          ? profile.isHerbivore
+            ? 32
+            : 42
+          : profile.tier === 2
+          ? 72
+          : 125;
 
       const entity: OrganismEntity = {
         id: i + 1,
@@ -1268,12 +1567,23 @@ export class PredatorManager {
         respawnTimer: 0,
         stunTimer: 0,
         poisonTimer: 0,
+        poisonTickTimer: 0,
         socialCooldown: 0,
         wanderTarget: new THREE.Vector3(),
         wanderRetargetTimer: 0,
         attackCooldown: 0,
         lungeTimer: 0,
         swimPhase: i * 1.15,
+        maxHealth: tierMaxHealth,
+        health: tierMaxHealth,
+        combatRevealTimer: 0,
+        hitFlashTimer: 0,
+        biteImmunityTimer: 0,
+        dyingTimer: 0,
+        dyingKilledByPlayer: false,
+        knockbackVelocity: new THREE.Vector3(),
+        healthRingMesh,
+        healthRingMat,
         mandibleLeft,
         mandibleRight,
         tailSegments,
@@ -1362,7 +1672,18 @@ export class PredatorManager {
     entity.respawnTimer = 0;
     entity.stunTimer = 0;
     entity.poisonTimer = 0;
+    entity.poisonTickTimer = 0;
     entity.socialCooldown = 0;
+    entity.health = entity.maxHealth;
+    entity.combatRevealTimer = 0;
+    entity.hitFlashTimer = 0;
+    entity.biteImmunityTimer = 0;
+    entity.dyingTimer = 0;
+    entity.dyingKilledByPlayer = false;
+    entity.knockbackVelocity.set(0, 0, 0);
+    entity.healthRingMesh.visible = false;
+    entity.healthRingMat.uniforms.uHealthRatio.value = 1.0;
+    entity.healthRingMat.uniforms.uOpacity.value = 0.0;
     entity.group.visible = true;
     entity.attackCooldown = 0;
     entity.lungeTimer = 0;
@@ -1375,6 +1696,14 @@ export class PredatorManager {
     for (let i = 0; i < this.organisms.length; i++) {
       this.spawnOrganismAtSafeRadius(this.organisms[i], i);
     }
+    for (const popup of this.floatingDamagePool) {
+      popup.active = false;
+      popup.sprite.visible = false;
+    }
+    for (const part of this.deathParticlePool) {
+      part.active = false;
+      part.mesh.visible = false;
+    }
   }
 
   /**
@@ -1386,6 +1715,16 @@ export class PredatorManager {
     visible: boolean,
     playerPosition?: THREE.Vector3
   ): void {
+    if (!visible) {
+      for (const popup of this.floatingDamagePool) {
+        popup.active = false;
+        popup.sprite.visible = false;
+      }
+      for (const part of this.deathParticlePool) {
+        part.active = false;
+        part.mesh.visible = false;
+      }
+    }
     for (let i = 0; i < this.organisms.length; i++) {
       const p = this.organisms[i];
       p.group.visible = visible && p.active;
@@ -1427,6 +1766,51 @@ export class PredatorManager {
             p.group.rotation.set(0, p.headingAngle, 0);
           }
         }
+        this.pickWanderTarget(p);
+      }
+    }
+  }
+
+  /**
+   * Clears and pushes away any predators around a checkpoint respawn point so the player
+   * can safely recover with 3 seconds of invulnerability.
+   */
+  public clearThreatsAroundRespawn(
+    center: THREE.Vector3,
+    safeRadius = 28.0
+  ): void {
+    const safeRadiusSq = safeRadius * safeRadius;
+    const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 8.0;
+
+    for (let i = 0; i < this.organisms.length; i++) {
+      const p = this.organisms[i];
+      if (!p.active) continue;
+
+      p.state = 'DEAMBULAR';
+      p.lungeTimer = 0;
+      p.attackCooldown = Math.max(p.attackCooldown, 3.2);
+      p.currentSpeed = p.profile.wanderSpeed * 0.85;
+
+      const dx = p.position.x - center.x;
+      const dz = p.position.z - center.z;
+      const distSq = dx * dx + dz * dz;
+      if (distSq < safeRadiusSq) {
+        const angle =
+          distSq > 0.01
+            ? Math.atan2(dz, dx)
+            : (i / this.organisms.length) * Math.PI * 2;
+        const pushedDist = safeRadius + 8.0 + (i % 5) * 3.0;
+        p.position.x = center.x + Math.cos(angle) * pushedDist;
+        p.position.z = center.z + Math.sin(angle) * pushedDist;
+
+        const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
+        if (rSq > maxR * maxR) {
+          const r = Math.sqrt(rSq);
+          p.position.x = (p.position.x / r) * maxR;
+          p.position.z = (p.position.z / r) * maxR;
+        }
+        p.headingAngle = angle;
+        p.group.rotation.set(0, p.headingAngle, 0);
         this.pickWanderTarget(p);
       }
     }
@@ -1543,6 +1927,70 @@ export class PredatorManager {
     return { effectiveScale: base * 1.12, depthOffsetY: 0 };
   }
 
+  private applyOrganismDamage(
+    p: OrganismEntity,
+    damage: number,
+    knockbackDirX: number,
+    knockbackDirZ: number,
+    knockbackStrength: number,
+    killedByPlayer: boolean,
+    onCellKilled?: (
+      position: THREE.Vector3,
+      geneticTraits: string[],
+      speciesName: string,
+      killedByPlayer: boolean
+    ) => void,
+    isCritical = false
+  ): boolean {
+    if (p.dyingTimer > 0 || !p.active) return false;
+
+    const actualDamage = Math.max(1, Math.round(damage));
+    p.health = Math.max(0, p.health - actualDamage);
+    p.combatRevealTimer = 5.0; // Keep circular health bar visible for 5s of combat
+    p.hitFlashTimer = 0.22;
+    p.biteImmunityTimer = 0.36;
+
+    // Spawn 3D Floating Damage Number at impact coordinate
+    this.spawnFloatingDamageNumber(
+      p.position,
+      actualDamage,
+      isCritical ? 'critical_hit' : 'enemy_hit'
+    );
+
+    // Physical knockback vector pushing hit organism back ~2.5m-4.0m and braking its speed
+    p.currentSpeed *= 0.15;
+    p.knockbackVelocity.set(
+      knockbackDirX * knockbackStrength,
+      0,
+      knockbackDirZ * knockbackStrength
+    );
+
+    if (killedByPlayer) {
+      audioManager.playBiteAttack();
+    }
+
+    if (p.health <= 0) {
+      // Trigger 0.25s swelling + flash + micro-sphere rupture animation & meat drop
+      p.dyingTimer = 0.25;
+      p.dyingKilledByPlayer = killedByPlayer;
+      p.healthRingMesh.visible = false;
+      if (killedByPlayer) {
+        audioManager.playCreatureDeath();
+      }
+      this.spawnDeathMicroSpheres(
+        p.position,
+        p.profile.isHerbivore,
+        p.profile.scaleMultiplier
+      );
+      if (onCellKilled) {
+        onCellKilled(p.position, p.geneticTraits, p.speciesName, killedByPlayer);
+      }
+      return true;
+    }
+
+    return false;
+  }
+
   public update(
     delta: number,
     elapsedTime: number,
@@ -1566,11 +2014,15 @@ export class PredatorManager {
     canHuntWithGraspingArms = false,
     isPlayerAirborne = false,
     discoveredIds?: ReadonlySet<string>,
-    chitinSpikeStacks = 0
+    chitinSpikeStacks = 0,
+    playerHeadingAngle = 0,
+    playerAttackPower = 15,
+    isPlayerBoosting = false
   ): {
     totalDamageDealt: number;
     attackerPosition: THREE.Vector3 | null;
     attackerSpeciesName: string | null;
+    playerBounceTargetPosition: THREE.Vector3 | null;
     repelledHunters: number;
     repelledLeviathans: number;
     leviathanBonusAdn: number;
@@ -1597,9 +2049,12 @@ export class PredatorManager {
     nearestDistance: number;
     nearestHasUncataloguedGene: boolean;
   } {
+    const safeDelta = Math.min(Math.max(delta, 0.001), 0.05);
+
     let totalDamageDealt = 0;
     let attackerPosition: THREE.Vector3 | null = null;
     let attackerSpeciesName: string | null = null;
+    let playerBounceTargetPosition: THREE.Vector3 | null = null;
     let repelledHunters = 0;
     let repelledLeviathans = 0;
     let leviathanBonusAdn = 0;
@@ -1626,20 +2081,55 @@ export class PredatorManager {
     let nearestSpeciesName = 'Mandíbula Rápida';
     let nearestHasUncataloguedGene = false;
 
-    // Populate the 32m SpatialHashGrid with all active organisms for O(1) neighbor lookups
+    // 0. Update Floating 3D Damage Popups (rise on +Y and fade over 0.8s)
+    for (let d = 0; d < this.floatingDamagePool.length; d++) {
+      const popup = this.floatingDamagePool[d];
+      if (!popup.active) continue;
+      popup.life -= safeDelta;
+      if (popup.life <= 0) {
+        popup.active = false;
+        popup.sprite.visible = false;
+        continue;
+      }
+      const progress = 1 - popup.life / popup.maxLife;
+      popup.sprite.position.y += popup.velocityY * safeDelta;
+      popup.material.opacity = Math.pow(1 - progress, 1.35);
+    }
+
+    // 0B. Update Bioluminescent Death Rupture Micro-Spheres
+    for (let k = 0; k < this.deathParticlePool.length; k++) {
+      const part = this.deathParticlePool[k];
+      if (!part.active) continue;
+      part.life -= safeDelta;
+      if (part.life <= 0) {
+        part.active = false;
+        part.mesh.visible = false;
+        continue;
+      }
+      const progress = 1 - part.life / part.maxLife;
+      part.mesh.position.addScaledVector(part.velocity, safeDelta);
+      part.velocity.multiplyScalar(Math.max(0, 1 - safeDelta * 3.8));
+      part.mat.opacity = (1 - progress) * 0.92;
+      part.mesh.scale.setScalar((1 - progress * 0.65) * 0.9);
+    }
+
+    // Populate the 32m SpatialHashGrid with all living active organisms for O(1) neighbor lookups
     this.spatialGrid.clear();
     for (let i = 0; i < this.organisms.length; i++) {
       const org = this.organisms[i];
-      if (org.active) {
+      if (org.active && org.dyingTimer <= 0) {
         this.spatialGrid.insert(org, org.position.x, org.position.z);
       }
     }
+
+    const playerForwardX = -Math.sin(playerHeadingAngle);
+    const playerForwardZ = -Math.cos(playerHeadingAngle);
 
     for (let i = 0; i < this.organisms.length; i++) {
       const p = this.organisms[i];
 
       if (!p.active) {
-        p.respawnTimer -= delta;
+        p.respawnTimer -= safeDelta;
         if (p.respawnTimer <= 0) {
           this.spawnOrganismAtSafeRadius(p, i);
         } else {
@@ -1648,22 +2138,92 @@ export class PredatorManager {
         }
       }
 
+      const { effectiveScale, depthOffsetY } = this.getTieredScaleAndDepth(p);
+
+      // Handle 0.25s Cell Death Swelling & Incandescent Flash Animation before hiding
+      if (p.dyingTimer > 0) {
+        p.dyingTimer = Math.max(0, p.dyingTimer - safeDelta);
+        const deathProgress = 1.0 - p.dyingTimer / 0.25;
+        const swellScale = effectiveScale * (1.0 + deathProgress * 0.42);
+        p.group.scale.setScalar(swellScale);
+        p.stateRingMat.color.setHex(0xffffff);
+        p.stateRingMat.opacity = (1.0 - deathProgress) * 0.95;
+        p.coreMat.emissive.setHex(0xffffff);
+        p.coreMat.emissiveIntensity = 3.2;
+
+        if (p.dyingTimer <= 0) {
+          p.active = false;
+          p.group.visible = false;
+          p.respawnTimer = 7.5;
+          p.coreMat.emissive.setHex(p.profile.isHerbivore ? 0x10b981 : 0xf43f5e);
+        }
+        continue;
+      }
+
       if (p.attackCooldown > 0) {
-        p.attackCooldown = Math.max(0, p.attackCooldown - delta);
+        p.attackCooldown = Math.max(0, p.attackCooldown - safeDelta);
       }
       if (p.lungeTimer > 0) {
-        p.lungeTimer = Math.max(0, p.lungeTimer - delta);
+        p.lungeTimer = Math.max(0, p.lungeTimer - safeDelta);
       }
       if (p.poisonTimer > 0) {
-        p.poisonTimer = Math.max(0, p.poisonTimer - delta);
+        p.poisonTimer = Math.max(0, p.poisonTimer - safeDelta);
       }
       if (p.socialCooldown > 0) {
-        p.socialCooldown = Math.max(0, p.socialCooldown - delta);
+        p.socialCooldown = Math.max(0, p.socialCooldown - safeDelta);
+      }
+      if (p.biteImmunityTimer > 0) {
+        p.biteImmunityTimer = Math.max(0, p.biteImmunityTimer - safeDelta);
+      }
+      if (p.hitFlashTimer > 0) {
+        p.hitFlashTimer = Math.max(0, p.hitFlashTimer - safeDelta);
+      }
+      if (p.combatRevealTimer > 0) {
+        p.combatRevealTimer = Math.max(0, p.combatRevealTimer - safeDelta);
+      }
+
+      // Apply physical knockback displacement with water damping
+      if (p.knockbackVelocity.lengthSq() > 0.01) {
+        p.position.addScaledVector(p.knockbackVelocity, safeDelta);
+        p.knockbackVelocity.x = THREE.MathUtils.damp(
+          p.knockbackVelocity.x,
+          0,
+          5.2,
+          safeDelta
+        );
+        p.knockbackVelocity.z = THREE.MathUtils.damp(
+          p.knockbackVelocity.z,
+          0,
+          5.2,
+          safeDelta
+        );
       }
 
       // Apply Spore Depth Plane Staging scale & depth offset
-      const { effectiveScale, depthOffsetY } = this.getTieredScaleAndDepth(p);
       p.group.scale.setScalar(effectiveScale);
+
+      // Update 3D Circular Health Bar Ring (only visible when damaged or in active combat, hides after 5s of calm)
+      if (p.combatRevealTimer > 0 && p.health < p.maxHealth) {
+        p.healthRingMesh.visible = true;
+        const targetRatio = THREE.MathUtils.clamp(
+          p.health / p.maxHealth,
+          0,
+          1
+        );
+        p.healthRingMat.uniforms.uHealthRatio.value = THREE.MathUtils.damp(
+          p.healthRingMat.uniforms.uHealthRatio.value,
+          targetRatio,
+          14.0,
+          safeDelta
+        );
+        const fadeOut = Math.min(1.0, p.combatRevealTimer / 0.8);
+        p.healthRingMat.uniforms.uOpacity.value = fadeOut;
+        p.healthRingMat.uniforms.uFlash.value = p.hitFlashTimer / 0.22;
+        // Keep ring oriented cleanly despite group Y rotation
+        p.healthRingMesh.rotation.y = -p.headingAngle;
+      } else {
+        p.healthRingMesh.visible = false;
+      }
 
       const dxToPlayer = playerPosition.x - p.position.x;
       const dzToPlayer = playerPosition.z - p.position.z;
@@ -1678,7 +2238,7 @@ export class PredatorManager {
       p.geneMarkerGroup.visible = carriesUncatalogued;
       p.uncataloguedRimMesh.visible = carriesUncatalogued;
       if (carriesUncatalogued && distToPlayer <= 110) {
-        p.geneMarkerCrystal.rotation.y += delta * 2.8;
+        p.geneMarkerCrystal.rotation.y += safeDelta * 2.8;
         p.geneMarkerGroup.position.y =
           1.38 + Math.sin(elapsedTime * 4.2 + p.id) * 0.14;
         const rimPulse = 0.4 + Math.sin(elapsedTime * 4.5 + p.id) * 0.22;
@@ -1719,27 +2279,34 @@ export class PredatorManager {
           const pushX = vLen > 0.01 ? proj.velocity.x / vLen : 1;
           const pushZ = vLen > 0.01 ? proj.velocity.z / vLen : 0;
 
-          if (p.profile.isHerbivore) {
-            if (onCellKilled) {
-              onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
+          const acidDamage = Math.max(24, playerAttackPower * 1.45);
+          const died = this.applyOrganismDamage(
+            p,
+            acidDamage,
+            pushX,
+            pushZ,
+            16.5,
+            true,
+            onCellKilled,
+            true
+          );
+
+          if (died) {
+            if (p.profile.isHerbivore) {
+              herbivoresHunted++;
+              herbivoreAdnGained += 18;
+              herbivoreEnergyGained += 30;
+            } else {
+              huntersDevoured++;
+              hunterAdnGained += 25;
+              hunterEnergyGained += 35;
             }
-            p.active = false;
-            p.group.visible = false;
-            p.respawnTimer = 7.0;
-            herbivoresHunted++;
-            herbivoreAdnGained += 18;
-            herbivoreEnergyGained += 30;
             killedByAcid = true;
             break;
           } else {
-            if (onCellKilled) {
-              onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
-            }
-            p.position.x += pushX * 5.2;
-            p.position.z += pushZ * 5.2;
             p.headingAngle = Math.atan2(-pushX, -pushZ);
             p.state = 'DEAMBULAR';
-            p.attackCooldown = 2.8;
+            p.attackCooldown = 2.4;
             p.lungeTimer = 0;
             p.wanderTarget.set(
               p.position.x + pushX * 26,
@@ -1748,7 +2315,7 @@ export class PredatorManager {
             );
             p.wanderRetargetTimer = 4.2;
             acidHitsPredatorCount++;
-            acidHitAdnGained += 10;
+            acidHitAdnGained += 8;
             break;
           }
         }
@@ -1759,20 +2326,24 @@ export class PredatorManager {
 
       // --- 0A. BIOELECTRIC DISCHARGE SHOCKWAVE HIT (Radius 9.5m) ---
       if (electricPulseTriggered && distToPlayer <= electricPulseRadius) {
-        if (p.profile.isHerbivore) {
-          if (onCellKilled) {
-            onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
-          }
-          p.active = false;
-          p.group.visible = false;
-          p.respawnTimer = 7.0;
+        const pushDirX = distToPlayer > 0.01 ? -dxToPlayer / distToPlayer : 1;
+        const pushDirZ = distToPlayer > 0.01 ? -dzToPlayer / distToPlayer : 0;
+        const shockDamage = p.profile.isHerbivore ? p.maxHealth : Math.max(28, playerAttackPower * 1.5);
+        const died = this.applyOrganismDamage(
+          p,
+          shockDamage,
+          pushDirX,
+          pushDirZ,
+          17.5,
+          true,
+          onCellKilled,
+          true
+        );
+        if (died) {
           electrocutedHerbivoresCount++;
           electrocutedAdnGained += 14;
           continue;
         } else {
-          if (onCellKilled) {
-            onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
-          }
           p.stunTimer = 3.2;
           p.state = 'ATURDIDO';
           p.currentSpeed = 0;
@@ -1796,49 +2367,131 @@ export class PredatorManager {
             poisonedCount++;
           }
           p.poisonTimer = 3.0;
+          p.poisonTickTimer -= safeDelta;
 
           const invDist = distCloud > 0.01 ? 1 / distCloud : 1;
-          const repelStep = 4.6 * delta;
+          const repelStep = 4.6 * safeDelta;
           p.position.x += dxCloud * invDist * repelStep;
           p.position.z += dzCloud * invDist * repelStep;
+
+          if (p.poisonTickTimer <= 0) {
+            p.poisonTickTimer = 0.65;
+            const diedFromPoison = this.applyOrganismDamage(
+              p,
+              14,
+              dxCloud * invDist,
+              dzCloud * invDist,
+              10.0,
+              true,
+              onCellKilled,
+              false
+            );
+            if (diedFromPoison) {
+              if (p.profile.isHerbivore) {
+                herbivoresHunted++;
+                herbivoreAdnGained += 16;
+              } else {
+                huntersDevoured++;
+                hunterAdnGained += 22;
+              }
+              break;
+            }
+          }
 
           if (!p.profile.isHerbivore && p.stunTimer <= 0) {
             p.attackCooldown = Math.max(p.attackCooldown, 0.85);
           }
         }
       }
+      if (p.dyingTimer > 0) continue;
 
-      // --- 0B-2. STAGE 3+ MACROCELL ABSORBING TIER 1 CELLS OR STAGE 5 ABSORBING TIER 2 ---
+      // --- 0B-2. PLAYER MELEE BITE / FRONTAL RAM & PHYSICAL KNOCKBACK ---
       const isStage3AbsorbingTier1 =
-        ((this.playerGrowthStage >= 3 && p.profile.tier === 1) ||
-          (this.playerGrowthStage >= 5 && p.profile.tier === 2)) &&
-        distToPlayer <= 2.95;
+        (this.playerGrowthStage >= 3 && p.profile.tier === 1) ||
+        (this.playerGrowthStage >= 5 && p.profile.tier === 2);
 
-      const canTakeDownHunter =
-        !p.profile.isHerbivore &&
-        distToPlayer <= 3.8 &&
-        ((canDevourWeakenedHunters && (p.stunTimer > 0 || p.poisonTimer > 0)) ||
-          (canHuntWithGraspingArms && distToPlayer <= 3.6) ||
-          isStage3AbsorbingTier1);
+      // Compute whether this organism is inside the player's frontal bite/attack cone
+      const dirFromPlayerX = distToPlayer > 0.01 ? -dxToPlayer / distToPlayer : playerForwardX;
+      const dirFromPlayerZ = distToPlayer > 0.01 ? -dzToPlayer / distToPlayer : playerForwardZ;
+      const frontalDot =
+        playerForwardX * dirFromPlayerX + playerForwardZ * dirFromPlayerZ;
+      const isInPlayerFrontalCone = frontalDot >= 0.22;
 
-      if (canTakeDownHunter) {
-        if (onCellKilled) {
-          onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
+      const meleeReach =
+        (p.profile.tier === 3 ? 3.55 : 2.95) +
+        (this.playerGrowthStage - 1) * 0.22;
+
+      const playerHasMeleeCapability =
+        canPredateHerbivores ||
+        canCounterAttack ||
+        canHuntWithGraspingArms ||
+        isStage3AbsorbingTier1 ||
+        (canDevourWeakenedHunters && (p.stunTimer > 0 || p.poisonTimer > 0));
+
+      if (
+        distToPlayer <= meleeReach &&
+        p.biteImmunityTimer <= 0 &&
+        p.socialCooldown <= 0 &&
+        playerHasMeleeCapability &&
+        (isInPlayerFrontalCone || canCounterAttack || isStage3AbsorbingTier1)
+      ) {
+        const pushDirX = distToPlayer > 0.01 ? -dxToPlayer / distToPlayer : playerForwardX;
+        const pushDirZ = distToPlayer > 0.01 ? -dzToPlayer / distToPlayer : playerForwardZ;
+
+        // Calculate bite/spike damage
+        const baseBiteDmg = Math.max(16, playerAttackPower * 1.15);
+        const boostBonus = isPlayerBoosting ? 1.38 : 1.0;
+        const macroBonus = isStage3AbsorbingTier1 ? 1.65 : 1.0;
+        const totalMeleeDamage = Math.round(baseBiteDmg * boostBonus * macroBonus);
+
+        // Apply physical bounce to player as well so cells separate by 2.5m-4.0m and never overlap
+        playerBounceTargetPosition = p.position;
+
+        const died = this.applyOrganismDamage(
+          p,
+          totalMeleeDamage,
+          pushDirX,
+          pushDirZ,
+          17.5, // ~3.2m physical pushback displacement in water
+          true,
+          onCellKilled,
+          isPlayerBoosting || totalMeleeDamage >= 28
+        );
+
+        if (hasProboscis) {
+          proboscisDrainedAdn += 4;
         }
-        p.active = false;
-        p.group.visible = false;
-        p.respawnTimer = 8.5;
-        p.stunTimer = 0;
-        p.poisonTimer = 0;
-        huntersDevoured++;
-        hunterAdnGained += canHuntWithGraspingArms ? 35 : 25;
-        hunterEnergyGained += 38;
-        continue;
+
+        if (died) {
+          if (p.profile.isHerbivore) {
+            herbivoresHunted++;
+            herbivoreAdnGained += p.profile.tier >= 2 ? 24 : 18;
+            herbivoreEnergyGained += 30;
+          } else {
+            huntersDevoured++;
+            hunterAdnGained += canHuntWithGraspingArms ? 35 : 25;
+            hunterEnergyGained += 38;
+          }
+          continue;
+        } else if (!p.profile.isHerbivore) {
+          // Non-lethal hit still pushes and briefly interrupts enemy attack
+          p.attackCooldown = Math.max(p.attackCooldown, 1.15);
+          p.lungeTimer = 0;
+          if (canCounterAttack) {
+            if (p.profile.tier === 3) {
+              repelledLeviathans++;
+              leviathanBonusAdn += 8;
+            } else {
+              repelledHunters++;
+              leviathanBonusAdn += 5;
+            }
+          }
+        }
       }
 
       // --- 0C. STUNNED STATE ('ATURDIDO') ---
       if (p.stunTimer > 0) {
-        p.stunTimer = Math.max(0, p.stunTimer - delta);
+        p.stunTimer = Math.max(0, p.stunTimer - safeDelta);
         p.state = 'ATURDIDO';
         p.currentSpeed = 0;
 
@@ -1904,38 +2557,26 @@ export class PredatorManager {
           socialAdnGained += socialReward;
         }
 
-        // Check player contact (dist <= 2.45m, or 2.9m in Stage 3 for Tier 1 micro-cells)
-        const contactDist = isStage3AbsorbingTier1 ? 2.9 : 2.45;
-        if (distToPlayer <= contactDist && p.socialCooldown <= 0) {
-          if (
-            canPredateHerbivores ||
-            canCounterAttack ||
-            canHuntWithGraspingArms ||
-            isStage3AbsorbingTier1
-          ) {
-            if (onCellKilled) {
-              onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
-            }
-            p.active = false;
-            p.group.visible = false;
-            p.respawnTimer = 7.0;
-            herbivoresHunted++;
-            herbivoreAdnGained += p.profile.tier >= 2 ? 24 : 18;
-            herbivoreEnergyGained += 30;
-            continue;
-          } else {
-            // Defensive species (nematocito, esponja_espicular, medusa_biolum) sting/flash if player bumps them without weapons
-            if (p.profile.attackDamage > 0 && p.attackCooldown <= 0) {
-              totalDamageDealt += p.profile.attackDamage;
-              attackerPosition = p.position;
-              attackerSpeciesName = p.speciesName;
-              p.attackCooldown = p.profile.attackCooldownSec;
-            }
-            const invDist = distToPlayer > 0.01 ? 1 / distToPlayer : 1;
-            p.position.x -= dxToPlayer * invDist * 1.4;
-            p.position.z -= dzToPlayer * invDist * 1.4;
-            blockedHerbivoreHunt = true;
+        // If player bumps a herbivore without any predatory mouth/weapon, push apart physically
+        if (
+          distToPlayer <= 2.45 &&
+          p.socialCooldown <= 0 &&
+          !playerHasMeleeCapability
+        ) {
+          if (p.profile.attackDamage > 0 && p.attackCooldown <= 0) {
+            totalDamageDealt += p.profile.attackDamage;
+            attackerPosition = p.position;
+            attackerSpeciesName = p.speciesName;
+            p.attackCooldown = p.profile.attackCooldownSec;
           }
+          const invDist = distToPlayer > 0.01 ? 1 / distToPlayer : 1;
+          p.knockbackVelocity.set(
+            -dxToPlayer * invDist * 14.0,
+            0,
+            -dzToPlayer * invDist * 14.0
+          );
+          playerBounceTargetPosition = p.position;
+          blockedHerbivoreHunt = true;
         }
 
         // Evaluate closest threat using SpatialHashGrid neighbors
@@ -1945,7 +2586,12 @@ export class PredatorManager {
 
         for (let j = 0; j < neighbors.length; j++) {
           const other = neighbors[j];
-          if (!other.active || other.profile.isHerbivore || other.id === p.id) {
+          if (
+            !other.active ||
+            other.dyingTimer > 0 ||
+            other.profile.isHerbivore ||
+            other.id === p.id
+          ) {
             continue;
           }
           const dxPred = other.position.x - p.position.x;
@@ -1974,11 +2620,17 @@ export class PredatorManager {
         if (p.state === 'HUIR') {
           _toTarget.set(-closestThreatDx, 0, -closestThreatDz);
           targetSpeed = p.profile.activeSpeed * locoFactor * poisonSpeedFactor;
-          p.stateRingMat.color.setHex(p.poisonTimer > 0 ? 0x84cc16 : 0x38bdf8);
+          p.stateRingMat.color.setHex(
+            p.hitFlashTimer > 0
+              ? 0xf43f5e
+              : p.poisonTimer > 0
+              ? 0x84cc16
+              : 0x38bdf8
+          );
           p.stateRingMat.opacity = 0.65;
-          p.coreMat.emissiveIntensity = 1.3;
+          p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.4 : 1.3;
         } else {
-          p.wanderRetargetTimer -= delta;
+          p.wanderRetargetTimer -= safeDelta;
           _toTarget.subVectors(p.wanderTarget, p.position);
           _toTarget.y = 0;
 
@@ -1989,15 +2641,24 @@ export class PredatorManager {
           }
 
           p.stateRingMat.color.setHex(
-            p.socialCooldown > 0
+            p.hitFlashTimer > 0
+              ? 0xf43f5e
+              : p.socialCooldown > 0
               ? 0x4ade80
               : p.poisonTimer > 0
               ? 0x84cc16
               : 0x2dd4bf
           );
           p.stateRingMat.opacity =
-            p.socialCooldown > 0 ? 0.78 : p.poisonTimer > 0 ? 0.55 : 0.24;
-          p.coreMat.emissiveIntensity = p.socialCooldown > 0 ? 1.4 : 0.75;
+            p.hitFlashTimer > 0
+              ? 0.85
+              : p.socialCooldown > 0
+              ? 0.78
+              : p.poisonTimer > 0
+              ? 0.55
+              : 0.24;
+          p.coreMat.emissiveIntensity =
+            p.hitFlashTimer > 0 ? 2.2 : p.socialCooldown > 0 ? 1.4 : 0.75;
         }
 
         if (_toTarget.lengthSq() > 0.001) {
@@ -2006,18 +2667,19 @@ export class PredatorManager {
           while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
           while (angleDiff < -Math.PI) angleDiff += Math.PI * 2;
           p.headingAngle +=
-            angleDiff * Math.min(1, GAME_CONFIG.PREDATOR.TURN_DAMPING * delta);
+            angleDiff *
+            Math.min(1, GAME_CONFIG.PREDATOR.TURN_DAMPING * safeDelta);
         }
 
         p.currentSpeed = THREE.MathUtils.damp(
           p.currentSpeed,
           targetSpeed,
           5.0,
-          delta
+          safeDelta
         );
 
         _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
-        p.position.addScaledVector(_forward, p.currentSpeed * delta);
+        p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
 
         const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
         const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 3.0;
@@ -2034,8 +2696,10 @@ export class PredatorManager {
           Math.sin(elapsedTime * 3.0 + p.id) * 0.14;
         p.group.rotation.set(0, p.headingAngle, 0);
 
-        p.swimPhase +=
-          delta * (p.state === 'HUIR' ? 15.0 : 8.0) * poisonSpeedFactor;
+        p.swimPhase =
+          (p.swimPhase +
+            safeDelta * (p.state === 'HUIR' ? 12.5 : 7.5) * poisonSpeedFactor) %
+          (Math.PI * 200);
         for (let t = 0; t < p.tailSegments.length; t++) {
           const seg = p.tailSegments[t];
           seg.position.x = Math.sin(p.swimPhase - t * 0.9) * 0.14;
@@ -2060,50 +2724,14 @@ export class PredatorManager {
       }
 
       // --- 2. CARNIVORE / TERRITORIAL PREDATOR LOGIC ---
-      const ramRadius = p.profile.tier === 3 ? 3.85 : 3.45;
-
-      // Counter-attack check: if player has front spikes / rotary drill / harpoon and is boosting or ramming
-      if (
-        canCounterAttack &&
-        distToPlayer < ramRadius &&
-        p.attackCooldown <= 1.6
-      ) {
-        const pushDirX = distToPlayer > 0.01 ? -dxToPlayer / distToPlayer : 1;
-        const pushDirZ = distToPlayer > 0.01 ? -dzToPlayer / distToPlayer : 0;
-
-        p.position.x += pushDirX * 7.5;
-        p.position.z += pushDirZ * 7.5;
-        p.headingAngle = Math.atan2(-pushDirX, -pushDirZ);
-        p.state = 'DEAMBULAR';
-        p.attackCooldown = 2.6;
-        p.lungeTimer = 0;
-        p.wanderTarget.set(
-          p.position.x + pushDirX * 28,
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-          p.position.z + pushDirZ * 28
-        );
-        p.wanderRetargetTimer = 4.5;
-
-        if (onCellKilled) {
-          onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
-        }
-
-        if (p.profile.tier === 3) {
-          repelledLeviathans++;
-          leviathanBonusAdn += 12;
-        } else {
-          repelledHunters++;
-          leviathanBonusAdn += 8;
-        }
-        continue;
-      }
-
       // Find nearest active prey in the SpatialHashGrid neighborhood for AI-vs-AI battles!
       let nearestHerbivore: OrganismEntity | null = null;
       let distToHerbivore = Infinity;
       for (let j = 0; j < neighbors.length; j++) {
         const candidate = neighbors[j];
-        if (!candidate.active || candidate.id === p.id) continue;
+        if (!candidate.active || candidate.dyingTimer > 0 || candidate.id === p.id) {
+          continue;
+        }
         // Predators hunt herbivores or lower-tier organisms
         if (
           !candidate.profile.isHerbivore &&
@@ -2165,7 +2793,7 @@ export class PredatorManager {
         p.profile.wanderSpeed * locoFactor * poisonSpeedFactor;
 
       if (p.state === 'DEAMBULAR') {
-        p.wanderRetargetTimer -= delta;
+        p.wanderRetargetTimer -= safeDelta;
         _toTarget.subVectors(p.wanderTarget, p.position);
         _toTarget.y = 0;
 
@@ -2177,89 +2805,134 @@ export class PredatorManager {
 
         targetSpeed = p.profile.wanderSpeed * locoFactor * poisonSpeedFactor;
         p.stateRingMat.color.setHex(
-          p.poisonTimer > 0
+          p.hitFlashTimer > 0
+            ? 0xf43f5e
+            : p.poisonTimer > 0
             ? 0x84cc16
             : p.profile.tier === 3
             ? 0xa855f7
             : 0xf59e0b
         );
-        p.stateRingMat.opacity = p.poisonTimer > 0 ? 0.6 : 0.24;
-        p.coreMat.emissiveIntensity = 0.65;
+        p.stateRingMat.opacity = p.hitFlashTimer > 0 ? 0.88 : p.poisonTimer > 0 ? 0.6 : 0.24;
+        p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.4 : 0.65;
       } else if (p.state === 'PERSEGUIR') {
         _toTarget.subVectors(activePreyPos, p.position);
         _toTarget.y = 0;
         targetSpeed = p.profile.activeSpeed * locoFactor * poisonSpeedFactor;
 
-        p.stateRingMat.color.setHex(p.poisonTimer > 0 ? 0x84cc16 : 0xf97316);
-        p.stateRingMat.opacity = 0.58;
-        p.coreMat.emissiveIntensity = 1.25;
+        p.stateRingMat.color.setHex(
+          p.hitFlashTimer > 0
+            ? 0xf43f5e
+            : p.poisonTimer > 0
+            ? 0x84cc16
+            : 0xf97316
+        );
+        p.stateRingMat.opacity = p.hitFlashTimer > 0 ? 0.9 : 0.58;
+        p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.4 : 1.25;
       } else {
         // ATACAR (against either AI Prey or Player)
         _toTarget.subVectors(activePreyPos, p.position);
         _toTarget.y = 0;
         targetSpeed =
           (p.lungeTimer > 0
-            ? p.profile.activeSpeed * 1.28
+            ? p.profile.activeSpeed * 1.25
             : p.profile.wanderSpeed * 0.65) *
           locoFactor *
           poisonSpeedFactor;
 
         p.stateRingMat.color.setHex(0xef4444);
         p.stateRingMat.opacity = 0.85;
-        p.coreMat.emissiveIntensity = 1.8;
+        p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.6 : 1.8;
 
         if (
           p.attackCooldown <= 0 &&
           activePreyDist <= p.profile.attackRange
         ) {
           if (huntingHerbivore && nearestHerbivore) {
-            // AI-vs-AI kill! Spawns meat + DNA spore + 30s scavengeable Genetic Nodule in the water!
-            if (onCellKilled) {
-              onCellKilled(
-                nearestHerbivore.position,
-                nearestHerbivore.geneticTraits,
-                nearestHerbivore.speciesName,
-                false
-              );
-            }
-            nearestHerbivore.active = false;
-            nearestHerbivore.group.visible = false;
-            nearestHerbivore.respawnTimer = 7.0;
-            predatorKilledHerbivoreCount++;
-            p.attackCooldown = 2.0;
-            p.lungeTimer = 0.3;
-            p.state = 'DEAMBULAR';
-            this.pickWanderTarget(p);
-          } else if (!isPlayerAirborne) {
-            const spikeRetaliationFactor = chitinSpikeStacks >= 2 ? 0.55 : 1.0;
-            totalDamageDealt += Math.round(
-              p.profile.attackDamage * spikeRetaliationFactor
+            // AI-vs-AI melee bite with knockback, health bar reveal & death drop!
+            const hDx = nearestHerbivore.position.x - p.position.x;
+            const hDz = nearestHerbivore.position.z - p.position.z;
+            const hDist = Math.max(0.01, Math.sqrt(hDx * hDx + hDz * hDz));
+            const pushX = hDx / hDist;
+            const pushZ = hDz / hDist;
+
+            const aiKilledPrey = this.applyOrganismDamage(
+              nearestHerbivore,
+              p.profile.attackDamage,
+              pushX,
+              pushZ,
+              15.5,
+              false,
+              onCellKilled,
+              false
             );
-            attackerPosition = p.position;
-            attackerSpeciesName = p.speciesName;
-            p.attackCooldown = p.profile.attackCooldownSec;
-            p.lungeTimer = 0.28;
-            if (hasProboscis) {
-              proboscisDrainedAdn += 5;
-            }
-            if (chitinSpikeStacks >= 2) {
-              const pushDirX =
-                distToPlayer > 0.01 ? -dxToPlayer / distToPlayer : 1;
-              const pushDirZ =
-                distToPlayer > 0.01 ? -dzToPlayer / distToPlayer : 0;
-              p.position.x += pushDirX * 6.5;
-              p.position.z += pushDirZ * 6.5;
+            // Physical recoil on the attacking predator too
+            p.currentSpeed *= 0.2;
+            p.knockbackVelocity.set(-pushX * 11.5, 0, -pushZ * 11.5);
+            p.combatRevealTimer = 5.0;
+
+            if (aiKilledPrey) {
+              predatorKilledHerbivoreCount++;
               p.state = 'DEAMBULAR';
-              p.attackCooldown = 2.5;
-              if (onCellKilled) {
-                onCellKilled(p.position, p.geneticTraits, p.speciesName, true);
+              this.pickWanderTarget(p);
+            }
+            p.attackCooldown = 1.8;
+            p.lungeTimer = 0.3;
+          } else if (!isPlayerAirborne) {
+            // Predator bites the player! Check frontal alignment of predator
+            const predForwardX = -Math.sin(p.headingAngle);
+            const predForwardZ = -Math.cos(p.headingAngle);
+            const toPlayerDirX = distToPlayer > 0.01 ? dxToPlayer / distToPlayer : predForwardX;
+            const toPlayerDirZ = distToPlayer > 0.01 ? dzToPlayer / distToPlayer : predForwardZ;
+            const predFrontalDot =
+              predForwardX * toPlayerDirX + predForwardZ * toPlayerDirZ;
+
+            if (predFrontalDot >= 0.15) {
+              const spikeRetaliationFactor = chitinSpikeStacks >= 2 ? 0.55 : 1.0;
+              const dmgToPlayer = Math.round(
+                p.profile.attackDamage * spikeRetaliationFactor
+              );
+              totalDamageDealt += dmgToPlayer;
+              attackerPosition = p.position;
+              attackerSpeciesName = p.speciesName;
+              p.attackCooldown = p.profile.attackCooldownSec;
+              p.lungeTimer = 0.28;
+              p.combatRevealTimer = 5.0;
+
+              // Physical recoil on the predator after biting the player so they separate 2.5m-4.0m
+              p.currentSpeed *= 0.18;
+              p.knockbackVelocity.set(
+                -toPlayerDirX * 14.5,
+                0,
+                -toPlayerDirZ * 14.5
+              );
+
+              if (hasProboscis) {
+                proboscisDrainedAdn += 5;
               }
-              if (p.profile.tier === 3) {
-                repelledLeviathans++;
-              } else {
-                repelledHunters++;
+              if (chitinSpikeStacks >= 1) {
+                const spikeReturnDmg = chitinSpikeStacks * 14;
+                this.applyOrganismDamage(
+                  p,
+                  spikeReturnDmg,
+                  -toPlayerDirX,
+                  -toPlayerDirZ,
+                  16.5,
+                  true,
+                  onCellKilled,
+                  false
+                );
+                if (chitinSpikeStacks >= 2) {
+                  p.state = 'DEAMBULAR';
+                  p.attackCooldown = 2.5;
+                  if (p.profile.tier === 3) {
+                    repelledLeviathans++;
+                  } else {
+                    repelledHunters++;
+                  }
+                  leviathanBonusAdn += 8;
+                }
               }
-              leviathanBonusAdn += 8;
             }
           }
         }
@@ -2275,18 +2948,18 @@ export class PredatorManager {
           (p.profile.tier === 3
             ? GAME_CONFIG.PREDATOR.TURN_DAMPING * 0.72
             : GAME_CONFIG.PREDATOR.TURN_DAMPING) * poisonSpeedFactor;
-        p.headingAngle += angleDiff * Math.min(1, turnRate * delta);
+        p.headingAngle += angleDiff * Math.min(1, turnRate * safeDelta);
       }
 
       p.currentSpeed = THREE.MathUtils.damp(
         p.currentSpeed,
         targetSpeed,
         5.0,
-        delta
+        safeDelta
       );
 
       _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
-      p.position.addScaledVector(_forward, p.currentSpeed * delta);
+      p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
 
       const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
       const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 2.0;
@@ -2304,13 +2977,13 @@ export class PredatorManager {
       p.group.rotation.set(0, p.headingAngle, 0);
 
       const swimMultiplier =
-        (p.state === 'DEAMBULAR' ? 7.0 : 14.5) * poisonSpeedFactor;
-      p.swimPhase += delta * swimMultiplier;
+        (p.state === 'DEAMBULAR' ? 6.5 : 12.0) * poisonSpeedFactor;
+      p.swimPhase = (p.swimPhase + safeDelta * swimMultiplier) % (Math.PI * 200);
 
       for (let t = 0; t < p.tailSegments.length; t++) {
         const seg = p.tailSegments[t];
         const wave = Math.sin(p.swimPhase - t * 0.9);
-        seg.position.x = wave * (0.14 + t * 0.1);
+        seg.position.x = wave * (0.14 + t * 0.08);
       }
 
       if (p.legsGroup.visible && p.legs.length === 4) {
@@ -2346,6 +3019,7 @@ export class PredatorManager {
       totalDamageDealt,
       attackerPosition,
       attackerSpeciesName,
+      playerBounceTargetPosition,
       repelledHunters,
       repelledLeviathans,
       leviathanBonusAdn,

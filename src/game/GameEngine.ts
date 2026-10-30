@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { audioManager } from './AudioManager';
 import { CameraController } from './CameraController';
 import { GAME_CONFIG } from './config';
 import {
@@ -10,9 +11,12 @@ import {
 import { FoodManager } from './FoodManager';
 import { FossilMeteorManager } from './FossilMeteorManager';
 import { InputController } from './InputController';
+import { IntroCinematicController } from './IntroCinematicController';
 import { PlayerCell } from './PlayerCell';
 import { PredatorManager } from './PredatorManager';
+import { SaveSystem, SlotSavePayload } from './SaveSystem';
 import { SceneEnvironment } from './SceneEnvironment';
+import { SolarSystemView } from './SolarSystemView';
 import {
   CellBodyShape,
   CellColorTheme,
@@ -29,8 +33,11 @@ import {
   GenesisConfig,
   InnateTraitId,
   InputState,
+  IntroCinematicState,
   PlacedOrganInstance,
   PlacedOrganMorphology,
+  PlanetSlotMetadata,
+  PlanetaryTransitionState,
   PlayerStats,
   PredatorBehaviorState,
   UnlockedBannerNotification,
@@ -40,15 +47,21 @@ export class GameEngine {
   private readonly container: HTMLElement;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly environment: SceneEnvironment;
+  private readonly solarSystemView: SolarSystemView;
   private readonly player: PlayerCell;
   private readonly cameraController: CameraController;
   private readonly foodManager: FoodManager;
   private readonly fossilMeteorManager: FossilMeteorManager;
   private readonly predatorManager: PredatorManager;
   private readonly inputController: InputController;
+  private readonly introCinematicController: IntroCinematicController;
   private readonly timer: THREE.Timer;
 
   private status: GameStatus = 'menu';
+  private activeSlotId = 1;
+  private selectedMenuSlotId: number | null = null;
+  private hoveredMenuSlotId: number | null = null;
+  private planetSlots: PlanetSlotMetadata[] = [];
   private settings: GameSettings = { ...DEFAULT_GAME_SETTINGS };
   private stats: PlayerStats;
   private recentEventMessage: string | null = null;
@@ -62,7 +75,6 @@ export class GameEngine {
   private readonly unlockedSlotIds = new Set<string>();
   private selectedPlacedInstanceId: string | null = null;
   private organInstanceCounter = 1;
-  private static readonly STORAGE_KEY = 'evolife_cellular_save_v1';
   private static readonly SETTINGS_STORAGE_KEY = 'evolife_settings_v1';
   private lastFrameExecutionMs = 0;
   private lastGameplayPointerPos = { x: 0, y: 0, active: false };
@@ -102,6 +114,21 @@ export class GameEngine {
   private nearestPredatorState: PredatorBehaviorState = 'DEAMBULAR';
   private nearestPredatorDistance = 999;
   private nearestHasUncataloguedGene = false;
+
+  // Planetary Atmospheric Entry / Orbital Ascent Cinematic State
+  private planetaryTransition: PlanetaryTransitionState | undefined = undefined;
+  private introCinematicState: IntroCinematicState | undefined = undefined;
+  private pendingTransitionAction: 'play_saved' | 'new_game' | 'exit_to_menu' | null =
+    null;
+  private pendingTransitionGenesis: GenesisConfig | undefined = undefined;
+  private transitionSwitchedScene = false;
+
+  // Autosave, Checkpoint Respawn & Death Cause Tracking
+  private autosaveAccumulator = 0;
+  private autosaveBadgeTimer = 0;
+  private respawnInvulnerabilityTimer = 0;
+  private lastAttackerSpeciesName: string | null = null;
+  private deathCauseDescription = 'Colapso de la membrana celular';
 
   private readonly onUISnapshot: (snapshot: GameUISnapshot) => void;
   private readonly boundResize: () => void;
@@ -170,10 +197,41 @@ export class GameEngine {
     this.stats = this.createInitialStats();
     this.loadSettingsFromLocalStorage();
     this.applySettingsToEngine();
+    this.planetSlots = SaveSystem.loadAllPlanetSlots();
+    const colonizedSlots = this.planetSlots.filter((s) => s.hasSave);
+    if (colonizedSlots.length > 0) {
+      colonizedSlots.sort(
+        (a, b) => (b.lastPlayedTimestamp ?? 0) - (a.lastPlayedTimestamp ?? 0)
+      );
+      this.activeSlotId = colonizedSlots[0].slotId;
+    } else {
+      this.activeSlotId = 1;
+    }
+
+    this.solarSystemView = new SolarSystemView(
+      width,
+      height,
+      this.planetSlots,
+      (selectedSlotId, hoveredSlotId) => {
+        this.selectedMenuSlotId = selectedSlotId;
+        this.hoveredMenuSlotId = hoveredSlotId;
+        this.emitUISnapshot();
+      }
+    );
+
+    this.introCinematicController = new IntroCinematicController(
+      this.solarSystemView.scene,
+      this.environment.scene
+    );
+
     this.resetAdaptationStateToInitial();
-    this.loadFromLocalStorage();
+    this.loadFromLocalStorage(this.activeSlotId);
     this.syncCatalogAndOrganismState();
     this.syncWorldStageScale(this.stats.growthStage, true);
+    this.introCinematicController.setMonumentCoreTheme(this.stats.colorTheme);
+    this.introCinematicController.setPermanentMonumentVisible(
+      this.stats.evolutionaryStage === 'cell_stage'
+    );
 
     if (this.stats.evolutionaryStage === 'creature_stage') {
       this.currentBiomeName = 'Costa Terrestre Primigenia';
@@ -188,6 +246,10 @@ export class GameEngine {
     this.timer.connect(document);
 
     this.renderer.compile(this.environment.scene, this.cameraController.camera);
+    this.renderer.compile(
+      this.solarSystemView.scene,
+      this.solarSystemView.camera
+    );
 
     this.boundResize = this.handleResize.bind(this);
     this.boundContextLost = (e: Event) => {
@@ -613,6 +675,7 @@ export class GameEngine {
         sourceLabel,
       };
       this.unlockedBannerTimer = 5.4;
+      audioManager.playMeteorDiscovery();
       this.setEventMessage(
         `¡NUEVA ADAPTACIÓN AISLADA: ${slot.name.toUpperCase()}! Disponible en el Taller 3D [E].`
       );
@@ -646,7 +709,7 @@ export class GameEngine {
   private saveToLocalStorage(): void {
     if (this.status === 'gameover' || this.stats.health <= 0) return;
     try {
-      const payload = {
+      const payload: SlotSavePayload = {
         stats: {
           speciesName: this.stats.speciesName,
           bodyShape: this.stats.bodyShape,
@@ -657,6 +720,7 @@ export class GameEngine {
           placedOrgans: this.stats.placedOrgans,
           evolutionaryStage: this.stats.evolutionaryStage,
           innateTrait: this.stats.innateTrait,
+          diet: this.stats.diet,
           health: this.stats.health,
           energy: this.stats.energy,
           adn: this.stats.adn,
@@ -669,27 +733,26 @@ export class GameEngine {
         discoveredAdaptationIds: Array.from(this.discoveredAdaptationIds),
         installedAdaptations: this.installedAdaptations,
         completedQuestStep: this.completedQuestStep,
+        savedPosition: {
+          x: this.player.position.x,
+          z: this.player.position.z,
+        },
       };
-      localStorage.setItem(GameEngine.STORAGE_KEY, JSON.stringify(payload));
+      this.planetSlots = SaveSystem.saveSlotPayload(this.activeSlotId, payload);
+      this.solarSystemView?.syncSlots(this.planetSlots);
     } catch {
       // Ignore storage quota or private mode errors
     }
   }
 
-  private loadFromLocalStorage(): void {
+  private loadFromLocalStorage(slotId = this.activeSlotId): void {
     try {
-      const raw = localStorage.getItem(GameEngine.STORAGE_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (
-        !parsed ||
-        typeof parsed !== 'object' ||
-        !parsed.stats ||
-        typeof parsed.stats.health !== 'number' ||
-        parsed.stats.health <= 0
-      ) {
+      const parsed = SaveSystem.loadSlotPayload(slotId);
+      if (!parsed) {
         return;
       }
+      this.activeSlotId = slotId;
+      this.discoveredAdaptationIds.clear();
 
       if (Array.isArray(parsed.discoveredAdaptationIds)) {
         for (const rawId of parsed.discoveredAdaptationIds) {
@@ -890,6 +953,8 @@ export class GameEngine {
         questStep === 4
       ) {
         this.completedQuestStep = questStep;
+      } else {
+        this.completedQuestStep = 0;
       }
 
       this.player.applyMorphology(
@@ -902,7 +967,33 @@ export class GameEngine {
       );
       this.environment.setStageEnvironment(validEvoStage);
       this.predatorManager.setStageMode(validEvoStage);
+      this.introCinematicController?.setMonumentCoreTheme(this.stats.colorTheme);
+      this.introCinematicController?.setPermanentMonumentVisible(
+        validEvoStage === 'cell_stage'
+      );
       this.syncWorldStageScale(validStage, false);
+      if (
+        parsed.savedPosition &&
+        typeof parsed.savedPosition.x === 'number' &&
+        typeof parsed.savedPosition.z === 'number' &&
+        !Number.isNaN(parsed.savedPosition.x) &&
+        !Number.isNaN(parsed.savedPosition.z)
+      ) {
+        const maxSafeR = Math.max(12, this.stats.activeArenaRadius - 6);
+        const rawX = parsed.savedPosition.x;
+        const rawZ = parsed.savedPosition.z;
+        const dist = Math.hypot(rawX, rawZ);
+        if (dist > maxSafeR && dist > 0.01) {
+          this.player.position.x = (rawX / dist) * maxSafeR;
+          this.player.position.z = (rawZ / dist) * maxSafeR;
+        } else {
+          this.player.position.x = rawX;
+          this.player.position.z = rawZ;
+        }
+      } else {
+        this.player.position.x = 0;
+        this.player.position.z = 0;
+      }
       this.evaluateQuests(true);
       this.setEventMessage('Partida evolutiva restaurada automáticamente');
     } catch {
@@ -910,49 +1001,174 @@ export class GameEngine {
     }
   }
 
-  private clearLocalStorage(): void {
-    try {
-      localStorage.removeItem(GameEngine.STORAGE_KEY);
-    } catch {
-      // Ignore storage errors
-    }
+  private clearLocalStorage(slotId = this.activeSlotId): void {
+    this.planetSlots = SaveSystem.deleteSlotSave(slotId);
+    this.solarSystemView?.syncSlots(this.planetSlots);
   }
 
-  public hasSavedGame(): boolean {
-    try {
-      const raw = localStorage.getItem(GameEngine.STORAGE_KEY);
-      if (!raw) return false;
-      const parsed = JSON.parse(raw);
+  public hasSavedGame(slotId?: number): boolean {
+    if (typeof slotId === 'number') {
       return Boolean(
-        parsed &&
-          typeof parsed === 'object' &&
-          parsed.stats &&
-          typeof parsed.stats.health === 'number' &&
-          parsed.stats.health > 0
+        this.planetSlots.find((s) => s.slotId === slotId && s.hasSave)
       );
-    } catch {
-      return false;
     }
+    return this.planetSlots.some((s) => s.hasSave);
   }
 
-  public continueSavedGame(): void {
-    if (this.hasSavedGame()) {
-      this.loadFromLocalStorage();
-      this.syncCatalogAndOrganismState();
-    }
+  public selectMenuPlanetSlot(slotId: number | null): void {
+    this.solarSystemView.selectSlot(slotId);
+  }
+
+  public deletePlanetSlot(slotId: number): void {
+    this.planetSlots = SaveSystem.deleteSlotSave(slotId);
+    this.solarSystemView.syncSlots(this.planetSlots);
+    this.emitUISnapshot();
+  }
+
+  private executePlayPlanetSlotImmediate(slotId: number): void {
+    const safeSlot = Math.max(1, Math.min(6, Math.floor(slotId)));
+    this.activeSlotId = safeSlot;
+    this.loadFromLocalStorage(safeSlot);
+    this.syncCatalogAndOrganismState();
     this.status = 'playing';
     this.player.setEditorMode(false);
     this.inputController.resetInputs();
     this.timer.update();
+    const planetName =
+      this.planetSlots.find((s) => s.slotId === safeSlot)?.planetName ||
+      `Mundo ${safeSlot}`;
     this.setEventMessage(
-      `Evolución reanudada: ${this.stats.speciesName || 'Organismo Primigenio'}`
+      `${planetName}: Evolución reanudada (${this.stats.speciesName || 'Organismo Primigenio'})`
     );
+  }
+
+  private executeStartNewGameImmediate(
+    genesisConfig?: GenesisConfig,
+    slotId?: number
+  ): void {
+    const targetSlot =
+      typeof slotId === 'number'
+        ? Math.max(1, Math.min(6, Math.floor(slotId)))
+        : this.selectedMenuSlotId ?? this.activeSlotId;
+    this.activeSlotId = targetSlot;
+    this.restartGame(genesisConfig);
+    this.saveToLocalStorage();
+  }
+
+  public playPlanetSlot(slotId: number): void {
+    const safeSlot = Math.max(1, Math.min(6, Math.floor(slotId)));
+    this.activeSlotId = safeSlot;
+
+    if (this.status === 'menu') {
+      const info = this.solarSystemView.getPlanetAtmosphereInfo(safeSlot);
+      this.solarSystemView.selectSlot(safeSlot);
+      this.pendingTransitionAction = 'play_saved';
+      this.pendingTransitionGenesis = undefined;
+      this.transitionSwitchedScene = false;
+      this.planetaryTransition = {
+        active: true,
+        mode: 'entering_planet',
+        progress: 0,
+        atmosphereOverlayOpacity: 0,
+        atmosphereColorHex: info.atmosphereColorHex,
+        planetName: info.planetName,
+      };
+      this.emitUISnapshot();
+      return;
+    }
+
+    this.executePlayPlanetSlotImmediate(safeSlot);
     this.emitUISnapshot();
   }
 
-  public startNewGame(genesisConfig?: GenesisConfig): void {
-    this.restartGame(genesisConfig);
-    this.saveToLocalStorage();
+  public continueSavedGame(): void {
+    const targetSlot = this.selectedMenuSlotId ?? this.activeSlotId;
+    this.playPlanetSlot(targetSlot);
+  }
+
+  public startNewGame(genesisConfig?: GenesisConfig, slotId?: number): void {
+    const targetSlot =
+      typeof slotId === 'number'
+        ? Math.max(1, Math.min(6, Math.floor(slotId)))
+        : this.selectedMenuSlotId ?? this.activeSlotId;
+    this.activeSlotId = targetSlot;
+
+    // Initialize the new game species, world scale, and save slot
+    this.executeStartNewGameImmediate(genesisConfig, targetSlot);
+    // Launch the 3D Spore Panspermia New-Game Intro Cinematic
+    this.startIntroCinematic(genesisConfig, targetSlot);
+  }
+
+  public startIntroCinematic(
+    genesisConfig?: GenesisConfig,
+    slotId?: number
+  ): void {
+    const targetSlot =
+      typeof slotId === 'number'
+        ? Math.max(1, Math.min(6, Math.floor(slotId)))
+        : this.activeSlotId;
+    this.activeSlotId = targetSlot;
+    this.planetaryTransition = undefined;
+    this.pendingTransitionAction = null;
+    this.pendingTransitionGenesis = undefined;
+    this.transitionSwitchedScene = false;
+
+    const planetTransform =
+      this.solarSystemView.getPlanetWorldTransform(targetSlot);
+    this.introCinematicController.start(planetTransform, genesisConfig);
+
+    this.status = 'intro_cinematic';
+    this.inputController.resetInputs();
+    this.timer.reset();
+    this.timer.update();
+
+    this.introCinematicState = {
+      active: true,
+      phase: 0,
+      elapsed: 0,
+      duration: IntroCinematicController.TOTAL_DURATION,
+      fadeOpacity: 1.0,
+      cloudOverlayOpacity: 0,
+      splashOverlayOpacity: 0,
+      atmosphereColorHex: planetTransform.atmosphereColorHex,
+      planetName: planetTransform.planetName,
+      speciesName: this.stats.speciesName || 'Organismo Primigenio',
+      phaseTitle: `Sistema Planetario · ${planetTransform.planetName}`,
+      phaseSubtitle:
+        'Fragmentos portadores de compuestos prebióticos se aproximan desde el espacio profundo...',
+    };
+
+    this.emitUISnapshot();
+  }
+
+  public skipIntroCinematic(): void {
+    if (this.status !== 'intro_cinematic') return;
+    this.completeIntroCinematic(true);
+  }
+
+  private completeIntroCinematic(skipped = false): void {
+    this.introCinematicController.finishAndCleanUp(this.player.group);
+    this.solarSystemView.restoreAfterIntroCinematic(this.planetSlots);
+    this.introCinematicState = undefined;
+    this.status = 'playing';
+
+    this.player.position.set(0, GAME_CONFIG.WORLD.SWIM_PLANE_Y, 0);
+    this.player.headingAngle = 0;
+    this.cameraController.resetImmediate(
+      this.player.position,
+      this.player.headingAngle
+    );
+    this.inputController.resetInputs();
+    this.timer.update();
+
+    const planetName =
+      this.planetSlots.find((s) => s.slotId === this.activeSlotId)?.planetName ||
+      `Mundo ${this.activeSlotId}`;
+    this.setEventMessage(
+      skipped
+        ? `¡Génesis completada en ${planetName}! ${this.stats.speciesName} emerge junto al meteorito de origen`
+        : `¡Eclosión completada en ${planetName}! ${this.stats.speciesName} despierta en el océano primigenio`
+    );
     this.emitUISnapshot();
   }
 
@@ -966,7 +1182,102 @@ export class GameEngine {
     this.matingCallTimer = 0;
     this.player.hideMateCell();
     this.inputController.resetInputs();
+
+    const info = this.solarSystemView.getPlanetAtmosphereInfo(this.activeSlotId);
+    this.status = 'playing';
+    this.pendingTransitionAction = 'exit_to_menu';
+    this.transitionSwitchedScene = false;
+    this.planetaryTransition = {
+      active: true,
+      mode: 'exiting_to_orbit',
+      progress: 0,
+      atmosphereOverlayOpacity: 0,
+      atmosphereColorHex: info.atmosphereColorHex,
+      planetName: info.planetName,
+    };
+    this.timer.update();
+    this.emitUISnapshot();
+  }
+
+  public manualSaveGame(): void {
+    if (this.status === 'gameover' || this.stats.health <= 0) return;
+    this.saveToLocalStorage();
+    this.autosaveAccumulator = 0;
+    this.autosaveBadgeTimer = 3.5;
+    audioManager.playSaveConfirm();
+    this.setEventMessage('¡Punto de guardado registrado en el planeta!');
+    this.emitUISnapshot();
+  }
+
+  public respawnFromLastSave(): void {
+    const existingPayload = SaveSystem.loadSlotPayload(this.activeSlotId);
+    if (existingPayload) {
+      this.loadFromLocalStorage(this.activeSlotId);
+    }
+
+    // Ensure healthy respawn vitals at checkpoint so the player never loops in starvation/death
+    this.recalculateVitalCaps();
+    this.stats.health = this.stats.maxHealth;
+    this.stats.energy = Math.max(
+      Math.round(this.stats.maxEnergy * 0.8),
+      this.stats.energy
+    );
+    this.stats.isStarving = false;
+    this.stats.damageFlashTime = 0;
+
+    this.player.currentSpeed = 0;
+    this.player.angularVelocity = 0;
+    this.player.isBoosting = false;
+    this.player.setEditorMode(false);
+    this.player.hideMateCell();
+
+    // Push away nearby predators and grant 3 seconds of blinking invulnerability
+    this.predatorManager.clearThreatsAroundRespawn(this.player.position, 28.0);
+    this.respawnInvulnerabilityTimer = 3.0;
+    this.player.setInvulnerableBlinking(true);
+
+    this.status = 'playing';
+    this.matingCallTimer = 0;
+    this.autosaveAccumulator = 0;
+    this.cameraController.resetImmediate(
+      this.player.position,
+      this.player.headingAngle
+    );
+    this.inputController.resetInputs();
+    this.timer.update();
+
+    // Persist the healthy respawn state immediately
+    this.saveToLocalStorage();
+    audioManager.playSaveConfirm();
+    this.setEventMessage(
+      'Reaparición en último punto de guardado (3s de invulnerabilidad activa)'
+    );
+    this.emitUISnapshot();
+  }
+
+  public exitToMenuFromDeath(): void {
+    // Preserve the saved slot on the planet so the user can resume it later from the Solar System
+    const existingPayload = SaveSystem.loadSlotPayload(this.activeSlotId);
+    if (!existingPayload) {
+      // If somehow no payload existed yet, restore health and save before exiting
+      this.stats.health = this.stats.maxHealth;
+      this.stats.energy = this.stats.maxEnergy;
+      this.saveToLocalStorage();
+    }
+
+    this.respawnInvulnerabilityTimer = 0;
+    this.player.setInvulnerableBlinking(false);
+    this.matingCallTimer = 0;
+    this.player.hideMateCell();
+    this.player.setEditorMode(false);
+    this.setEditorSandboxIsolation(false);
+    this.inputController.resetInputs();
+
+    this.planetSlots = SaveSystem.loadAllPlanetSlots();
+    this.solarSystemView.syncSlots(this.planetSlots);
     this.status = 'menu';
+    this.timer.update();
+    audioManager.playMenuOpenClose();
     this.emitUISnapshot();
   }
 
@@ -1015,6 +1326,12 @@ export class GameEngine {
     this.environment.setParticleQuality(this.settings.graphicsQuality);
     this.environment.setUserFogDistancePercent(
       this.settings.fogDistancePercent
+    );
+    audioManager.syncSettings(
+      this.settings.masterVolume,
+      this.settings.sfxVolume,
+      this.settings.threatAudioAlerts,
+      this.settings.ambientVolume
     );
   }
 
@@ -1487,6 +1804,7 @@ export class GameEngine {
 
     this.syncCatalogAndOrganismState();
     this.saveToLocalStorage();
+    audioManager.playEvolutionRemove();
     if (slot) {
       this.setEventMessage(
         `Pieza vendida: ${slot.name} (+${refundAdn} ADN reembolsado)`
@@ -1529,6 +1847,12 @@ export class GameEngine {
   }
 
   private handleCanvasPointerDown(e: PointerEvent): void {
+    audioManager.unlock();
+    if (this.status === 'menu') {
+      this.solarSystemView.handlePointerDown(e, this.renderer.domElement);
+      return;
+    }
+
     if (this.status !== 'editing') return;
 
     // Right mouse button (button === 2): start manual 3D camera orbit
@@ -1571,6 +1895,7 @@ export class GameEngine {
         | 'arrow_rear'
         | undefined;
       if (handle) {
+        audioManager.playButtonClick();
         this.draggingSpineArrow = handle;
         this.player.setHoveredSpineControl(handle, null);
         return;
@@ -1589,6 +1914,7 @@ export class GameEngine {
       }
       const hitInstanceId = obj?.userData.placedInstanceId as string | undefined;
       if (hitInstanceId) {
+        audioManager.playButtonClick();
         this.selectPlacedOrgan(hitInstanceId);
         this.repositioningInstanceId = hitInstanceId;
         this.repositionStartScreenPos = { x: e.clientX, y: e.clientY };
@@ -1633,6 +1959,11 @@ export class GameEngine {
       y: e.clientY,
       active: true,
     };
+
+    if (this.status === 'menu') {
+      this.solarSystemView.handlePointerMove(e, this.renderer.domElement);
+      return;
+    }
 
     if (this.status !== 'editing') return;
 
@@ -1831,6 +2162,11 @@ export class GameEngine {
   }
 
   private handleWindowPointerUp(e: PointerEvent): void {
+    if (this.status === 'menu') {
+      this.solarSystemView.handlePointerUp(e, this.renderer.domElement);
+      return;
+    }
+
     if (this.isRightClickOrbiting && (e.button === 2 || (e.buttons & 2) === 0)) {
       this.isRightClickOrbiting = false;
       this.renderer.domElement.style.cursor = 'default';
@@ -1901,6 +2237,11 @@ export class GameEngine {
   }
 
   private handleCanvasWheel(e: WheelEvent): void {
+    if (this.status === 'menu') {
+      this.solarSystemView.handleWheel(e);
+      return;
+    }
+
     if (this.status !== 'editing') return;
     e.preventDefault();
 
@@ -1973,6 +2314,23 @@ export class GameEngine {
   }
 
   private handleEditorKeyDown(e: KeyboardEvent): void {
+    audioManager.unlock();
+    if (this.status === 'intro_cinematic') {
+      if (e.code === 'Space' || e.key === ' ' || e.key === 'Escape') {
+        e.preventDefault();
+        this.skipIntroCinematic();
+      }
+      return;
+    }
+
+    if (this.status === 'menu') {
+      if (e.key === 'Escape' && this.selectedMenuSlotId !== null) {
+        e.preventDefault();
+        this.selectMenuPlanetSlot(null);
+      }
+      return;
+    }
+
     if (this.status !== 'editing') return;
     const activeTag = document.activeElement?.tagName.toLowerCase();
     if (activeTag === 'input' || activeTag === 'textarea') return;
@@ -2013,6 +2371,7 @@ export class GameEngine {
 
   public setColorTheme(theme: CellColorTheme): void {
     this.stats.colorTheme = theme;
+    this.introCinematicController.setMonumentCoreTheme(theme);
     this.player.applyMorphology(
       this.stats.bodyShape,
       this.stats.colorTheme,
@@ -2073,6 +2432,7 @@ export class GameEngine {
 
     this.environment.setStageEnvironment('creature_stage');
     this.predatorManager.setStageMode('creature_stage');
+    this.introCinematicController?.setPermanentMonumentVisible(false);
     this.currentBiomeName = 'Nido de la Especie (Regeneración Activa)';
 
     this.status = 'playing';
@@ -2098,6 +2458,9 @@ export class GameEngine {
     this.predatorManager.setEcosystemVisible(!active, this.player.position);
     this.foodManager.setEcosystemVisible(!active);
     this.fossilMeteorManager.setEcosystemVisible(!active);
+    this.introCinematicController?.setPermanentMonumentVisible(
+      !active && this.stats.evolutionaryStage === 'cell_stage'
+    );
 
     if (active) {
       this.nearestPredatorState = 'DEAMBULAR';
@@ -2108,7 +2471,13 @@ export class GameEngine {
   }
 
   public togglePause(): void {
-    if (this.status === 'gameover' || this.status === 'menu') return;
+    if (
+      this.status === 'gameover' ||
+      this.status === 'menu' ||
+      this.status === 'intro_cinematic'
+    ) {
+      return;
+    }
 
     if (this.status === 'editing') {
       this.closeEditor();
@@ -2124,15 +2493,23 @@ export class GameEngine {
       this.player.hideMateCell();
       this.inputController.resetInputs();
       this.saveToLocalStorage();
+      audioManager.playMenuOpenClose();
     } else if (this.status === 'paused') {
       this.status = 'playing';
       this.timer.update();
+      audioManager.playMenuOpenClose();
     }
     this.emitUISnapshot();
   }
 
   public toggleEditor(): void {
-    if (this.status === 'gameover' || this.status === 'menu') return;
+    if (
+      this.status === 'gameover' ||
+      this.status === 'menu' ||
+      this.status === 'intro_cinematic'
+    ) {
+      return;
+    }
 
     if (this.status === 'editing') {
       this.closeEditor();
@@ -2172,6 +2549,7 @@ export class GameEngine {
 
     this.matingCallTimer = 0.85;
     this.player.startMatingCall();
+    audioManager.playMenuOpenClose();
     this.setEventMessage(
       this.stats.evolutionaryStage === 'creature_stage'
         ? 'Llamada de apareamiento terrestre: Pareja acudiendo al nido...'
@@ -2202,6 +2580,7 @@ export class GameEngine {
       this.cameraController.resetEditorOrbit();
       this.timer.update();
       this.saveToLocalStorage();
+      audioManager.playMenuOpenClose();
       this.emitUISnapshot();
     }
   }
@@ -2275,6 +2654,7 @@ export class GameEngine {
     }
 
     const questCompleted = this.evaluateQuests();
+    audioManager.playEvolutionEquip();
     if (!questCompleted) {
       const stackSuffix =
         slot.maxStacks > 1
@@ -2350,6 +2730,8 @@ export class GameEngine {
     this.setEditorSandboxIsolation(false);
     this.environment.setStageEnvironment('cell_stage');
     this.predatorManager.setStageMode('cell_stage');
+    this.introCinematicController?.setMonumentCoreTheme(this.stats.colorTheme);
+    this.introCinematicController?.setPermanentMonumentVisible(true);
     this.player.reset();
     this.player.applyMorphology(
       this.stats.bodyShape,
@@ -2402,61 +2784,167 @@ export class GameEngine {
     const rawDelta = this.timer.getDelta();
     const delta = Math.min(rawDelta, 0.1);
 
-    // Ambient 3D Ocean Cinematic Mode while on the Main Menu ('menu')
-    if (this.status === 'menu') {
-      const menuDelta = delta * 0.45;
-      this.elapsedActiveTime += menuDelta;
-      this.player.updateEditorIdle(menuDelta, this.elapsedActiveTime);
-      this.foodManager.update(
-        menuDelta,
-        this.elapsedActiveTime,
-        new THREE.Vector3(9999, 0, 9999),
-        'herbivore',
-        false,
-        false,
-        false,
-        false
+    // Handle Active Planetary Cinematic Transition (Atmospheric Dive or Orbital Ascent)
+    if (this.planetaryTransition && this.planetaryTransition.active) {
+      const transitionDuration = 1.45;
+      this.planetaryTransition.progress = Math.min(
+        1.0,
+        this.planetaryTransition.progress + delta / transitionDuration
       );
-      this.predatorManager.update(
-        menuDelta,
-        this.elapsedActiveTime,
-        new THREE.Vector3(9999, 0, 9999),
-        false,
-        false,
-        false,
-        () => {},
-        [],
-        false,
-        0,
-        false,
-        false,
-        [],
-        false,
-        false,
-        false,
-        this.discoveredAdaptationIds,
-        0
+      const p = this.planetaryTransition.progress;
+
+      // Bell-curve atmospheric cloud/mist opacity peaking at p = 0.50
+      const bellOpacity = Math.sin(p * Math.PI);
+      this.planetaryTransition.atmosphereOverlayOpacity = Math.pow(
+        Math.max(0, bellOpacity),
+        1.15
       );
-      this.cameraController.updateMenuCinematic(
+
+      if (this.planetaryTransition.mode === 'entering_planet') {
+        if (p < 0.5) {
+          // Phase 1 (0.0 -> 0.5): Plunge camera from Solar System orbit into the planet's upper cloud layer
+          const diveT = p / 0.5;
+          this.solarSystemView.setPlanetDiveProgress(
+            this.activeSlotId,
+            diveT,
+            false
+          );
+        } else {
+          // Phase 2 (0.5 -> 1.0): Pierce clouds into the 3D aquatic world & descend onto the player's cell
+          if (!this.transitionSwitchedScene) {
+            this.transitionSwitchedScene = true;
+            this.solarSystemView.setPlanetDiveProgress(
+              this.activeSlotId,
+              0,
+              false
+            );
+            if (this.pendingTransitionAction === 'new_game') {
+              this.executeStartNewGameImmediate(
+                this.pendingTransitionGenesis,
+                this.activeSlotId
+              );
+            } else {
+              this.executePlayPlanetSlotImmediate(this.activeSlotId);
+            }
+            this.cameraController.setAtmosphericAltitudeFactor(
+              1.0,
+              this.player,
+              true
+            );
+          }
+          const descendT = 1.0 - (p - 0.5) / 0.5;
+          this.cameraController.setAtmosphericAltitudeFactor(
+            descendT * descendT,
+            this.player,
+            false
+          );
+        }
+      } else {
+        // 'exiting_to_orbit'
+        if (p < 0.5) {
+          // Phase 1 (0.0 -> 0.5): Ascend rapidly from water plane toward the cloudy sky
+          const ascendT = p / 0.5;
+          this.cameraController.setAtmosphericAltitudeFactor(
+            ascendT * ascendT,
+            this.player,
+            false
+          );
+        } else {
+          // Phase 2 (0.5 -> 1.0): Emerge from planet's upper atmosphere into 3D Solar System orbital focus
+          if (!this.transitionSwitchedScene) {
+            this.transitionSwitchedScene = true;
+            this.cameraController.setAtmosphericAltitudeFactor(0, this.player);
+            this.status = 'menu';
+            this.solarSystemView.selectSlot(this.activeSlotId);
+            this.solarSystemView.setPlanetDiveProgress(
+              this.activeSlotId,
+              1.0,
+              true
+            );
+          }
+          const orbitPullOutT = 1.0 - (p - 0.5) / 0.5;
+          this.solarSystemView.setPlanetDiveProgress(
+            this.activeSlotId,
+            orbitPullOutT * orbitPullOutT,
+            false
+          );
+        }
+      }
+
+      if (p >= 1.0) {
+        this.cameraController.setAtmosphericAltitudeFactor(0, this.player);
+        this.solarSystemView.setPlanetDiveProgress(this.activeSlotId, 0, false);
+        this.planetaryTransition = undefined;
+        this.pendingTransitionAction = null;
+        this.pendingTransitionGenesis = undefined;
+        this.transitionSwitchedScene = false;
+      }
+
+      this.emitUISnapshot();
+    }
+
+    // 3D Spore Panspermia New-Game Intro Cinematic ('intro_cinematic')
+    if (this.status === 'intro_cinematic') {
+      this.elapsedActiveTime += delta;
+      this.solarSystemView.updateForIntroCinematic(
         delta,
-        this.player,
-        this.elapsedActiveTime
-      );
-      this.environment.update(
         this.elapsedActiveTime,
-        menuDelta,
-        this.player.position.x,
-        this.player.position.z
+        this.activeSlotId
       );
+      this.environment.update(this.elapsedActiveTime, delta, 0, 0);
+      this.player.updateEditorIdle(delta, this.elapsedActiveTime);
+
+      const cineRes = this.introCinematicController.update(
+        delta,
+        this.elapsedActiveTime,
+        this.solarSystemView.camera,
+        this.cameraController.camera,
+        this.player.group,
+        this.settings.screenShake && !this.settings.reducedMotion
+      );
+
+      this.introCinematicState = cineRes.snapshotState;
+
+      if (cineRes.completed) {
+        this.completeIntroCinematic(false);
+        this.renderer.render(
+          this.environment.scene,
+          this.cameraController.camera
+        );
+        return;
+      }
+
+      this.emitUISnapshot();
+
+      if (cineRes.useEnvironmentScene) {
+        this.renderer.render(
+          this.environment.scene,
+          this.cameraController.camera
+        );
+      } else {
+        this.renderer.render(
+          this.solarSystemView.scene,
+          this.solarSystemView.camera
+        );
+      }
+      return;
+    }
+
+    // 3D Cosmic Orbital Solar System Save-Slot Menu ('menu')
+    if (this.status === 'menu') {
+      audioManager.transitionMusicTo('menu');
+      this.elapsedActiveTime += delta;
+      this.solarSystemView.update(delta, this.elapsedActiveTime);
       this.renderer.render(
-        this.environment.scene,
-        this.cameraController.camera
+        this.solarSystemView.scene,
+        this.solarSystemView.camera
       );
       return;
     }
 
     // Live 3D Spore Workshop Mode while inside the Editor ('editing')
     if (this.status === 'editing') {
+      audioManager.transitionMusicTo('editor');
       this.elapsedActiveTime += delta;
       this.player.updateEditorIdle(delta, this.elapsedActiveTime);
       this.cameraController.update(
@@ -2479,10 +2967,71 @@ export class GameEngine {
     }
 
     if (this.status === 'playing') {
+      const inCombatAlert =
+        this.nearestPredatorDistance < 18.0 &&
+        (this.nearestPredatorState === 'PERSEGUIR' ||
+          this.nearestPredatorState === 'ATACAR');
+      audioManager.transitionMusicTo(inCombatAlert ? 'combat' : 'ocean');
+      // During 'exiting_to_orbit' water ascent phase, only animate camera & environment smoothly
+      if (
+        this.planetaryTransition?.active &&
+        this.planetaryTransition.mode === 'exiting_to_orbit'
+      ) {
+        this.elapsedActiveTime += delta;
+        this.cameraController.update(
+          delta,
+          this.player,
+          false,
+          this.elapsedActiveTime
+        );
+        this.environment.update(
+          this.elapsedActiveTime,
+          delta,
+          this.player.position.x,
+          this.player.position.z
+        );
+        this.renderer.render(
+          this.environment.scene,
+          this.cameraController.camera
+        );
+        return;
+      }
+
       this.elapsedActiveTime += delta;
       this.stats.survivalTime = this.elapsedActiveTime;
 
       let forceUIEmit = false;
+
+      // Update 3-second Respawn Invulnerability Timer & Blinking State
+      if (this.respawnInvulnerabilityTimer > 0) {
+        this.respawnInvulnerabilityTimer = Math.max(
+          0,
+          this.respawnInvulnerabilityTimer - delta
+        );
+        this.player.setInvulnerableBlinking(
+          this.respawnInvulnerabilityTimer > 0
+        );
+      }
+
+      // Update Discrete Autosave HUD Notification Timer
+      if (this.autosaveBadgeTimer > 0) {
+        this.autosaveBadgeTimer = Math.max(0, this.autosaveBadgeTimer - delta);
+        if (this.autosaveBadgeTimer <= 0) {
+          forceUIEmit = true;
+        }
+      }
+
+      // Periodic 60-Second Checkpoint Autosave during active gameplay
+      if (this.matingCallTimer <= 0 && !this.planetaryTransition?.active) {
+        this.autosaveAccumulator += delta;
+        if (this.autosaveAccumulator >= 60.0) {
+          this.autosaveAccumulator = 0;
+          this.saveToLocalStorage();
+          this.autosaveBadgeTimer = 3.5;
+          forceUIEmit = true;
+        }
+      }
+
       const isCreatureStage =
         this.stats.evolutionaryStage === 'creature_stage';
 
@@ -2793,12 +3342,17 @@ export class GameEngine {
         (this.nearestPredatorState === 'PERSEGUIR' ||
           this.nearestPredatorState === 'ATACAR');
 
+      if (predatorClose) {
+        audioManager.playThreatRoar();
+      }
+
       if (
         hasPoisonGland &&
         this.poisonSpawnCooldownTimer <= 0 &&
         (moveResult.isBoosting || predatorClose)
       ) {
         this.player.spawnPoisonCloud();
+        audioManager.playPoisonHiss();
         this.poisonSpawnCooldownTimer = 1.2;
       }
 
@@ -2809,6 +3363,7 @@ export class GameEngine {
           this.stats.energy = Math.max(0, this.stats.energy - 6);
           this.electricCooldownTimer = 4.0;
           this.player.triggerSocialWave(8.0);
+          audioManager.playElectricZap();
           const blindedCount = this.predatorManager.disorientPredatorsInRadius(
             this.player.position,
             8.0
@@ -2833,6 +3388,7 @@ export class GameEngine {
                 24.0
               );
               this.player.spawnAcidProjectile(autoAimTarget);
+              audioManager.playAcidSplash();
               usedAnyAbility = true;
               this.setEventMessage(
                 autoAimTarget
@@ -2860,6 +3416,7 @@ export class GameEngine {
               this.stats.energy = Math.max(0, this.stats.energy - 12);
               this.electricCooldownTimer = 6.0;
               this.player.triggerElectricPulse();
+              audioManager.playElectricZap();
               electricPulseTriggered = true;
               usedAnyAbility = true;
               if (!hasAcidSpit) {
@@ -2884,6 +3441,7 @@ export class GameEngine {
 
         if (hasPoisonGland && this.poisonSpawnCooldownTimer <= 0) {
           this.player.spawnPoisonCloud();
+          audioManager.playPoisonHiss();
           this.poisonSpawnCooldownTimer = 1.2;
           if (!usedAnyAbility) {
             this.setEventMessage('Nube tóxica defensiva liberada por los conductos');
@@ -3196,8 +3754,19 @@ export class GameEngine {
         canHuntWithGraspingArms,
         isPlayerAirborne,
         this.discoveredAdaptationIds,
-        effectiveRetaliationSpikes
+        effectiveRetaliationSpikes,
+        this.player.headingAngle,
+        this.stats.attackPower,
+        moveResult.isBoosting
       );
+
+      // Apply physical recoil bounce to player when biting or colliding in melee so cells separate cleanly (2.5m-4.0m)
+      if (ecosystemResult.playerBounceTargetPosition) {
+        this.player.applyCombatBounce(
+          ecosystemResult.playerBounceTargetPosition,
+          14.5
+        );
+      }
 
       this.nearestSpeciesName = ecosystemResult.nearestSpeciesName;
       this.nearestPredatorState = ecosystemResult.nearestState;
@@ -3352,10 +3921,14 @@ export class GameEngine {
         forceUIEmit = true;
       }
 
-      if (ecosystemResult.totalDamageDealt > 0) {
+      if (
+        ecosystemResult.totalDamageDealt > 0 &&
+        this.respawnInvulnerabilityTimer <= 0
+      ) {
         // Mucus gland: 40% chance that the bite slips off without dealing damage!
         const mucusSlipped = mucusGlandStacks > 0 && Math.random() < 0.4;
         if (mucusSlipped) {
+          audioManager.playShieldDeflect();
           this.setEventMessage(
             '¡Mucílago Resbaladizo! El mordisco enemigo resbaló sin causar daño'
           );
@@ -3372,8 +3945,25 @@ export class GameEngine {
             Math.floor(ecosystemResult.totalDamageDealt * (1 - totalRed))
           );
 
+          this.lastAttackerSpeciesName =
+            ecosystemResult.attackerSpeciesName ?? 'Depredador Abisal';
           this.stats.health = Math.max(0, this.stats.health - effectiveDamage);
           this.stats.damageFlashTime = 0.4;
+          if (
+            totalRed >= 0.15 ||
+            armorStacks > 0 ||
+            chitinShieldStacks > 0 ||
+            hydroCarapaceStacks > 0 ||
+            silicaSpiculeStacks > 0
+          ) {
+            audioManager.playShieldDeflect();
+          }
+          audioManager.playDamageTaken();
+          this.predatorManager.spawnFloatingDamageNumber(
+            this.player.position,
+            effectiveDamage,
+            'player_hit'
+          );
           if (this.settings.screenShake && !this.settings.reducedMotion) {
             this.cameraController.triggerScreenShake(0.38, 0.32);
           }
@@ -3444,6 +4034,12 @@ export class GameEngine {
         this.player.position.x,
         this.player.position.z
       );
+      this.introCinematicController.updatePermanentMonument(
+        delta,
+        this.elapsedActiveTime,
+        this.stats.evolutionaryStage === 'cell_stage' &&
+          this.matingCallTimer <= 0
+      );
 
       if (this.eventMessageTimer > 0) {
         this.eventMessageTimer -= delta;
@@ -3472,8 +4068,18 @@ export class GameEngine {
   }
 
   private footerDeathCleanup(): void {
-    this.clearLocalStorage();
-    this.setEventMessage('Organismo eliminado');
+    // DO NOT delete localStorage on death so the player can respawn at the last saved checkpoint or return to the Solar System!
+    audioManager.playCreatureDeath();
+    if (this.stats.isStarving && this.stats.energy <= 0) {
+      this.deathCauseDescription =
+        'Inanición metabólica: Las reservas de energía celular se agotaron por completo.';
+    } else if (this.lastAttackerSpeciesName) {
+      this.deathCauseDescription = `Depredación letal por ${this.lastAttackerSpeciesName}: La membrana celular colapsó tras el impacto.`;
+    } else {
+      this.deathCauseDescription =
+        'Colapso estructural de la membrana celular en aguas hostiles.';
+    }
+    this.setEventMessage('Membrana celular colapsada');
   }
 
   private setEventMessage(msg: string): void {
@@ -3492,6 +4098,10 @@ export class GameEngine {
     this.onUISnapshot({
       status: this.status,
       hasSavedGame: this.hasSavedGame(),
+      activeSlotId: this.activeSlotId,
+      selectedMenuSlotId: this.selectedMenuSlotId,
+      hoveredMenuSlotId: this.hoveredMenuSlotId,
+      planetSlots: this.planetSlots.map((p) => ({ ...p })),
       settings: { ...this.settings },
       stats: {
         ...this.stats,
@@ -3513,6 +4123,14 @@ export class GameEngine {
       unlockedBannerNotification: this.unlockedBannerNotification,
       evolutionSlots: this.preparedEvolutionCatalog.map((slot) => ({ ...slot })),
       selectedPlacedInstanceId: this.selectedPlacedInstanceId,
+      planetaryTransition: this.planetaryTransition
+        ? { ...this.planetaryTransition }
+        : undefined,
+      introCinematic: this.introCinematicState
+        ? { ...this.introCinematicState }
+        : undefined,
+      autosaveNotificationVisible: this.autosaveBadgeTimer > 0,
+      deathCauseDescription: this.deathCauseDescription,
     });
   }
 
@@ -3520,6 +4138,7 @@ export class GameEngine {
     const width = this.container.clientWidth || window.innerWidth;
     const height = this.container.clientHeight || window.innerHeight;
     this.cameraController.handleResize(width, height);
+    this.solarSystemView.handleResize(width, height);
     this.renderer.setSize(width, height);
   }
 
@@ -3552,7 +4171,9 @@ export class GameEngine {
     this.foodManager.dispose();
     this.fossilMeteorManager.dispose();
     this.predatorManager.dispose();
+    this.introCinematicController.dispose();
     this.environment.dispose();
+    this.solarSystemView.dispose();
     this.renderer.dispose();
   }
 }

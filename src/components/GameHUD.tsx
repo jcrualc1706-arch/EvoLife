@@ -6,11 +6,11 @@ import {
   Footprints,
   HeartHandshake,
   Pause,
-  RotateCcw,
   Sparkles,
   Zap,
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
+import { audioManager } from '../game/AudioManager';
 import { GameUISnapshot, InputState } from '../game/types';
 import { DnaCounter } from './DnaCounter';
 import { HealthEnergyBars } from './HealthEnergyBars';
@@ -21,7 +21,6 @@ interface GameHUDProps {
   onTogglePause: () => void;
   onToggleEditor: () => void;
   onEvolveToCreatureStage: () => void;
-  onRestart: () => void;
   onControlInput: (key: keyof InputState, active: boolean) => void;
 }
 
@@ -34,11 +33,9 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
     onTogglePause,
     onToggleEditor,
     onEvolveToCreatureStage,
-    onRestart,
     onControlInput,
   }) => {
     const prefersReducedMotion = useReducedMotion();
-    const [confirmingRestart, setConfirmingRestart] = useState(false);
     const [confirmingLandJump, setConfirmingLandJump] = useState(false);
 
     const {
@@ -228,11 +225,26 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
               </div>
             </div>
 
-            {/* Top-Right: Bubble/Droplet Action Buttons (Evolucionar [E], Pausa [Esc], Reiniciar) */}
+            {/* Top-Right: Discrete Autosave Indicator + Bubble/Droplet Action Buttons (Evolucionar [E], Pausa [Esc]) */}
             <div className="pointer-events-auto flex items-center gap-2">
+              {snapshot.autosaveNotificationVisible && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="pointer-events-none flex items-center gap-1.5 rounded-full border border-emerald-400/35 bg-emerald-950/65 px-3 py-1.5 text-[11px] font-bold text-emerald-200 backdrop-blur-xl shadow-[0_0_14px_rgba(16,185,129,0.22)] animate-pulse"
+                >
+                  <Dna className="h-3.5 w-3.5 text-emerald-300 animate-spin" />
+                  <span>Partida autoguardada</span>
+                </div>
+              )}
+
               <button
                 type="button"
-                onClick={onToggleEditor}
+                onPointerEnter={() => audioManager.playButtonHover()}
+                onClick={() => {
+                  audioManager.playButtonClick();
+                  onToggleEditor();
+                }}
                 className={`flex items-center gap-2 rounded-full px-4 py-2.5 text-xs font-extrabold whitespace-nowrap shrink-0 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150 ${
                   availableUpgradesCount > 0
                     ? 'border border-amber-200/80 border-t-white/90 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-slate-950 shadow-[0_4px_16px_rgba(251,191,36,0.45),inset_0_1px_2px_rgba(255,255,255,0.75)]'
@@ -259,7 +271,11 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
 
               <button
                 type="button"
-                onClick={onTogglePause}
+                onPointerEnter={() => audioManager.playButtonHover()}
+                onClick={() => {
+                  audioManager.playButtonClick();
+                  onTogglePause();
+                }}
                 className="flex items-center gap-1.5 rounded-full border border-cyan-400/40 border-t-cyan-200/60 bg-cyan-500/20 hover:bg-cyan-500/35 px-3.5 py-2.5 text-xs font-bold text-cyan-100 shadow-[0_2px_10px_rgba(34,211,238,0.2),inset_0_1px_1px_rgba(255,255,255,0.25)] backdrop-blur-xl whitespace-nowrap shrink-0 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150"
               >
                 <Pause className="h-4 w-4 text-cyan-200" />
@@ -268,39 +284,6 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
                   Esc
                 </kbd>
               </button>
-
-              {!confirmingRestart ? (
-                <button
-                  type="button"
-                  onClick={() => setConfirmingRestart(true)}
-                  title="Reiniciar partida"
-                  aria-label="Reiniciar partida"
-                  className="flex items-center gap-1.5 rounded-full border border-cyan-400/35 border-t-cyan-200/50 bg-cyan-500/15 hover:bg-rose-500/25 hover:border-rose-300/50 px-3 py-2.5 text-xs font-semibold text-cyan-200 hover:text-rose-100 shadow-[0_2px_10px_rgba(34,211,238,0.15)] backdrop-blur-xl shrink-0 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150"
-                >
-                  <RotateCcw className="h-4 w-4" />
-                  <span className="hidden xl:inline">Reiniciar</span>
-                </button>
-              ) : (
-                <div className="flex items-center gap-1.5 rounded-full border border-rose-300/50 bg-gradient-to-b from-rose-950/85 to-[#041a29]/90 p-1 backdrop-blur-xl shadow-lg">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setConfirmingRestart(false);
-                      onRestart();
-                    }}
-                    className="rounded-full bg-gradient-to-b from-rose-400 to-rose-600 px-3 py-1.5 text-xs font-extrabold text-white shadow-[0_2px_10px_rgba(244,63,94,0.4)] cursor-pointer whitespace-nowrap active:scale-95 transition-transform duration-150"
-                  >
-                    ¿Reiniciar?
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setConfirmingRestart(false)}
-                    className="rounded-full px-2.5 py-1.5 text-xs font-semibold text-cyan-100 hover:text-white cursor-pointer active:scale-95 transition-transform duration-150"
-                  >
-                    No
-                  </button>
-                </div>
-              )}
             </div>
           </header>
 
@@ -326,7 +309,11 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
                   {readyForLandTransition && !isCreatureStage && (
                     <button
                       type="button"
-                      onClick={() => setConfirmingLandJump(true)}
+                      onPointerEnter={() => audioManager.playButtonHover()}
+                      onClick={() => {
+                        audioManager.playButtonClick();
+                        setConfirmingLandJump(true);
+                      }}
                       className="inline-flex items-center gap-1 rounded-full border border-amber-100/80 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 px-2.5 py-0.5 text-xs font-extrabold text-slate-950 shadow-[0_2px_10px_rgba(251,191,36,0.45)] cursor-pointer whitespace-nowrap hover:scale-[1.03] active:scale-95 transition-all duration-150"
                     >
                       <Footprints className="h-3 w-3" />
@@ -349,7 +336,9 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
                     <div className="mt-2 flex items-center gap-2">
                       <button
                         type="button"
+                        onPointerEnter={() => audioManager.playButtonHover()}
                         onClick={() => {
+                          audioManager.playButtonClick();
                           setConfirmingLandJump(false);
                           onEvolveToCreatureStage();
                         }}
@@ -359,7 +348,11 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
                       </button>
                       <button
                         type="button"
-                        onClick={() => setConfirmingLandJump(false)}
+                        onPointerEnter={() => audioManager.playButtonHover()}
+                        onClick={() => {
+                          audioManager.playButtonClick();
+                          setConfirmingLandJump(false);
+                        }}
                         className="rounded-full border border-cyan-400/40 bg-cyan-500/20 px-3 py-1 text-xs font-semibold text-cyan-100 hover:bg-cyan-500/35 cursor-pointer active:scale-95 transition-transform duration-150"
                       >
                         Cancelar

@@ -9,6 +9,7 @@ import {
   X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { audioManager } from '../game/AudioManager';
 import {
   ColorblindModeSetting,
   FpsLimitSetting,
@@ -96,7 +97,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <button
             type="button"
-            onClick={onClose}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onClose();
+            }}
             aria-label="Cerrar ajustes"
             className="flex h-10 w-10 items-center justify-center rounded-full border border-cyan-300/35 bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-100 cursor-pointer hover:scale-105 active:scale-95 transition-all"
           >
@@ -112,7 +117,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <button
                 key={tab.id}
                 type="button"
-                onClick={() => setActiveTab(tab.id)}
+                onPointerEnter={() => audioManager.playButtonHover()}
+                onClick={() => {
+                  audioManager.playButtonClick();
+                  setActiveTab(tab.id);
+                }}
                 className={`flex items-center justify-center gap-2 rounded-full px-3.5 py-2.5 text-xs font-extrabold cursor-pointer transition-all duration-150 ${
                   isActive
                     ? 'border border-amber-200/80 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 text-slate-950 shadow-[0_0_16px_rgba(251,191,36,0.4),inset_0_1px_2px_rgba(255,255,255,0.75)] scale-[1.02]'
@@ -656,7 +665,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="mt-5 flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-cyan-300/20">
           <button
             type="button"
-            onClick={onResetSettings}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onResetSettings();
+            }}
             className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-full border border-rose-300/35 bg-rose-500/15 hover:bg-rose-500/25 px-5 py-2.5 text-xs font-bold text-rose-200 cursor-pointer hover:scale-[1.02] active:scale-95 transition-all"
           >
             <RotateCcw className="h-3.5 w-3.5" />
@@ -665,7 +678,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
           <button
             type="button"
-            onClick={onClose}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onClose();
+            }}
             className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-full border border-amber-100/80 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 px-7 py-2.5 text-xs font-extrabold text-slate-950 shadow-[0_4px_14px_rgba(251,191,36,0.4),inset_0_1px_2px_rgba(255,255,255,0.75)] cursor-pointer hover:scale-[1.02] active:scale-95 transition-all"
           >
             <Check className="h-4 w-4" />

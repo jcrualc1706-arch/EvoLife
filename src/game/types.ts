@@ -1,6 +1,12 @@
 import * as THREE from 'three';
 
-export type GameStatus = 'menu' | 'playing' | 'paused' | 'editing' | 'gameover';
+export type GameStatus =
+  | 'menu'
+  | 'intro_cinematic'
+  | 'playing'
+  | 'paused'
+  | 'editing'
+  | 'gameover';
 
 export type GraphicsQualityPreset = 'low' | 'medium' | 'high';
 export type FpsLimitSetting = '30' | '60' | 'unlimited';
@@ -275,9 +281,64 @@ export interface PlayerStats {
   visionLevel: number;
 }
 
+export type PlanetTheme =
+  | 'oceanic'
+  | 'volcanic'
+  | 'terrene'
+  | 'crystalline'
+  | 'desertic'
+  | 'toxic';
+
+export interface PlanetSlotMetadata {
+  slotId: number; // 1 to 6
+  planetName: string; // e.g. "Aethel Prime", "Kalyx IV", "Gaea-9", etc.
+  planetTheme: PlanetTheme;
+  hasSave: boolean;
+  // Summary data when hasSave === true
+  speciesName?: string;
+  growthStage?: CellularGrowthStage;
+  evolutionaryStage?: EvolutionaryStage;
+  diet?: DietType;
+  innateTrait?: InnateTraitId;
+  colorTheme?: CellColorTheme;
+  bodyShape?: CellBodyShape;
+  adn?: number;
+  totalAdnEarned?: number;
+  survivalTime?: number;
+  lastPlayedTimestamp?: number;
+}
+
+export interface PlanetaryTransitionState {
+  active: boolean;
+  mode: 'entering_planet' | 'exiting_to_orbit';
+  progress: number;
+  atmosphereOverlayOpacity: number;
+  atmosphereColorHex: string;
+  planetName: string;
+}
+
+export interface IntroCinematicState {
+  active: boolean;
+  phase: 0 | 1 | 2 | 3 | 4;
+  elapsed: number;
+  duration: number;
+  fadeOpacity: number;
+  cloudOverlayOpacity: number;
+  splashOverlayOpacity: number;
+  atmosphereColorHex: string;
+  planetName: string;
+  speciesName: string;
+  phaseTitle: string;
+  phaseSubtitle: string;
+}
+
 export interface GameUISnapshot {
   status: GameStatus;
   hasSavedGame: boolean;
+  activeSlotId: number;
+  selectedMenuSlotId: number | null;
+  hoveredMenuSlotId: number | null;
+  planetSlots: PlanetSlotMetadata[];
   settings: GameSettings;
   stats: PlayerStats;
   activeFoodCount: number;
@@ -295,6 +356,10 @@ export interface GameUISnapshot {
   unlockedBannerNotification: UnlockedBannerNotification | null;
   evolutionSlots: CellularEvolutionSlot[];
   selectedPlacedInstanceId: string | null;
+  planetaryTransition?: PlanetaryTransitionState;
+  introCinematic?: IntroCinematicState;
+  autosaveNotificationVisible?: boolean;
+  deathCauseDescription?: string;
 }
 
 export interface InputState {
@@ -306,3 +371,4 @@ export interface InputState {
   ability: boolean;
   socialize: boolean;
 }
+

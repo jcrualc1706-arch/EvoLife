@@ -13,6 +13,7 @@ import {
   X,
 } from 'lucide-react';
 import { motion } from 'motion/react';
+import { audioManager } from '../game/AudioManager';
 import {
   CellBodyShape,
   CellColorTheme,
@@ -165,6 +166,7 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
   const [colorTheme, setColorTheme] = useState<CellColorTheme>('emerald');
 
   const handleRandomizeName = () => {
+    audioManager.playButtonClick();
     const candidates = ABYSSAL_SPECIES_NAMES.filter((n) => n !== speciesName);
     const pick =
       candidates[Math.floor(Math.random() * candidates.length)] ??
@@ -173,6 +175,7 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
   };
 
   const handleDietSelect = (diet: DietType) => {
+    audioManager.playButtonClick();
     setInitialDiet(diet);
     if (diet === 'herbivore') setColorTheme('emerald');
     else if (diet === 'carnivore') setColorTheme('crimson');
@@ -181,6 +184,7 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    audioManager.playButtonClick();
     onConfirmGenesis({
       speciesName: speciesName.trim() || 'Organismo Primigenio',
       initialDiet,
@@ -232,7 +236,11 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
 
           <button
             type="button"
-            onClick={onCancel}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onCancel();
+            }}
             aria-label="Volver al menú principal"
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-cyan-300/35 bg-cyan-950/60 text-cyan-200 hover:bg-cyan-800/60 hover:text-white cursor-pointer transition-colors"
           >
@@ -257,11 +265,13 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
                   maxLength={28}
                   value={speciesName}
                   onChange={(e) => setSpeciesName(e.target.value)}
+                  onKeyDown={() => audioManager.playKeyType()}
                   placeholder="Ej. Abyssalis Vorax"
                   className="w-full rounded-full border border-cyan-300/40 bg-cyan-950/70 px-4 py-2 text-sm font-bold text-white placeholder-cyan-300/40 focus:border-amber-300 focus:outline-none"
                 />
                 <button
                   type="button"
+                  onPointerEnter={() => audioManager.playButtonHover()}
                   onClick={handleRandomizeName}
                   title="Generar nombre científico abisal aleatorio"
                   className="flex items-center gap-1.5 rounded-full border border-cyan-300/40 bg-cyan-500/20 hover:bg-cyan-500/35 px-3.5 py-2 text-xs font-extrabold text-cyan-100 shrink-0 cursor-pointer active:scale-95 transition-all"
@@ -281,7 +291,11 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
                   <button
                     key={shape.id}
                     type="button"
-                    onClick={() => setBodyShape(shape.id)}
+                    onPointerEnter={() => audioManager.playButtonHover()}
+                    onClick={() => {
+                      audioManager.playButtonClick();
+                      setBodyShape(shape.id);
+                    }}
                     className={`rounded-full px-2.5 py-1 text-[11px] font-bold truncate cursor-pointer transition-all ${
                       bodyShape === shape.id
                         ? 'bg-cyan-300 text-slate-950 font-extrabold shadow-[0_0_10px_rgba(34,211,238,0.4)]'
@@ -303,7 +317,11 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
                   <button
                     key={theme.id}
                     type="button"
-                    onClick={() => setColorTheme(theme.id)}
+                    onPointerEnter={() => audioManager.playButtonHover()}
+                    onClick={() => {
+                      audioManager.playButtonClick();
+                      setColorTheme(theme.id);
+                    }}
                     title={theme.label}
                     aria-label={theme.label}
                     className={`h-7 w-7 rounded-full ${theme.swatchClass} cursor-pointer transition-transform ${
@@ -335,6 +353,7 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
                   <button
                     key={option.id}
                     type="button"
+                    onPointerEnter={() => audioManager.playButtonHover()}
                     onClick={() => handleDietSelect(option.id)}
                     className={`text-left rounded-3xl border p-4 transition-all cursor-pointer flex flex-col justify-between ${
                       selected
@@ -399,7 +418,11 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
                   <button
                     key={trait.id}
                     type="button"
-                    onClick={() => setInnateTrait(trait.id)}
+                    onPointerEnter={() => audioManager.playButtonHover()}
+                    onClick={() => {
+                      audioManager.playButtonClick();
+                      setInnateTrait(trait.id);
+                    }}
                     className={`text-left rounded-2xl border p-3.5 transition-all cursor-pointer ${
                       selected
                         ? 'border-amber-300/75 bg-gradient-to-r from-amber-500/20 via-cyan-900/50 to-teal-900/50 shadow-[0_0_18px_rgba(251,191,36,0.22)]'
@@ -433,7 +456,11 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
         <div className="mt-6 flex flex-wrap items-center justify-between gap-3 border-t border-cyan-300/20 pt-4">
           <button
             type="button"
-            onClick={onCancel}
+            onPointerEnter={() => audioManager.playButtonHover()}
+            onClick={() => {
+              audioManager.playButtonClick();
+              onCancel();
+            }}
             className="rounded-full border border-cyan-300/35 bg-cyan-950/60 hover:bg-cyan-900/70 px-5 py-2.5 text-xs font-bold text-cyan-100 cursor-pointer transition-all"
           >
             Cancelar
@@ -441,6 +468,7 @@ export const GenesisModal: React.FC<GenesisModalProps> = ({
 
           <button
             type="submit"
+            onPointerEnter={() => audioManager.playButtonHover()}
             className="flex items-center gap-2.5 rounded-full border border-amber-100/90 bg-gradient-to-r from-emerald-300 via-cyan-300 to-amber-300 px-7 py-3 text-sm font-black text-slate-950 shadow-[0_6px_24px_rgba(34,211,238,0.45),inset_0_1px_2px_rgba(255,255,255,0.9)] cursor-pointer hover:scale-[1.02] active:scale-95 transition-all"
           >
             <Play className="h-4 w-4 fill-current" />
