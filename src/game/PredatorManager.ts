@@ -19,6 +19,7 @@ interface SpeciesProfile {
   name: string;
   tier: 1 | 2 | 3;
   isHerbivore: boolean;
+  isSessile?: boolean;
   count: number;
   wanderSpeed: number;
   activeSpeed: number;
@@ -29,6 +30,25 @@ interface SpeciesProfile {
   attackCooldownSec: number;
   scaleMultiplier: number;
   primaryTraits: string[];
+}
+
+interface ArticulatedFlagellumChain {
+  segments: THREE.Mesh[];
+  baseX: number;
+  baseY: number;
+  baseZ: number;
+  baseYaw: number;
+  segmentSpacing: number;
+  phaseOffset: number;
+  amplitude: number;
+}
+
+interface AnimatedCiliumEntry {
+  mesh: THREE.Mesh;
+  baseRotY: number;
+  baseRotZ: number;
+  phase: number;
+  side: 1 | -1;
 }
 
 const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
@@ -67,7 +87,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     attackDamage: 10,
     attackCooldownSec: 1.8,
     scaleMultiplier: 0.92,
-    primaryTraits: ['weapon_harpoon_cell', 'sense_stalk_compound_eye'],
+    primaryTraits: ['weapon_harpoon_cell', 'sense_stalk_compound_eye', 'simple_flagellum'],
   },
   gasteropodo: {
     species: 'gasteropodo',
@@ -87,6 +107,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'mouth_radula',
       'mouth_suction_cup',
       'mouth_filter_baleen',
+      'cilia_waves',
     ],
   },
   esponja_espicular: {
@@ -94,15 +115,16 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     name: 'Esponja Espicular',
     tier: 1,
     isHerbivore: true,
+    isSessile: true,
     count: 3,
-    wanderSpeed: 1.5,
-    activeSpeed: 2.7,
+    wanderSpeed: 0,
+    activeSpeed: 0,
     detectionRadius: 10.0,
     loseInterestRadius: 15.0,
     attackRange: 2.4,
     attackDamage: 8,
     attackCooldownSec: 2.0,
-    scaleMultiplier: 0.95,
+    scaleMultiplier: 0.98,
     primaryTraits: ['defense_silica_spicules', 'chitin_spike'],
   },
   hunter: {
@@ -123,6 +145,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'mouth_proboscis',
       'chitin_spike',
       'mouth_needle_proboscis',
+      'movement_whip_flagella',
     ],
   },
   perforador: {
@@ -139,7 +162,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     attackDamage: 20,
     attackCooldownSec: 1.4,
     scaleMultiplier: 1.12,
-    primaryTraits: ['weapon_rotary_drill', 'mouth_needle_proboscis'],
+    primaryTraits: ['weapon_rotary_drill', 'mouth_needle_proboscis', 'simple_flagellum'],
   },
   vibora_fosa: {
     species: 'vibora_fosa',
@@ -155,7 +178,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     attackDamage: 19,
     attackCooldownSec: 1.5,
     scaleMultiplier: 1.15,
-    primaryTraits: ['weapon_caustic_acid_blister', 'poison_gland', 'acid_spit'],
+    primaryTraits: ['weapon_caustic_acid_blister', 'poison_gland', 'acid_spit', 'simple_flagellum'],
   },
   medusa_biolum: {
     species: 'medusa_biolum',
@@ -195,6 +218,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'weapon_tail_club',
       'defense_chitin_shield_plate',
       'membrane_armor',
+      'cilia_waves',
     ],
   },
   nebula_gelatinosa: {
@@ -215,6 +239,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'defense_mucus_gland',
       'defense_camouflage_chromatophores',
       'movement_pneumatic_vesicle',
+      'movement_macro_cilia_skirt',
     ],
   },
   mirador_abisal: {
@@ -237,6 +262,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'sense_electro_sensor_pores',
       'sense_lateral_line_vibrissae',
       'eye_stalks',
+      'simple_flagellum',
     ],
   },
   bala_fumarola: {
@@ -278,6 +304,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'defense_hydrothermal_carapace',
       'electric_cell',
       'membrane_armor',
+      'simple_flagellum',
     ],
   },
 };
@@ -287,6 +314,7 @@ interface OrganismEntity {
   species: SpeciesType;
   speciesName: string;
   profile: SpeciesProfile;
+  isSessile: boolean;
   group: THREE.Group;
   position: THREE.Vector3;
   headingAngle: number;
@@ -313,8 +341,13 @@ interface OrganismEntity {
   knockbackVelocity: THREE.Vector3;
   healthRingMesh: THREE.Mesh;
   healthRingMat: THREE.ShaderMaterial;
-  mandibleLeft: THREE.Mesh | null;
-  mandibleRight: THREE.Mesh | null;
+  mandibleLeft: THREE.Object3D | null;
+  mandibleRight: THREE.Object3D | null;
+  coreMesh: THREE.Mesh;
+  organelleMeshes: THREE.Mesh[];
+  flagellaChains: ArticulatedFlagellumChain[];
+  ciliaMeshes: AnimatedCiliumEntry[];
+  electricArcMeshes: THREE.Mesh[];
   tailSegments: THREE.Mesh[];
   attachedOrgans: OrganVisualInstance[];
   legsGroup: THREE.Group;
@@ -427,10 +460,16 @@ export class PredatorManager {
   private medusaBellGeo!: THREE.BufferGeometry;
   private spongeTubeGeo!: THREE.BufferGeometry;
   private predatorCoreGeo!: THREE.BufferGeometry;
+  private organelleGeo!: THREE.BufferGeometry;
   private mandibleGeo!: THREE.BufferGeometry;
+  private mandibleToothGeo!: THREE.BufferGeometry;
   private spineGeo!: THREE.BufferGeometry;
   private eyeGeo!: THREE.BufferGeometry;
+  private eyeIrisGeo!: THREE.BufferGeometry;
+  private eyePupilGeo!: THREE.BufferGeometry;
+  private eyeBrowGeo!: THREE.BufferGeometry;
   private tailGeo!: THREE.BufferGeometry;
+  private electricArcGeo!: THREE.BufferGeometry;
   private ringGeo!: THREE.BufferGeometry;
   private healthRingPlaneGeo!: THREE.BufferGeometry;
   private deathSphereGeo!: THREE.BufferGeometry;
@@ -450,17 +489,22 @@ export class PredatorManager {
   private herbivoreBodyMat!: THREE.MeshPhysicalMaterial;
   private herbivoreCiliaMat!: THREE.MeshStandardMaterial;
   private nematocitoBodyMat!: THREE.MeshPhysicalMaterial;
-  private gasteropodoBodyMat!: THREE.MeshStandardMaterial;
+  private gasteropodoBodyMat!: THREE.MeshPhysicalMaterial;
   private perforadorBodyMat!: THREE.MeshPhysicalMaterial;
   private viboraBodyMat!: THREE.MeshPhysicalMaterial;
   private medusaBodyMat!: THREE.MeshPhysicalMaterial;
-  private anquiloBodyMat!: THREE.MeshStandardMaterial;
+  private anquiloBodyMat!: THREE.MeshPhysicalMaterial;
   private esponjaBodyMat!: THREE.MeshPhysicalMaterial;
   private nebulaBodyMat!: THREE.MeshPhysicalMaterial;
-  private balaBodyMat!: THREE.MeshStandardMaterial;
+  private balaBodyMat!: THREE.MeshPhysicalMaterial;
   private miradorBodyMat!: THREE.MeshPhysicalMaterial;
+  private shellArmorMat!: THREE.MeshStandardMaterial;
+  private eyeScleraMat!: THREE.MeshPhysicalMaterial;
   private predatorEyeMat!: THREE.MeshStandardMaterial;
   private herbivoreEyeMat!: THREE.MeshStandardMaterial;
+  private eyePupilMat!: THREE.MeshStandardMaterial;
+  private organelleMat!: THREE.MeshStandardMaterial;
+  private electricArcMat!: THREE.MeshBasicMaterial;
   private geneCrystalMat!: THREE.MeshStandardMaterial;
   private geneHaloMat!: THREE.MeshBasicMaterial;
 
@@ -573,21 +617,21 @@ export class PredatorManager {
   }
 
   private initSharedAssets(): void {
-    this.predatorBodyGeo = new THREE.ConeGeometry(1.15, 2.75, 16);
-    this.predatorBodyGeo.rotateX(-Math.PI / 2);
-    this.predatorBodyGeo.scale(1.05, 0.72, 1.0);
+    this.predatorBodyGeo = new THREE.CapsuleGeometry(0.84, 1.25, 16, 22);
+    this.predatorBodyGeo.rotateX(Math.PI / 2);
+    this.predatorBodyGeo.scale(1.06, 0.74, 1.12);
 
-    this.sphericalBodyGeo = new THREE.SphereGeometry(1.18, 18, 16);
+    this.sphericalBodyGeo = new THREE.SphereGeometry(1.18, 22, 18);
     this.sphericalBodyGeo.scale(1.05, 0.76, 1.12);
 
-    this.elongatedBodyGeo = new THREE.CapsuleGeometry(0.68, 2.1, 12, 16);
+    this.elongatedBodyGeo = new THREE.CapsuleGeometry(0.68, 2.1, 14, 20);
     this.elongatedBodyGeo.rotateX(Math.PI / 2);
     this.elongatedBodyGeo.scale(0.95, 0.72, 1.15);
 
     this.medusaBellGeo = new THREE.SphereGeometry(
       1.25,
-      18,
-      14,
+      20,
+      16,
       0,
       Math.PI * 2,
       0,
@@ -595,19 +639,29 @@ export class PredatorManager {
     );
     this.medusaBellGeo.rotateX(-Math.PI * 0.35);
 
-    this.spongeTubeGeo = new THREE.CylinderGeometry(0.75, 1.05, 1.85, 12, 2);
+    this.spongeTubeGeo = new THREE.CylinderGeometry(0.75, 1.05, 1.85, 16, 3);
 
-    this.predatorCoreGeo = new THREE.OctahedronGeometry(0.62, 1);
+    this.predatorCoreGeo = new THREE.IcosahedronGeometry(0.54, 2);
+    this.organelleGeo = new THREE.SphereGeometry(0.22, 12, 10);
+    this.organelleGeo.scale(1.25, 0.85, 0.95);
 
-    this.mandibleGeo = new THREE.ConeGeometry(0.22, 0.95, 8);
+    this.mandibleGeo = new THREE.ConeGeometry(0.22, 0.98, 10);
     this.mandibleGeo.rotateX(-Math.PI / 2);
 
-    this.spineGeo = new THREE.ConeGeometry(0.16, 0.65, 6);
+    this.mandibleToothGeo = new THREE.ConeGeometry(0.065, 0.24, 6);
+    this.mandibleToothGeo.rotateZ(Math.PI / 2);
 
-    this.eyeGeo = new THREE.SphereGeometry(0.2, 12, 12);
+    this.spineGeo = new THREE.ConeGeometry(0.16, 0.65, 8);
 
-    this.tailGeo = new THREE.SphereGeometry(0.26, 10, 10);
-    this.tailGeo.scale(0.8, 0.8, 1.5);
+    this.eyeGeo = new THREE.SphereGeometry(0.22, 14, 14);
+    this.eyeIrisGeo = new THREE.SphereGeometry(0.145, 12, 12);
+    this.eyePupilGeo = new THREE.SphereGeometry(0.088, 10, 10);
+    this.eyeBrowGeo = new THREE.BoxGeometry(0.32, 0.08, 0.24);
+
+    this.tailGeo = new THREE.SphereGeometry(0.24, 12, 10);
+    this.tailGeo.scale(0.76, 0.72, 1.62);
+
+    this.electricArcGeo = new THREE.TorusGeometry(0.92, 0.032, 6, 18, Math.PI * 0.85);
 
     this.ringGeo = new THREE.RingGeometry(1.3, 1.68, 32);
     this.ringGeo.rotateX(-Math.PI / 2);
@@ -618,10 +672,10 @@ export class PredatorManager {
     this.leviathanPlateGeo = new THREE.DodecahedronGeometry(0.55, 0);
     this.leviathanPlateGeo.scale(1.4, 0.45, 1.1);
 
-    this.herbivoreBodyGeo = new THREE.CapsuleGeometry(0.95, 0.65, 14, 20);
+    this.herbivoreBodyGeo = new THREE.CapsuleGeometry(0.95, 0.65, 16, 22);
     this.herbivoreBodyGeo.rotateX(Math.PI / 2);
 
-    this.herbivoreCiliaGeo = new THREE.CylinderGeometry(0.05, 0.12, 0.65, 6);
+    this.herbivoreCiliaGeo = new THREE.CylinderGeometry(0.035, 0.095, 0.62, 6);
     this.herbivoreCiliaGeo.rotateZ(Math.PI / 2);
 
     this.creatureLegGeo = new THREE.CapsuleGeometry(0.14, 0.72, 6, 8);
@@ -644,10 +698,16 @@ export class PredatorManager {
       this.medusaBellGeo,
       this.spongeTubeGeo,
       this.predatorCoreGeo,
+      this.organelleGeo,
       this.mandibleGeo,
+      this.mandibleToothGeo,
       this.spineGeo,
       this.eyeGeo,
+      this.eyeIrisGeo,
+      this.eyePupilGeo,
+      this.eyeBrowGeo,
       this.tailGeo,
+      this.electricArcGeo,
       this.ringGeo,
       this.healthRingPlaneGeo,
       this.deathSphereGeo,
@@ -660,53 +720,61 @@ export class PredatorManager {
       this.geneHaloGeo
     );
 
-    // Shared Materials for all 13 species
+    // Multi-layered Translucent Outer Membranes (MeshPhysicalMaterial) for all species
     this.hunterBodyMat = new THREE.MeshPhysicalMaterial({
-      color: 0x9f1239,
-      emissive: 0x4c0519,
-      emissiveIntensity: 0.35,
-      roughness: 0.28,
-      metalness: 0.15,
-      clearcoat: 0.85,
+      color: 0xe11d48,
+      emissive: 0x881337,
+      emissiveIntensity: 0.34,
+      roughness: 0.16,
+      metalness: 0.08,
+      transmission: 0.66,
+      thickness: 1.1,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.12,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.88,
     });
 
     this.hunterMandibleMat = new THREE.MeshStandardMaterial({
       color: 0xfda4af,
       emissive: 0xe11d48,
-      emissiveIntensity: 0.3,
-      roughness: 0.25,
-      metalness: 0.5,
+      emissiveIntensity: 0.35,
+      roughness: 0.22,
+      metalness: 0.55,
     });
 
     this.leviathanBodyMat = new THREE.MeshPhysicalMaterial({
-      color: 0x581c87,
+      color: 0x6b21a8,
       emissive: 0x3b0764,
-      emissiveIntensity: 0.45,
-      roughness: 0.22,
-      metalness: 0.3,
-      clearcoat: 0.9,
+      emissiveIntensity: 0.44,
+      roughness: 0.18,
+      metalness: 0.12,
+      transmission: 0.62,
+      thickness: 1.35,
+      clearcoat: 1.0,
+      clearcoatRoughness: 0.14,
       transparent: true,
-      opacity: 0.95,
+      opacity: 0.9,
     });
 
     this.leviathanMandibleMat = new THREE.MeshStandardMaterial({
       color: 0xc084fc,
       emissive: 0x9333ea,
-      emissiveIntensity: 0.45,
+      emissiveIntensity: 0.48,
       roughness: 0.2,
-      metalness: 0.65,
+      metalness: 0.68,
     });
 
     this.herbivoreBodyMat = new THREE.MeshPhysicalMaterial({
       color: 0x2dd4bf,
       emissive: 0x0d9488,
-      emissiveIntensity: 0.3,
-      roughness: 0.15,
+      emissiveIntensity: 0.32,
+      roughness: 0.16,
       metalness: 0.05,
-      transmission: 0.6,
+      transmission: 0.72,
+      thickness: 1.0,
       clearcoat: 1.0,
+      clearcoatRoughness: 0.1,
       transparent: true,
       opacity: 0.86,
     });
@@ -714,115 +782,183 @@ export class PredatorManager {
     this.herbivoreCiliaMat = new THREE.MeshStandardMaterial({
       color: 0xfef08a,
       emissive: 0xeab308,
-      emissiveIntensity: 0.4,
-      roughness: 0.4,
+      emissiveIntensity: 0.45,
+      roughness: 0.32,
     });
 
     this.nematocitoBodyMat = new THREE.MeshPhysicalMaterial({
       color: 0x38bdf8,
       emissive: 0x0284c7,
-      emissiveIntensity: 0.4,
-      roughness: 0.15,
-      transmission: 0.65,
+      emissiveIntensity: 0.38,
+      roughness: 0.16,
+      transmission: 0.72,
+      thickness: 1.0,
+      clearcoat: 1.0,
       transparent: true,
-      opacity: 0.84,
+      opacity: 0.85,
     });
 
-    this.gasteropodoBodyMat = new THREE.MeshStandardMaterial({
-      color: 0xd97706,
-      emissive: 0x78350f,
-      emissiveIntensity: 0.35,
-      roughness: 0.72,
-      metalness: 0.22,
+    this.gasteropodoBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0xf59e0b,
+      emissive: 0x92400e,
+      emissiveIntensity: 0.34,
+      roughness: 0.18,
+      metalness: 0.08,
+      transmission: 0.64,
+      thickness: 1.15,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.88,
     });
 
     this.perforadorBodyMat = new THREE.MeshPhysicalMaterial({
-      color: 0xe2e8f0,
-      emissive: 0x0284c7,
-      emissiveIntensity: 0.45,
-      roughness: 0.22,
-      metalness: 0.55,
-      clearcoat: 0.9,
+      color: 0x7dd3fc,
+      emissive: 0x0369a1,
+      emissiveIntensity: 0.42,
+      roughness: 0.16,
+      metalness: 0.15,
+      transmission: 0.66,
+      thickness: 1.1,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.88,
     });
 
     this.viboraBodyMat = new THREE.MeshPhysicalMaterial({
-      color: 0x65a30d,
+      color: 0x84cc16,
       emissive: 0x365314,
-      emissiveIntensity: 0.5,
-      roughness: 0.28,
-      clearcoat: 0.8,
+      emissiveIntensity: 0.45,
+      roughness: 0.17,
+      transmission: 0.68,
+      thickness: 1.05,
+      clearcoat: 1.0,
       transparent: true,
-      opacity: 0.92,
+      opacity: 0.88,
     });
 
     this.medusaBodyMat = new THREE.MeshPhysicalMaterial({
       color: 0x67e8f9,
       emissive: 0x06b6d4,
-      emissiveIntensity: 0.65,
-      roughness: 0.1,
-      transmission: 0.75,
+      emissiveIntensity: 0.62,
+      roughness: 0.12,
+      transmission: 0.76,
+      thickness: 0.95,
+      clearcoat: 1.0,
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.84,
     });
 
-    this.anquiloBodyMat = new THREE.MeshStandardMaterial({
-      color: 0x92400e,
-      emissive: 0x451a03,
-      emissiveIntensity: 0.3,
-      roughness: 0.78,
-      metalness: 0.3,
+    this.anquiloBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0xd97706,
+      emissive: 0x78350f,
+      emissiveIntensity: 0.34,
+      roughness: 0.18,
+      metalness: 0.1,
+      transmission: 0.62,
+      thickness: 1.25,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.89,
     });
 
     this.esponjaBodyMat = new THREE.MeshPhysicalMaterial({
       color: 0xbae6fd,
       emissive: 0x0ea5e9,
       emissiveIntensity: 0.45,
-      roughness: 0.2,
-      transmission: 0.55,
+      roughness: 0.18,
+      transmission: 0.68,
+      thickness: 1.1,
+      clearcoat: 1.0,
       transparent: true,
-      opacity: 0.88,
+      opacity: 0.86,
     });
 
     this.nebulaBodyMat = new THREE.MeshPhysicalMaterial({
       color: 0xc084fc,
       emissive: 0x7e22ce,
-      emissiveIntensity: 0.5,
-      roughness: 0.12,
-      transmission: 0.7,
+      emissiveIntensity: 0.48,
+      roughness: 0.14,
+      transmission: 0.74,
+      thickness: 1.1,
+      clearcoat: 1.0,
       transparent: true,
-      opacity: 0.82,
+      opacity: 0.84,
     });
 
-    this.balaBodyMat = new THREE.MeshStandardMaterial({
-      color: 0x334155,
-      emissive: 0x0ea5e9,
-      emissiveIntensity: 0.6,
-      roughness: 0.25,
-      metalness: 0.68,
+    this.balaBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0x38bdf8,
+      emissive: 0x0284c7,
+      emissiveIntensity: 0.52,
+      roughness: 0.16,
+      metalness: 0.18,
+      transmission: 0.64,
+      thickness: 1.05,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.88,
     });
 
     this.miradorBodyMat = new THREE.MeshPhysicalMaterial({
       color: 0xf472b6,
       emissive: 0xbe185d,
       emissiveIntensity: 0.42,
-      roughness: 0.2,
-      clearcoat: 0.9,
+      roughness: 0.16,
+      transmission: 0.7,
+      thickness: 1.0,
+      clearcoat: 1.0,
       transparent: true,
-      opacity: 0.9,
+      opacity: 0.87,
+    });
+
+    this.shellArmorMat = new THREE.MeshStandardMaterial({
+      color: 0xb45309,
+      emissive: 0x451a03,
+      emissiveIntensity: 0.28,
+      roughness: 0.45,
+      metalness: 0.48,
+    });
+
+    this.eyeScleraMat = new THREE.MeshPhysicalMaterial({
+      color: 0xf8fafc,
+      emissive: 0xe2e8f0,
+      emissiveIntensity: 0.18,
+      roughness: 0.12,
+      clearcoat: 1.0,
     });
 
     this.predatorEyeMat = new THREE.MeshStandardMaterial({
       color: 0xfef08a,
       emissive: 0xf59e0b,
-      emissiveIntensity: 1.2,
-      roughness: 0.1,
+      emissiveIntensity: 1.15,
+      roughness: 0.12,
     });
 
     this.herbivoreEyeMat = new THREE.MeshStandardMaterial({
-      color: 0xe0f2fe,
-      emissive: 0x38bdf8,
-      emissiveIntensity: 0.5,
-      roughness: 0.15,
+      color: 0x7dd3fc,
+      emissive: 0x0ea5e9,
+      emissiveIntensity: 0.75,
+      roughness: 0.14,
+    });
+
+    this.eyePupilMat = new THREE.MeshStandardMaterial({
+      color: 0x090d16,
+      emissive: 0x020617,
+      emissiveIntensity: 0.25,
+      roughness: 0.08,
+      metalness: 0.2,
+    });
+
+    this.organelleMat = new THREE.MeshStandardMaterial({
+      color: 0xa7f3d0,
+      emissive: 0x10b981,
+      emissiveIntensity: 0.85,
+      roughness: 0.25,
+    });
+
+    this.electricArcMat = new THREE.MeshBasicMaterial({
+      color: 0x38bdf8,
+      transparent: true,
+      opacity: 0.85,
     });
 
     this.geneCrystalMat = new THREE.MeshStandardMaterial({
@@ -858,8 +994,13 @@ export class PredatorManager {
       this.nebulaBodyMat,
       this.balaBodyMat,
       this.miradorBodyMat,
+      this.shellArmorMat,
+      this.eyeScleraMat,
       this.predatorEyeMat,
       this.herbivoreEyeMat,
+      this.eyePupilMat,
+      this.organelleMat,
+      this.electricArcMat,
       this.geneCrystalMat,
       this.geneHaloMat
     );
@@ -1053,6 +1194,241 @@ export class PredatorManager {
     organList.push(organ);
   }
 
+  /**
+   * Builds a multi-layer expressive biological eye (pearlescent sclera + glowing iris + oriented dark pupil + optional brow crest).
+   */
+  private addExpressiveEye(
+    parentGroup: THREE.Group,
+    x: number,
+    y: number,
+    z: number,
+    rotY: number,
+    scale: number,
+    isPredator: boolean,
+    withAggressiveBrow = false,
+    browMat?: THREE.Material
+  ): void {
+    const eyeGroup = new THREE.Group();
+    eyeGroup.position.set(x, y, z);
+    eyeGroup.rotation.y = rotY;
+    eyeGroup.scale.setScalar(scale);
+
+    const sclera = new THREE.Mesh(this.eyeGeo, this.eyeScleraMat);
+    eyeGroup.add(sclera);
+
+    const iris = new THREE.Mesh(
+      this.eyeIrisGeo,
+      isPredator ? this.predatorEyeMat : this.herbivoreEyeMat
+    );
+    iris.position.set(0, 0.02, -0.11);
+    iris.scale.set(1.0, 1.0, 0.7);
+    eyeGroup.add(iris);
+
+    const pupil = new THREE.Mesh(this.eyePupilGeo, this.eyePupilMat);
+    pupil.position.set(0, 0.03, -0.185);
+    pupil.scale.set(isPredator ? 0.68 : 1.05, isPredator ? 1.18 : 0.95, 0.65);
+    eyeGroup.add(pupil);
+
+    if (withAggressiveBrow) {
+      const brow = new THREE.Mesh(
+        this.eyeBrowGeo,
+        browMat ?? this.hunterMandibleMat
+      );
+      brow.position.set(0, 0.16, -0.08);
+      brow.rotation.z = x < 0 ? -0.32 : x > 0 ? 0.32 : 0;
+      brow.rotation.x = 0.22;
+      eyeGroup.add(brow);
+    }
+
+    parentGroup.add(eyeGroup);
+  }
+
+  /**
+   * Adds 3 internal translucent organelles surrounding the pulsating central nucleus so the interior looks alive.
+   */
+  private addInternalOrganelles(
+    parentGroup: THREE.Group,
+    organelleList: THREE.Mesh[],
+    coreMat: THREE.Material,
+    radiusSpread = 0.46
+  ): void {
+    const offsets: [number, number, number, number][] = [
+      [-radiusSpread, 0.08, 0.18, 0.92],
+      [radiusSpread * 0.95, -0.06, 0.24, 0.85],
+      [0, 0.12, -radiusSpread * 0.85, 0.78],
+    ];
+    for (let idx = 0; idx < offsets.length; idx++) {
+      const [ox, oy, oz, sc] = offsets[idx];
+      const mat = idx % 2 === 0 ? this.organelleMat : coreMat;
+      const orgMesh = new THREE.Mesh(this.organelleGeo, mat);
+      orgMesh.position.set(ox, oy, oz);
+      orgMesh.rotation.set(idx * 0.6, idx * 1.1, 0);
+      orgMesh.scale.setScalar(sc);
+      parentGroup.add(orgMesh);
+      organelleList.push(orgMesh);
+    }
+  }
+
+  /**
+   * Adds an articulated multi-segment flagellum chain (3 to 5 linked elliptical segments) that undulates with sinusoidal waves proportional to real speed.
+   */
+  private addArticulatedFlagellum(
+    parentGroup: THREE.Group,
+    flagellaChains: ArticulatedFlagellumChain[],
+    tailSegments: THREE.Mesh[],
+    material: THREE.Material,
+    baseX: number,
+    baseY: number,
+    baseZ: number,
+    segmentCount = 4,
+    segmentSpacing = 0.36,
+    initialScale = 0.95,
+    baseYaw = 0,
+    amplitude = 0.16,
+    phaseOffset = 0
+  ): void {
+    const segments: THREE.Mesh[] = [];
+    for (let s = 0; s < segmentCount; s++) {
+      const seg = new THREE.Mesh(this.tailGeo, material);
+      const taper = Math.max(0.28, initialScale * (1 - s * (0.72 / segmentCount)));
+      seg.scale.setScalar(taper);
+      seg.position.set(
+        baseX + Math.sin(baseYaw) * (s * segmentSpacing),
+        baseY,
+        baseZ + s * segmentSpacing
+      );
+      seg.rotation.y = baseYaw;
+      parentGroup.add(seg);
+      segments.push(seg);
+      tailSegments.push(seg);
+    }
+    flagellaChains.push({
+      segments,
+      baseX,
+      baseY,
+      baseZ,
+      baseYaw,
+      segmentSpacing,
+      amplitude,
+      phaseOffset,
+    });
+  }
+
+  /**
+   * Adds rows of vibrating lateral cilia along both sides of an organism.
+   */
+  private addLateralCiliaRows(
+    parentGroup: THREE.Group,
+    ciliaList: AnimatedCiliumEntry[],
+    material: THREE.Material,
+    pairsCount = 4,
+    xRadius = 0.96,
+    zStart = -0.55,
+    zStep = 0.38,
+    scale = 0.9
+  ): void {
+    for (let c = 0; c < pairsCount; c++) {
+      const zPos = zStart + c * zStep;
+      for (const side of [-1, 1] as const) {
+        const cilium = new THREE.Mesh(this.herbivoreCiliaGeo, material);
+        cilium.position.set(side * xRadius, -0.04, zPos);
+        cilium.scale.setScalar(scale);
+        const baseRotZ = side * 0.18;
+        const baseRotY = side * 0.25;
+        cilium.rotation.set(0, baseRotY, baseRotZ);
+        parentGroup.add(cilium);
+        ciliaList.push({
+          mesh: cilium,
+          baseRotZ,
+          baseRotY,
+          phase: c * 0.85 + (side > 0 ? 0.4 : 0),
+          side,
+        });
+      }
+    }
+  }
+
+  /**
+   * Adds a feathery oral crown of cilia around the anterior mouth of filter-feeding herbivores.
+   */
+  private addOralCiliaCrown(
+    parentGroup: THREE.Group,
+    ciliaList: AnimatedCiliumEntry[],
+    material: THREE.Material,
+    count = 8,
+    mouthZ = -1.22,
+    crownRadius = 0.42
+  ): void {
+    for (let k = 0; k < count; k++) {
+      const theta = (k / count) * Math.PI * 2;
+      const cx = Math.cos(theta) * crownRadius;
+      const cy = Math.sin(theta) * (crownRadius * 0.68);
+      const cilium = new THREE.Mesh(this.herbivoreCiliaGeo, material);
+      cilium.position.set(cx, cy, mouthZ);
+      cilium.scale.set(0.68, 0.72, 0.68);
+      const side: 1 | -1 = cx >= 0 ? 1 : -1;
+      const baseRotY = side * 0.55;
+      const baseRotZ = Math.sin(theta) * 0.45;
+      cilium.rotation.set(0.35, baseRotY, baseRotZ);
+      parentGroup.add(cilium);
+      ciliaList.push({
+        mesh: cilium,
+        baseRotZ,
+        baseRotY,
+        phase: k * 0.75,
+        side,
+      });
+    }
+  }
+
+  /**
+   * Builds an articulated serrated chitin mandible pincer with internal teeth for carnivorous hunters and leviathans.
+   */
+  private buildSerratedMandible(
+    side: -1 | 1,
+    material: THREE.Material,
+    toothMaterial: THREE.Material,
+    scaleMultiplier = 1.0
+  ): THREE.Group {
+    const jawGroup = new THREE.Group();
+    const mainBlade = new THREE.Mesh(this.mandibleGeo, material);
+    jawGroup.add(mainBlade);
+
+    for (let t = 0; t < 3; t++) {
+      const tooth = new THREE.Mesh(this.mandibleToothGeo, toothMaterial);
+      tooth.position.set(
+        -side * 0.12,
+        0,
+        -0.25 + t * 0.22
+      );
+      tooth.rotation.y = side > 0 ? Math.PI : 0;
+      jawGroup.add(tooth);
+    }
+
+    jawGroup.scale.setScalar(scaleMultiplier);
+    return jawGroup;
+  }
+
+  /**
+   * Adds luminous bioelectric arc rings around the organism for combat discharge effects.
+   */
+  private addBioelectricArcs(
+    parentGroup: THREE.Group,
+    arcList: THREE.Mesh[],
+    count = 3,
+    scale = 1.05
+  ): void {
+    for (let a = 0; a < count; a++) {
+      const arc = new THREE.Mesh(this.electricArcGeo, this.electricArcMat);
+      arc.position.set(0, 0.08, 0.05);
+      arc.rotation.set(a * 1.05, a * 1.4, a * 0.75);
+      arc.scale.setScalar(scale + a * 0.12);
+      arc.visible = false;
+      parentGroup.add(arc);
+      arcList.push(arc);
+    }
+  }
+
   private spawnEcosystem(scene: THREE.Scene): void {
     const allSpeciesKeys = Object.keys(SPECIES_PROFILES) as SpeciesType[];
     const spawnOrder: SpeciesType[] = [];
@@ -1066,33 +1442,48 @@ export class PredatorManager {
     for (let i = 0; i < spawnOrder.length; i++) {
       const speciesType = spawnOrder[i];
       const profile = SPECIES_PROFILES[speciesType];
+      const isSessile = Boolean(
+        profile.isSessile ||
+          (profile.wanderSpeed <= 0 && profile.activeSpeed <= 0)
+      );
       const group = new THREE.Group();
       group.scale.setScalar(profile.scaleMultiplier);
 
-      let mandibleLeft: THREE.Mesh | null = null;
-      let mandibleRight: THREE.Mesh | null = null;
+      let mandibleLeft: THREE.Object3D | null = null;
+      let mandibleRight: THREE.Object3D | null = null;
+      let coreMesh: THREE.Mesh | null = null;
+      const organelleMeshes: THREE.Mesh[] = [];
+      const flagellaChains: ArticulatedFlagellumChain[] = [];
+      const ciliaMeshes: AnimatedCiliumEntry[] = [];
+      const electricArcMeshes: THREE.Mesh[] = [];
       const tailSegments: THREE.Mesh[] = [];
       const attachedOrgans: OrganVisualInstance[] = [];
 
       const coreMat = new THREE.MeshStandardMaterial({
         color: profile.isHerbivore ? 0xfacc15 : 0xfb7185,
-        emissive: profile.isHerbivore ? 0x10b981 : 0xf43f5e,
-        emissiveIntensity: 0.9,
-        roughness: 0.3,
+        emissive: profile.isHerbivore
+          ? 0x10b981
+          : profile.tier === 3
+          ? 0xa855f7
+          : 0xf43f5e,
+        emissiveIntensity: 1.05,
+        roughness: 0.25,
       });
       this.disposableMaterials.push(coreMat);
 
-      // Build distinct 3D morphology + signature 3D organs for each species
+      // Build multi-layered translucent organic 3D morphology + eyes + internal organelles + coherent propulsion
       switch (speciesType) {
         case 'nematocito': {
-          // 1. Nematocito Acordonado: Translucent sphere + multiple weapon_harpoon_cell + stalked eyes
+          // 1. Nematocito Acordonado: Translucent sky-blue sphere + internal core/organelles + harpoon cells + stalked eyes + lateral cilia + twin whip flagella
           const body = new THREE.Mesh(
             this.sphericalBodyGeo,
             this.nematocitoBodyMat
           );
           group.add(body);
-          const core = new THREE.Mesh(this.predatorCoreGeo, coreMat);
-          group.add(core);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.44);
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1133,21 +1524,78 @@ export class PredatorManager {
             0.2,
             0.95
           );
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.56,
+              0.24,
+              -0.92,
+              side * 0.35,
+              0.82,
+              false
+            );
+          }
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            4,
+            1.04,
+            -0.45,
+            0.34,
+            0.85
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.nematocitoBodyMat,
+            -0.22,
+            0,
+            1.28,
+            4,
+            0.34,
+            0.82,
+            -0.08,
+            0.16,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.nematocitoBodyMat,
+            0.22,
+            0,
+            1.28,
+            4,
+            0.34,
+            0.82,
+            0.08,
+            0.16,
+            Math.PI * 0.5
+          );
           break;
         }
 
         case 'gasteropodo': {
-          // 2. Gasterópodo Sulfuroso: Armored shell + mouth_radula
+          // 2. Gasterópodo Sulfuroso: Translucent amber body + dorsal armored chitin shell plates + core/organelles + wide lateral eyes + mouth_radula + ventral cilia + rear flagellum
           const body = new THREE.Mesh(
             this.sphericalBodyGeo,
             this.gasteropodoBodyMat
           );
           body.scale.set(1.15, 0.95, 1.25);
           group.add(body);
+
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh.position.set(0, -0.05, 0.1);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.48);
+
           for (let s = 0; s < 3; s++) {
             const plate = new THREE.Mesh(
               this.leviathanPlateGeo,
-              this.gasteropodoBodyMat
+              this.shellArmorMat
             );
             plate.position.set(0, 0.65 - s * 0.08, -0.35 + s * 0.45);
             group.add(plate);
@@ -1162,18 +1610,56 @@ export class PredatorManager {
             0,
             1.25
           );
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.68,
+              0.25,
+              -0.98,
+              side * 0.42,
+              0.92,
+              false
+            );
+          }
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            5,
+            1.12,
+            -0.65,
+            0.34,
+            0.88
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.herbivoreCiliaMat,
+            0,
+            -0.08,
+            1.42,
+            4,
+            0.34,
+            0.84,
+            0,
+            0.14,
+            0
+          );
           break;
         }
 
         case 'perforador': {
-          // 3. Perforador Abisal: Fusiform hunter + weapon_rotary_drill on head
+          // 3. Perforador Abisal: Translucent ice-blue fusiform body + glowing core/organelles + rotary drill on head + convergent stalker eyes + 5-segment high-thrust whip flagellum
           const body = new THREE.Mesh(
             this.predatorBodyGeo,
             this.perforadorBodyMat
           );
           group.add(body);
-          const core = new THREE.Mesh(this.predatorCoreGeo, coreMat);
-          group.add(core);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.42);
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1184,33 +1670,114 @@ export class PredatorManager {
             0,
             1.35
           );
-          for (let t = 0; t < 3; t++) {
-            const tailSeg = new THREE.Mesh(
-              this.tailGeo,
-              this.perforadorBodyMat
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.46,
+              0.3,
+              -0.88,
+              side * 0.14,
+              0.95,
+              true,
+              true,
+              this.hunterMandibleMat
             );
-            tailSeg.scale.setScalar(1 - t * 0.22);
-            tailSeg.position.set(0, 0, 1.45 + t * 0.45);
-            group.add(tailSeg);
-            tailSegments.push(tailSeg);
           }
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.perforadorBodyMat,
+            -0.18,
+            0,
+            1.38,
+            5,
+            0.36,
+            0.94,
+            -0.06,
+            0.2,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.perforadorBodyMat,
+            0.18,
+            0,
+            1.38,
+            5,
+            0.36,
+            0.94,
+            0.06,
+            0.2,
+            Math.PI * 0.65
+          );
           break;
         }
 
         case 'vibora_fosa': {
-          // 4. Víbora de Fosa: Segmented vermiform body + 2 weapon_caustic_acid_blister
+          // 4. Víbora de Fosa: Translucent venomous green vermiform body + internal core/organelles + slit predator eyes + serrated fangs + 2 acid blisters + 5-segment serpentine flagellum
           const body = new THREE.Mesh(
             this.elongatedBodyGeo,
             this.viboraBodyMat
           );
           group.add(body);
-          for (let t = 0; t < 4; t++) {
-            const tailSeg = new THREE.Mesh(this.tailGeo, this.viboraBodyMat);
-            tailSeg.scale.setScalar(1.1 - t * 0.18);
-            tailSeg.position.set(0, 0, 1.55 + t * 0.52);
-            group.add(tailSeg);
-            tailSegments.push(tailSeg);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh.scale.set(0.78, 0.72, 1.25);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.38);
+
+          mandibleLeft = this.buildSerratedMandible(
+            -1,
+            this.hunterMandibleMat,
+            this.eyeScleraMat,
+            0.88
+          );
+          mandibleLeft.position.set(-0.38, -0.05, -1.55);
+          mandibleLeft.rotation.y = -0.22;
+          group.add(mandibleLeft);
+
+          mandibleRight = this.buildSerratedMandible(
+            1,
+            this.hunterMandibleMat,
+            this.eyeScleraMat,
+            0.88
+          );
+          mandibleRight.position.set(0.38, -0.05, -1.55);
+          mandibleRight.rotation.y = 0.22;
+          group.add(mandibleRight);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.44,
+              0.28,
+              -1.18,
+              side * 0.16,
+              0.92,
+              true,
+              true,
+              this.hunterMandibleMat
+            );
           }
+
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.viboraBodyMat,
+            0,
+            0,
+            1.52,
+            5,
+            0.44,
+            1.08,
+            0,
+            0.24,
+            0
+          );
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1235,11 +1802,25 @@ export class PredatorManager {
         }
 
         case 'medusa_biolum': {
-          // 5. Medusa Bioluminiscente: Translucent pulsing bell + weapon_flash_photophore
+          // 5. Medusa Bioluminiscente: Translucent cyan bell + pulsing core/organelles + ring of eyes + flash photophore + ribbon fins + 3 trailing tentacle flagella + bioelectric arcs
           const body = new THREE.Mesh(this.medusaBellGeo, this.medusaBodyMat);
           group.add(body);
-          const core = new THREE.Mesh(this.predatorCoreGeo, coreMat);
-          group.add(core);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.42);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.54,
+              0.22,
+              -0.86,
+              side * 0.22,
+              0.94,
+              true
+            );
+          }
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1270,17 +1851,64 @@ export class PredatorManager {
             Math.PI / 2,
             1.05
           );
+
+          for (const tx of [-0.36, 0, 0.36]) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.medusaBodyMat,
+              tx,
+              -0.08,
+              0.92,
+              4,
+              0.38,
+              0.78,
+              tx * 0.2,
+              0.2,
+              tx * 2.0
+            );
+          }
+          this.addBioelectricArcs(group, electricArcMeshes, 2, 0.95);
           break;
         }
 
         case 'anquilocelula': {
-          // 6. Anquilocélula de Fondo: Hemispherical armored dome + weapon_tail_club + frontal shield
+          // 6. Anquilocélula de Fondo: Translucent dome + dorsal armor plates + glowing core/organelles + lateral armored eyes + frontal chitin shield + tail club + dual flagella + lateral cilia
           const body = new THREE.Mesh(
             this.sphericalBodyGeo,
             this.anquiloBodyMat
           );
           body.scale.set(1.3, 0.78, 1.2);
           group.add(body);
+
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.5);
+
+          for (let s = 0; s < 2; s++) {
+            const plate = new THREE.Mesh(
+              this.leviathanPlateGeo,
+              this.shellArmorMat
+            );
+            plate.position.set(0, 0.55 - s * 0.06, -0.25 + s * 0.55);
+            group.add(plate);
+          }
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.76,
+              0.22,
+              -0.85,
+              side * 0.35,
+              0.92,
+              true,
+              true,
+              this.shellArmorMat
+            );
+          }
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1301,15 +1929,72 @@ export class PredatorManager {
             Math.PI,
             1.35
           );
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            4,
+            1.24,
+            -0.5,
+            0.36,
+            0.9
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.anquiloBodyMat,
+            -0.38,
+            -0.06,
+            1.25,
+            3,
+            0.34,
+            0.8,
+            -0.15,
+            0.14,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.anquiloBodyMat,
+            0.38,
+            -0.06,
+            1.25,
+            3,
+            0.34,
+            0.8,
+            0.15,
+            0.14,
+            Math.PI
+          );
           break;
         }
 
         case 'esponja_espicular': {
-          // 7. Esponja Espicular: Crystalline tubular poriferan bristling with defense_silica_spicules
+          // 7. Esponja Espicular (SÉSIL - SIN FLAGELOS NI CILIOS -> VELOCIDAD 0):
+          // Crystalline translucent tubular poriferan + glowing core & organelles + central apical watchful eye + radial silica spicules
           const body = new THREE.Mesh(this.spongeTubeGeo, this.esponjaBodyMat);
           group.add(body);
-          const core = new THREE.Mesh(this.predatorCoreGeo, coreMat);
-          group.add(core);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.38);
+
+          // Central apical eye and pair of lateral ocelli so it has expressive vision while anchored
+          this.addExpressiveEye(group, 0, 0.72, -0.58, 0, 1.08, false);
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.62,
+              0.38,
+              -0.52,
+              side * 0.45,
+              0.78,
+              false
+            );
+          }
+
           for (let a = 0; a < 4; a++) {
             const ang = (a / 4) * Math.PI * 2 + Math.PI / 4;
             this.attachOrganToCreature(
@@ -1327,15 +2012,29 @@ export class PredatorManager {
         }
 
         case 'nebula_gelatinosa': {
-          // 8. Nébula Gelatinosa: Globular giant surrounded by defense_mucus_gland
+          // 8. Nébula Gelatinosa: Translucent violet globular giant + glowing core & organelles + peaceful wide eyes + mucus glands + oral & lateral cilia + twin undulating flagella
           const body = new THREE.Mesh(
             this.sphericalBodyGeo,
             this.nebulaBodyMat
           );
           body.scale.set(1.25, 0.9, 1.25);
           group.add(body);
-          const core = new THREE.Mesh(this.predatorCoreGeo, coreMat);
-          group.add(core);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.52);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.66,
+              0.28,
+              -1.05,
+              side * 0.38,
+              1.02,
+              false
+            );
+          }
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1356,14 +2055,83 @@ export class PredatorManager {
             Math.PI / 2,
             1.25
           );
+
+          this.addOralCiliaCrown(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            6,
+            -1.28,
+            0.38
+          );
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            4,
+            1.18,
+            -0.55,
+            0.38,
+            0.92
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.nebulaBodyMat,
+            -0.26,
+            0,
+            1.38,
+            4,
+            0.36,
+            0.88,
+            -0.1,
+            0.16,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.nebulaBodyMat,
+            0.26,
+            0,
+            1.38,
+            4,
+            0.36,
+            0.88,
+            0.1,
+            0.16,
+            Math.PI * 0.7
+          );
           break;
         }
 
         case 'bala_fumarola': {
-          // 9. Bala de Fumarola: Narrow tubular jet hunter propelled by movement_reactive_nozzle
+          // 9. Bala de Fumarola: Streamlined translucent hydro-jet hunter + glowing core & organelles + forward convergent eyes + rostral spike + reactive nozzle + twin stabilizing whip flagella
           const body = new THREE.Mesh(this.elongatedBodyGeo, this.balaBodyMat);
           body.scale.set(0.82, 0.78, 1.25);
           group.add(body);
+
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh.scale.set(0.72, 0.72, 1.2);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.36);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.42,
+              0.26,
+              -1.15,
+              side * 0.12,
+              0.9,
+              true,
+              true,
+              this.hunterMandibleMat
+            );
+          }
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1384,18 +2152,63 @@ export class PredatorManager {
             0,
             1.2
           );
+
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.balaBodyMat,
+            -0.28,
+            0,
+            1.55,
+            4,
+            0.34,
+            0.78,
+            -0.12,
+            0.18,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.balaBodyMat,
+            0.28,
+            0,
+            1.55,
+            4,
+            0.34,
+            0.78,
+            0.12,
+            0.18,
+            Math.PI * 0.5
+          );
           break;
         }
 
         case 'mirador_abisal': {
-          // 10. Mirador Abisal: 3 articulated sense_stalk_compound_eye + sense_abyssal_biolum_probe
+          // 10. Mirador Abisal: Translucent magenta body + glowing core/organelles + 3 compound stalked eyes + frontal expressive eyes + biolum probe + lateral cilia + dual flagella
           const body = new THREE.Mesh(
             this.herbivoreBodyGeo,
             this.miradorBodyMat
           );
           group.add(body);
-          const core = new THREE.Mesh(this.predatorCoreGeo, coreMat);
-          group.add(core);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.42);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.5,
+              0.22,
+              -0.96,
+              side * 0.28,
+              0.92,
+              false
+            );
+          }
+
           this.attachOrganToCreature(
             group,
             attachedOrgans,
@@ -1436,11 +2249,53 @@ export class PredatorManager {
             0,
             1.1
           );
+
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            4,
+            0.98,
+            -0.45,
+            0.35,
+            0.88
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.miradorBodyMat,
+            -0.2,
+            0,
+            1.28,
+            4,
+            0.34,
+            0.84,
+            -0.08,
+            0.16,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.miradorBodyMat,
+            0.2,
+            0,
+            1.28,
+            4,
+            0.34,
+            0.84,
+            0.08,
+            0.16,
+            Math.PI * 0.5
+          );
           break;
         }
 
         case 'hunter':
         case 'leviathan': {
+          // 11 & 12. Mandíbula Rápida (hunter) & Megacélula Acorazada (leviathan)
           const isLeviathan = speciesType === 'leviathan';
           const bodyMat = isLeviathan
             ? this.leviathanBodyMat
@@ -1454,29 +2309,62 @@ export class PredatorManager {
           bodyMesh.receiveShadow = true;
           group.add(bodyMesh);
 
-          const coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
-          coreMesh.position.set(0, 0.05, 0.2);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh.position.set(0, 0.05, 0.15);
           group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.46);
 
-          mandibleLeft = new THREE.Mesh(this.mandibleGeo, accentMat);
+          // Serrated mandibular pincers with internal chitin teeth
+          mandibleLeft = this.buildSerratedMandible(
+            -1,
+            accentMat,
+            this.eyeScleraMat,
+            isLeviathan ? 1.32 : 1.05
+          );
           mandibleLeft.position.set(isLeviathan ? -0.56 : -0.48, -0.05, -1.35);
           mandibleLeft.rotation.y = -0.25;
-          if (isLeviathan) mandibleLeft.scale.set(1.35, 1.2, 1.25);
           group.add(mandibleLeft);
 
-          mandibleRight = new THREE.Mesh(this.mandibleGeo, accentMat);
+          mandibleRight = this.buildSerratedMandible(
+            1,
+            accentMat,
+            this.eyeScleraMat,
+            isLeviathan ? 1.32 : 1.05
+          );
           mandibleRight.position.set(isLeviathan ? 0.56 : 0.48, -0.05, -1.35);
           mandibleRight.rotation.y = 0.25;
-          if (isLeviathan) mandibleRight.scale.set(1.35, 1.2, 1.25);
           group.add(mandibleRight);
 
           if (isLeviathan) {
+            // Segmented dorsal carapace plates + lateral propulsion fins + bioelectric combat arcs
             for (let s = 0; s < 3; s++) {
               const plate = new THREE.Mesh(this.leviathanPlateGeo, accentMat);
               plate.position.set(0, 0.58 - s * 0.05, -0.35 + s * 0.62);
               group.add(plate);
             }
+            this.attachOrganToCreature(
+              group,
+              attachedOrgans,
+              'movement_ribbon_fin',
+              -1.02,
+              -0.04,
+              0.2,
+              -Math.PI / 2,
+              1.12
+            );
+            this.attachOrganToCreature(
+              group,
+              attachedOrgans,
+              'movement_ribbon_fin',
+              1.02,
+              -0.04,
+              0.2,
+              Math.PI / 2,
+              1.12
+            );
+            this.addBioelectricArcs(group, electricArcMeshes, 3, 1.15);
           } else {
+            // Dorsal hydrodynamic spines for Mandíbula Rápida
             for (let s = 0; s < 3; s++) {
               const spine = new THREE.Mesh(this.spineGeo, accentMat);
               spine.position.set(0, 0.65 - s * 0.08, -0.3 + s * 0.55);
@@ -1485,25 +2373,58 @@ export class PredatorManager {
             }
           }
 
-          for (const side of [-1, 1]) {
-            const eye = new THREE.Mesh(this.eyeGeo, this.predatorEyeMat);
-            eye.position.set(side * 0.52, 0.28, -0.82);
-            group.add(eye);
+          // Forward-convergent predator eyes with aggressive brow crests
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * (isLeviathan ? 0.56 : 0.5),
+              0.28,
+              -0.88,
+              side * 0.15,
+              isLeviathan ? 0.88 : 1.02,
+              true,
+              true,
+              accentMat
+            );
           }
 
-          for (let t = 0; t < 3; t++) {
-            const tailSeg = new THREE.Mesh(this.tailGeo, bodyMat);
-            const sFactor = 1 - t * 0.22;
-            tailSeg.scale.setScalar(sFactor);
-            tailSeg.position.set(0, 0, 1.45 + t * 0.45);
-            group.add(tailSeg);
-            tailSegments.push(tailSeg);
-          }
+          // Twin articulated whip flagella in the tail (5 segments each) beating at high frequency
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            bodyMat,
+            -0.22,
+            0,
+            1.36,
+            5,
+            0.36,
+            isLeviathan ? 1.08 : 0.96,
+            -0.08,
+            0.2,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            bodyMat,
+            0.22,
+            0,
+            1.36,
+            5,
+            0.36,
+            isLeviathan ? 1.08 : 0.96,
+            0.08,
+            0.2,
+            Math.PI * 0.6
+          );
           break;
         }
 
         default: {
           // HERBIVORE ("Célula Filtradora")
+          // Emerald/turquoise translucent capsule + glowing nucleus & chloroplasts + feathery oral cilia wheel + large peaceful lateral eyes + lateral cilia + 2 fine rear flagella
           const bodyMesh = new THREE.Mesh(
             this.herbivoreBodyGeo,
             this.herbivoreBodyMat
@@ -1512,39 +2433,77 @@ export class PredatorManager {
           bodyMesh.receiveShadow = true;
           group.add(bodyMesh);
 
-          const coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
           coreMesh.scale.setScalar(0.85);
           group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.42);
 
-          for (const side of [-1, 1]) {
-            const eye = new THREE.Mesh(this.eyeGeo, this.herbivoreEyeMat);
-            eye.scale.setScalar(0.85);
-            eye.position.set(side * 0.52, 0.26, -0.95);
-            group.add(eye);
-          }
-
-          for (let c = 0; c < 3; c++) {
-            const zOffset = -0.45 + c * 0.45;
-            for (const side of [-1, 1]) {
-              const cilium = new THREE.Mesh(
-                this.herbivoreCiliaGeo,
-                this.herbivoreCiliaMat
-              );
-              cilium.position.set(side * 0.98, 0, zOffset);
-              group.add(cilium);
-            }
-          }
-
-          for (let t = 0; t < 2; t++) {
-            const tailSeg = new THREE.Mesh(
-              this.tailGeo,
-              this.herbivoreCiliaMat
+          // Large peaceful wide-angle lateral eyes
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.56,
+              0.26,
+              -0.94,
+              side * 0.36,
+              1.04,
+              false
             );
-            tailSeg.scale.setScalar(0.75 - t * 0.2);
-            tailSeg.position.set(0, 0, 1.3 + t * 0.4);
-            group.add(tailSeg);
-            tailSegments.push(tailSeg);
           }
+
+          // Feathery oral cilia crown beating in a wheel around the mouth
+          this.addOralCiliaCrown(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            8,
+            -1.22,
+            0.38
+          );
+
+          // Vibrating lateral cilia rows
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            4,
+            0.98,
+            -0.5,
+            0.36,
+            0.92
+          );
+
+          // 2 fine undulating rear flagella (4 articulated segments each)
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.herbivoreCiliaMat,
+            -0.2,
+            0,
+            1.26,
+            4,
+            0.33,
+            0.78,
+            -0.08,
+            0.16,
+            0
+          );
+          this.addArticulatedFlagellum(
+            group,
+            flagellaChains,
+            tailSegments,
+            this.herbivoreCiliaMat,
+            0.2,
+            0,
+            1.26,
+            4,
+            0.33,
+            0.78,
+            0.08,
+            0.16,
+            Math.PI * 0.65
+          );
           break;
         }
       }
@@ -1655,10 +2614,11 @@ export class PredatorManager {
         species: speciesType,
         speciesName: profile.name,
         profile,
+        isSessile,
         group,
         position: group.position,
         headingAngle: Math.random() * Math.PI * 2,
-        currentSpeed: profile.wanderSpeed,
+        currentSpeed: isSessile ? 0 : profile.wanderSpeed,
         state: 'DEAMBULAR',
         active: true,
         respawnTimer: 0,
@@ -1681,9 +2641,14 @@ export class PredatorManager {
         knockbackVelocity: new THREE.Vector3(),
         healthRingMesh,
         healthRingMat,
+        coreMesh,
+        organelleMeshes,
         mandibleLeft,
         mandibleRight,
         tailSegments,
+        flagellaChains,
+        ciliaMeshes,
+        electricArcMeshes,
         attachedOrgans,
         legsGroup,
         legs,
@@ -1707,6 +2672,89 @@ export class PredatorManager {
     }
 
     this.resetAll();
+  }
+
+  /**
+   * Animates internal nucleus/organelles, articulated flagella waves proportional to real velocity,
+   * vibrating oral/lateral cilia, and bioelectric arcs for any active organism.
+   */
+  private animateBiologicalAnatomy(
+    p: OrganismEntity,
+    elapsedTime: number,
+    safeDelta: number,
+    poisonSpeedFactor: number
+  ): void {
+    // 1. Pulsating bioluminescent nucleus & internal organelles
+    const pulse = 1.0 + Math.sin(elapsedTime * 3.8 + p.id * 1.3) * 0.11;
+    if (p.coreMesh) {
+      p.coreMesh.scale.setScalar(pulse);
+      p.coreMesh.rotation.y += safeDelta * 0.85;
+      p.coreMesh.rotation.z = Math.sin(elapsedTime * 2.1 + p.id) * 0.22;
+    }
+    for (let o = 0; o < p.organelleMeshes.length; o++) {
+      const org = p.organelleMeshes[o];
+      const orgPulse = 0.85 + Math.sin(elapsedTime * 4.4 + p.id + o * 1.7) * 0.1;
+      org.scale.setScalar(orgPulse);
+      org.rotation.x += safeDelta * 0.6;
+    }
+
+    // 2. Bioelectric combat arcs (visible when chasing/attacking)
+    const showArcs = p.state === 'PERSEGUIR' || p.state === 'ATACAR';
+    for (let a = 0; a < p.electricArcMeshes.length; a++) {
+      const arc = p.electricArcMeshes[a];
+      arc.visible = showArcs;
+      if (showArcs) {
+        arc.rotation.x += safeDelta * (7.5 + a * 2.2);
+        arc.rotation.y -= safeDelta * (6.2 + a * 1.8);
+        const flicker = 0.92 + Math.sin(elapsedTime * 28.0 + a * 2.1) * 0.18;
+        arc.scale.setScalar(flicker);
+      }
+    }
+
+    // 3. Biological Rule: Sessile organisms without flagella/cilia do not self-propel; they gently sway with the ocean current
+    if (p.isSessile) {
+      p.currentSpeed = 0;
+      const swayX = Math.sin(elapsedTime * 1.65 + p.id * 0.9) * 0.085;
+      const swayZ = Math.cos(elapsedTime * 1.35 + p.id * 1.2) * 0.085;
+      p.group.rotation.set(swayX, p.headingAngle, swayZ);
+      return;
+    }
+
+    // 4. Advance swim phase strictly proportional to the organism's real movement velocity
+    const speedRatio = Math.min(2.4, Math.max(0.15, p.currentSpeed / 4.2));
+    const phaseRate = (3.2 + speedRatio * 7.8) * poisonSpeedFactor;
+    p.swimPhase = (p.swimPhase + safeDelta * phaseRate) % (Math.PI * 200);
+
+    // 5. Propagate sinusoidal travelling wave along each articulated flagellum chain
+    for (let f = 0; f < p.flagellaChains.length; f++) {
+      const chain = p.flagellaChains[f];
+      const segs = chain.segments;
+      const ampScale = Math.min(1.75, 0.35 + speedRatio * 0.85);
+      for (let s = 0; s < segs.length; s++) {
+        const seg = segs[s];
+        const waveArg = p.swimPhase - s * 0.85 + chain.phaseOffset;
+        const lateralWave =
+          Math.sin(waveArg) * chain.amplitude * ampScale * (1 + s * 0.38);
+        const verticalWave =
+          Math.cos(waveArg * 0.5) * chain.amplitude * 0.28 * (1 + s * 0.2);
+        seg.position.x =
+          chain.baseX +
+          Math.sin(chain.baseYaw) * (s * chain.segmentSpacing) +
+          lateralWave;
+        seg.position.y = chain.baseY + verticalWave;
+        seg.rotation.y =
+          chain.baseYaw + Math.cos(waveArg) * 0.28 * ampScale;
+      }
+    }
+
+    // 6. Vibrate oral & lateral cilia proportional to real speed
+    for (let c = 0; c < p.ciliaMeshes.length; c++) {
+      const entry = p.ciliaMeshes[c];
+      const flutter = Math.sin(p.swimPhase * 1.45 + entry.phase);
+      entry.mesh.rotation.z = entry.baseRotZ + flutter * 0.34 * entry.side;
+      entry.mesh.rotation.y =
+        entry.baseRotY + Math.cos(p.swimPhase * 1.45 + entry.phase) * 0.24;
+    }
   }
 
   public setStageMode(stage: EvolutionaryStage): void {
@@ -2763,7 +3811,7 @@ export class PredatorManager {
             p.hitFlashTimer > 0 ? 2.2 : p.socialCooldown > 0 ? 1.4 : 0.75;
         }
 
-        if (_toTarget.lengthSq() > 0.001) {
+        if (!p.isSessile && _toTarget.lengthSq() > 0.001) {
           const desiredHeading = Math.atan2(-_toTarget.x, -_toTarget.z);
           let angleDiff = desiredHeading - p.headingAngle;
           while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
@@ -2773,15 +3821,19 @@ export class PredatorManager {
             Math.min(1, GAME_CONFIG.PREDATOR.TURN_DAMPING * safeDelta);
         }
 
-        p.currentSpeed = THREE.MathUtils.damp(
-          p.currentSpeed,
-          targetSpeed,
-          5.0,
-          safeDelta
-        );
+        p.currentSpeed = p.isSessile
+          ? 0
+          : THREE.MathUtils.damp(
+              p.currentSpeed,
+              targetSpeed,
+              5.0,
+              safeDelta
+            );
 
-        _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
-        p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
+        if (!p.isSessile && p.currentSpeed > 0.001) {
+          _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
+          p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
+        }
         this.resolveEntityObstacleCollisions(p, effectiveScale, safeDelta);
 
         const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
@@ -2790,24 +3842,26 @@ export class PredatorManager {
           const r = Math.sqrt(rSq);
           p.position.x = (p.position.x / r) * maxR;
           p.position.z = (p.position.z / r) * maxR;
-          this.pickWanderTarget(p);
+          if (!p.isSessile) {
+            this.pickWanderTarget(p);
+          }
         }
 
         p.position.y =
           GAME_CONFIG.WORLD.SWIM_PLANE_Y +
           depthOffsetY +
           Math.sin(elapsedTime * 3.0 + p.id) * 0.14;
-        p.group.rotation.set(0, p.headingAngle, 0);
-
-        p.swimPhase =
-          (p.swimPhase +
-            safeDelta * (p.state === 'HUIR' ? 12.5 : 7.5) * poisonSpeedFactor) %
-          (Math.PI * 200);
-        for (let t = 0; t < p.tailSegments.length; t++) {
-          const seg = p.tailSegments[t];
-          seg.position.x = Math.sin(p.swimPhase - t * 0.9) * 0.14;
+        if (!p.isSessile) {
+          p.group.rotation.set(0, p.headingAngle, 0);
         }
-        if (p.legsGroup.visible && p.legs.length === 4) {
+
+        this.animateBiologicalAnatomy(
+          p,
+          elapsedTime,
+          safeDelta,
+          poisonSpeedFactor
+        );
+        if (p.legsGroup.visible && p.legs.length === 4 && !p.isSessile) {
           const legSwing = Math.sin(p.swimPhase * 0.85) * 0.42;
           p.legs[0].rotation.x = legSwing;
           p.legs[1].rotation.x = -legSwing;
@@ -3041,7 +4095,7 @@ export class PredatorManager {
         }
       }
 
-      if (_toTarget.lengthSq() > 0.001) {
+      if (!p.isSessile && _toTarget.lengthSq() > 0.001) {
         const desiredHeading = Math.atan2(-_toTarget.x, -_toTarget.z);
         let angleDiff = desiredHeading - p.headingAngle;
         while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
@@ -3054,15 +4108,19 @@ export class PredatorManager {
         p.headingAngle += angleDiff * Math.min(1, turnRate * safeDelta);
       }
 
-      p.currentSpeed = THREE.MathUtils.damp(
-        p.currentSpeed,
-        targetSpeed,
-        5.0,
-        safeDelta
-      );
+      p.currentSpeed = p.isSessile
+        ? 0
+        : THREE.MathUtils.damp(
+            p.currentSpeed,
+            targetSpeed,
+            5.0,
+            safeDelta
+          );
 
-      _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
-      p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
+      if (!p.isSessile && p.currentSpeed > 0.001) {
+        _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
+        p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
+      }
       this.resolveEntityObstacleCollisions(p, effectiveScale, safeDelta);
 
       const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
@@ -3071,26 +4129,27 @@ export class PredatorManager {
         const r = Math.sqrt(rSq);
         p.position.x = (p.position.x / r) * maxR;
         p.position.z = (p.position.z / r) * maxR;
-        this.pickWanderTarget(p);
+        if (!p.isSessile) {
+          this.pickWanderTarget(p);
+        }
       }
 
       p.position.y =
         GAME_CONFIG.WORLD.SWIM_PLANE_Y +
         depthOffsetY +
         Math.sin(elapsedTime * 2.6 + p.id) * 0.14;
-      p.group.rotation.set(0, p.headingAngle, 0);
-
-      const swimMultiplier =
-        (p.state === 'DEAMBULAR' ? 6.5 : 12.0) * poisonSpeedFactor;
-      p.swimPhase = (p.swimPhase + safeDelta * swimMultiplier) % (Math.PI * 200);
-
-      for (let t = 0; t < p.tailSegments.length; t++) {
-        const seg = p.tailSegments[t];
-        const wave = Math.sin(p.swimPhase - t * 0.9);
-        seg.position.x = wave * (0.14 + t * 0.08);
+      if (!p.isSessile) {
+        p.group.rotation.set(0, p.headingAngle, 0);
       }
 
-      if (p.legsGroup.visible && p.legs.length === 4) {
+      this.animateBiologicalAnatomy(
+        p,
+        elapsedTime,
+        safeDelta,
+        poisonSpeedFactor
+      );
+
+      if (p.legsGroup.visible && p.legs.length === 4 && !p.isSessile) {
         const legSwing = Math.sin(p.swimPhase * 0.85) * 0.45;
         p.legs[0].rotation.x = legSwing;
         p.legs[1].rotation.x = -legSwing;
@@ -3102,8 +4161,8 @@ export class PredatorManager {
         const jawSnap =
           p.lungeTimer > 0
             ? 0.45
-            : Math.sin(p.swimPhase * 0.8) *
-              (p.state === 'DEAMBULAR' ? 0.08 : 0.22);
+            : Math.sin(p.swimPhase * 0.85) *
+              (p.state === 'DEAMBULAR' ? 0.08 : 0.24);
         p.mandibleLeft.rotation.y = -0.22 + jawSnap;
         p.mandibleRight.rotation.y = 0.22 - jawSnap;
       }
@@ -3175,6 +4234,16 @@ export class PredatorManager {
       }
     }
     return count;
+  }
+
+  public getActiveOrganismsForFoodCollision(): readonly {
+    active: boolean;
+    dyingTimer: number;
+    position: THREE.Vector3;
+    currentSpeed: number;
+    profile: { isHerbivore: boolean; scaleMultiplier: number };
+  }[] {
+    return this.organisms;
   }
 
   public dispose(): void {

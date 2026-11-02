@@ -1941,22 +1941,19 @@ export class GameEngine {
       }
     }
 
-    // 3. Check if clicking one of the internal vertebrae directly
+    // 3. Check if clicking one of the internal vertebrae hit spheres directly (non-recursive for instant raycasting)
     const vertebraHits = this.raycaster.intersectObjects(
       this.player.getVertebraObjects(),
-      true
+      false
     );
     if (vertebraHits.length > 0) {
-      let vObj: THREE.Object3D | null = vertebraHits[0].object;
-      while (vObj && vObj.userData.vertebraIndex === undefined) {
-        vObj = vObj.parent;
-      }
+      const vObj = vertebraHits[0].object;
       const vIdx =
-        typeof vObj?.userData.vertebraIndex === 'number'
+        typeof vObj.userData.vertebraIndex === 'number'
           ? (vObj.userData.vertebraIndex as number)
           : null;
       const segIdx =
-        typeof vObj?.userData.spineSegmentIndex === 'number'
+        typeof vObj.userData.spineSegmentIndex === 'number'
           ? (vObj.userData.spineSegmentIndex as 0 | 1 | 2)
           : null;
       this.hoveredVertebraIndex = vIdx;
@@ -2096,8 +2093,15 @@ export class GameEngine {
         );
         if (targetOrg) {
           if (proj.normalizedRadiusDistance <= 2.15) {
-            targetOrg.angle = proj.angle;
-            targetOrg.axialOffset = proj.axialOffset;
+            let deltaAngle = proj.angle - targetOrg.angle;
+            while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
+            while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
+            targetOrg.angle += deltaAngle * 0.55;
+            targetOrg.axialOffset = THREE.MathUtils.lerp(
+              targetOrg.axialOffset,
+              proj.axialOffset,
+              0.55
+            );
             targetOrg.mirrorSymmetry = effectiveSymmetry;
             this.player.syncPlacedOrgans(
               this.stats.placedOrgans,
@@ -2153,22 +2157,19 @@ export class GameEngine {
       return;
     }
 
-    // Direct Raycast against the small internal vertebrae inside the cell
+    // Direct non-recursive Raycast against the lightweight internal vertebra hit spheres
     const vertebraHits = this.raycaster.intersectObjects(
       this.player.getVertebraObjects(),
-      true
+      false
     );
     if (vertebraHits.length > 0) {
-      let vObj: THREE.Object3D | null = vertebraHits[0].object;
-      while (vObj && vObj.userData.vertebraIndex === undefined) {
-        vObj = vObj.parent;
-      }
+      const vObj = vertebraHits[0].object;
       const vIdx =
-        typeof vObj?.userData.vertebraIndex === 'number'
+        typeof vObj.userData.vertebraIndex === 'number'
           ? (vObj.userData.vertebraIndex as number)
           : null;
       const segIdx =
-        typeof vObj?.userData.spineSegmentIndex === 'number'
+        typeof vObj.userData.spineSegmentIndex === 'number'
           ? (vObj.userData.spineSegmentIndex as 0 | 1 | 2)
           : null;
       this.hoveredVertebraIndex = vIdx;
@@ -2969,6 +2970,7 @@ export class GameEngine {
     }
 
     // Live 3D Spore Workshop Mode while inside the Editor ('editing')
+    // Secondary ocean environment simulation is frozen so 100% of GPU/CPU budget renders the Petri Dish creature at 60 FPS
     if (this.status === 'editing') {
       audioManager.transitionMusicTo('editor');
       this.elapsedActiveTime += delta;
@@ -2978,12 +2980,6 @@ export class GameEngine {
         this.player,
         true,
         this.elapsedActiveTime
-      );
-      this.environment.update(
-        this.elapsedActiveTime,
-        delta,
-        this.player.position.x,
-        this.player.position.z
       );
       this.renderer.render(
         this.environment.scene,
@@ -3632,7 +3628,9 @@ export class GameEngine {
         hasFilterMouth,
         baleenStacks > 0,
         radulaStacks > 0,
-        this.stats.innateTrait === 'voracious_chemotaxis'
+        this.stats.innateTrait === 'voracious_chemotaxis',
+        this.player.currentSpeed,
+        this.predatorManager.getActiveOrganismsForFoodCollision()
       );
 
       let isolatedNewGene = false;

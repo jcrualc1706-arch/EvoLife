@@ -5,16 +5,27 @@ import { EnvironmentObstacle } from './SceneEnvironment';
 import { SpatialHashGrid } from './SpatialHashGrid';
 import { DietType, FoodKind } from './types';
 
-interface FoodItem {
+export interface EcosystemFoodCollider {
+  active: boolean;
+  dyingTimer: number;
+  position: THREE.Vector3;
+  currentSpeed: number;
+  profile: { isHerbivore: boolean; scaleMultiplier: number };
+}
+
+interface FoodItemState {
   kind: FoodKind;
+  defaultKind: FoodKind;
   group: THREE.Group;
   coreMesh: THREE.Mesh;
   haloMesh: THREE.Mesh;
-  basePosition: THREE.Vector3;
-  scatterVelocity: THREE.Vector3;
+  position: THREE.Vector3;
+  velocity: THREE.Vector3; // Velocidad de deriva hidrodinámica en el plano XZ
+  angularVelocity: THREE.Euler; // Tasa de giro tras colisión acuática
   active: boolean;
   respawnTimer: number;
-  phaseOffset: number;
+  phase: number;
+  spawnScale: number;
   rotationSpeed: THREE.Vector3;
   energyValue: number;
   adnValue: number;
@@ -207,10 +218,10 @@ function createMeatCanvasTextures(): {
 }
 
 export class FoodManager {
-  private readonly items: FoodItem[] = [];
+  private readonly items: FoodItemState[] = [];
   private readonly geneticNodules: GeneticNoduleItem[] = [];
-  private readonly spatialGrid = new SpatialHashGrid<FoodItem>();
-  private readonly nearbyFoodBuffer: FoodItem[] = [];
+  private readonly spatialGrid = new SpatialHashGrid<FoodItemState>();
+  private readonly nearbyFoodBuffer: FoodItemState[] = [];
   private readonly sharedGeometries: THREE.BufferGeometry[] = [];
   private readonly sharedMaterials: THREE.Material[] = [];
   private readonly sharedTextures: THREE.Texture[] = [];
@@ -455,16 +466,22 @@ export class FoodManager {
           ? 10
           : GAME_CONFIG.FOOD.ADN_REWARD_SMALL;
 
-      const item: FoodItem = {
+      const spawnScale = 0.92 + Math.random() * 0.22;
+      group.scale.setScalar(spawnScale);
+
+      const item: FoodItemState = {
         kind,
+        defaultKind: kind,
         group,
         coreMesh,
         haloMesh,
-        basePosition: new THREE.Vector3(),
-        scatterVelocity: new THREE.Vector3(),
+        position: new THREE.Vector3(),
+        velocity: new THREE.Vector3(),
+        angularVelocity: new THREE.Euler(0, 0, 0),
         active: true,
         respawnTimer: 0,
-        phaseOffset: Math.random() * Math.PI * 2,
+        phase: Math.random() * Math.PI * 2,
+        spawnScale,
         rotationSpeed: new THREE.Vector3(
           (Math.random() - 0.5) * 1.8,
           (Math.random() - 0.5) * 2.1,
@@ -555,7 +572,12 @@ export class FoodManager {
     );
   }
 
-  private placeFoodRandomly(item: FoodItem, nearCenter = false): void {
+  private placeFoodRandomly(item: FoodItemState, nearCenter = false): void {
+    item.velocity.set(0, 0, 0);
+    item.angularVelocity.set(0, 0, 0);
+    item.group.rotation.set(0, 0, 0);
+    item.group.scale.setScalar(item.spawnScale);
+
     // Cluster >= 72% of edible chloroplasts ('plant') closely around towering Chloroplast Trees (grazing zone)
     if (
       item.kind === 'plant' &&
@@ -581,9 +603,9 @@ export class FoodManager {
       );
       const ty =
         GAME_CONFIG.WORLD.SWIM_PLANE_Y + (Math.random() - 0.5) * 1.4;
-      item.basePosition.set(tx, ty, tz);
-      this.pushOutOfObstacles(item.basePosition, 0.75);
-      item.group.position.copy(item.basePosition);
+      item.position.set(tx, ty, tz);
+      this.pushOutOfObstacles(item.position, 0.75);
+      item.group.position.copy(item.position);
       item.active = true;
       item.respawnTimer = 0;
       item.group.visible = true;
@@ -598,13 +620,13 @@ export class FoodManager {
     const r = minRadius + Math.sqrt(Math.random()) * (maxRadius - minRadius);
     const theta = Math.random() * Math.PI * 2;
 
-    item.basePosition.set(
+    item.position.set(
       Math.cos(theta) * r,
       GAME_CONFIG.WORLD.SWIM_PLANE_Y,
       Math.sin(theta) * r
     );
-    this.pushOutOfObstacles(item.basePosition, 0.9);
-    item.group.position.copy(item.basePosition);
+    this.pushOutOfObstacles(item.position, 0.9);
+    item.group.position.copy(item.position);
     item.active = true;
     item.respawnTimer = 0;
     item.group.visible = true;
@@ -672,17 +694,22 @@ export class FoodManager {
         const angle = baseAngle + fanSpread + (Math.random() - 0.5) * 0.35;
         const speed = 5.5 + Math.random() * 4.2;
 
-        chosenMeat.basePosition.set(
+        chosenMeat.position.set(
           originPosition.x + Math.cos(angle) * 0.45,
           GAME_CONFIG.WORLD.SWIM_PLANE_Y,
           originPosition.z + Math.sin(angle) * 0.45
         );
-        chosenMeat.scatterVelocity.set(
+        chosenMeat.velocity.set(
           Math.cos(angle) * speed,
           0,
           Math.sin(angle) * speed
         );
-        chosenMeat.group.position.copy(chosenMeat.basePosition);
+        chosenMeat.angularVelocity.set(
+          (Math.random() - 0.5) * 5.0,
+          (Math.random() - 0.5) * 6.0,
+          (Math.random() - 0.5) * 5.0
+        );
+        chosenMeat.group.position.copy(chosenMeat.position);
         chosenMeat.active = true;
         chosenMeat.respawnTimer = 0;
         chosenMeat.group.visible = true;
@@ -696,17 +723,22 @@ export class FoodManager {
         sporeItems[this.meatDropCursor % sporeItems.length];
 
       const angle = baseAngle + Math.PI + (Math.random() - 0.5) * 0.6;
-      chosenSpore.basePosition.set(
+      chosenSpore.position.set(
         originPosition.x + Math.cos(angle) * 0.6,
         GAME_CONFIG.WORLD.SWIM_PLANE_Y,
         originPosition.z + Math.sin(angle) * 0.6
       );
-      chosenSpore.scatterVelocity.set(
+      chosenSpore.velocity.set(
         Math.cos(angle) * 4.5,
         0,
         Math.sin(angle) * 4.5
       );
-      chosenSpore.group.position.copy(chosenSpore.basePosition);
+      chosenSpore.angularVelocity.set(
+        (Math.random() - 0.5) * 3.5,
+        (Math.random() - 0.5) * 4.5,
+        (Math.random() - 0.5) * 3.5
+      );
+      chosenSpore.group.position.copy(chosenSpore.position);
       chosenSpore.active = true;
       chosenSpore.respawnTimer = 0;
       chosenSpore.group.visible = true;
@@ -812,6 +844,67 @@ export class FoodManager {
     return null;
   }
 
+  /**
+   * Applies non-penetration separation, hydrodynamic momentum transfer, and tangential angular spin
+   * when an organism (player or AI cell) collides with an indigestible food item in the water.
+   */
+  private applyHydrodynamicRepulsion(
+    item: FoodItemState,
+    cellPos: THREE.Vector3,
+    cellSpeed: number,
+    minDistance: number,
+    dx: number,
+    dz: number,
+    distSq: number
+  ): void {
+    const dist = Math.sqrt(distSq);
+    const nx = dist > 0.0001 ? dx / dist : 1;
+    const nz = dist > 0.0001 ? dz / dist : 0;
+
+    // 1. Separación No-Penetración: corrige la posición mínima para que no queden superpuestos
+    item.position.x = cellPos.x + nx * minDistance;
+    item.position.z = cellPos.z + nz * minDistance;
+    this.pushOutOfObstacles(item.position, 0.72);
+    item.group.position.x = item.position.x;
+    item.group.position.z = item.position.z;
+
+    // 2. Transferencia de Fuerza e Inercia: V_comida += N * (velocidad_célula * 0.65 + 3.2)
+    const cleanCellSpeed = Math.max(0, Math.abs(cellSpeed));
+    const impulseMagnitude = cleanCellSpeed * 0.65 + 3.2;
+    item.velocity.x += nx * impulseMagnitude;
+    item.velocity.z += nz * impulseMagnitude;
+
+    // Limit peak drift velocity so multi-contact frames stay smooth and natural
+    const maxDriftSpeed = Math.max(impulseMagnitude * 1.35, 16.0);
+    const vSq =
+      item.velocity.x * item.velocity.x + item.velocity.z * item.velocity.z;
+    if (vSq > maxDriftSpeed * maxDriftSpeed) {
+      const vLen = Math.sqrt(vSq);
+      item.velocity.x = (item.velocity.x / vLen) * maxDriftSpeed;
+      item.velocity.z = (item.velocity.z / vLen) * maxDriftSpeed;
+    }
+
+    // 3. Giro angular tangencial/aleatorio para que el trozo voltee orgánicamente en el fluido denso
+    const spinMag = 2.4 + cleanCellSpeed * 0.42;
+    item.angularVelocity.set(
+      THREE.MathUtils.clamp(
+        item.angularVelocity.x - nz * spinMag * (0.75 + Math.random() * 0.5),
+        -12,
+        12
+      ),
+      THREE.MathUtils.clamp(
+        item.angularVelocity.y + (Math.random() - 0.5) * spinMag * 1.6,
+        -12,
+        12
+      ),
+      THREE.MathUtils.clamp(
+        item.angularVelocity.z + nx * spinMag * (0.75 + Math.random() * 0.5),
+        -12,
+        12
+      )
+    );
+  }
+
   public update(
     delta: number,
     elapsedTime: number,
@@ -821,7 +914,9 @@ export class FoodManager {
     hasFilterMouthBonus = false,
     hasBaleenFilter = false,
     hasRadula = false,
-    hasVoraciousChemotaxis = false
+    hasVoraciousChemotaxis = false,
+    playerSpeed = 0,
+    ecosystemOrganisms: readonly EcosystemFoodCollider[] = []
   ): {
     itemsEaten: number;
     plantsEaten: number;
@@ -834,12 +929,16 @@ export class FoodManager {
     let plantsEaten = 0;
     let energyGained = 0;
     let adnGained = 0;
-    let blockedFoodKind: FoodKind | null = null;
+    let blockedFoodKind: FoodKind | null;
+    blockedFoodKind = null;
     const collectedGeneticDrops: DroppedGeneticPart[] = [];
 
     this.spatialGrid.clear();
 
-    // 1. Update food animations & insert active items into the 32m SpatialHashGrid
+    // 1. Update hydrodynamic drift physics, water drag, rotation damping & insert active items into SpatialHashGrid
+    const arenaLimit = Math.max(40, this.activeArenaRadius - 2.5);
+    const arenaLimitSq = arenaLimit * arenaLimit;
+
     for (let i = 0; i < this.items.length; i++) {
       const item = this.items[i];
 
@@ -851,47 +950,95 @@ export class FoodManager {
         continue;
       }
 
-      // Physical radial scatter impulse when meat/spores burst out of a defeated creature
-      if (item.scatterVelocity.lengthSq() > 0.01) {
-        item.basePosition.addScaledVector(item.scatterVelocity, delta);
-        this.pushOutOfObstacles(item.basePosition, 0.75);
-        item.scatterVelocity.x = THREE.MathUtils.damp(
-          item.scatterVelocity.x,
-          0,
-          4.2,
-          delta
-        );
-        item.scatterVelocity.z = THREE.MathUtils.damp(
-          item.scatterVelocity.z,
-          0,
-          4.2,
-          delta
-        );
-        item.group.position.x = item.basePosition.x;
-        item.group.position.z = item.basePosition.z;
+      // Integración de Velocidad y Resistencia del Fluido (Drag Acuático Exponencial = 4.2)
+      if (
+        item.velocity.x * item.velocity.x + item.velocity.z * item.velocity.z >
+        0.0004
+      ) {
+        item.position.addScaledVector(item.velocity, delta);
+        this.pushOutOfObstacles(item.position, 0.75);
+
+        const rSq =
+          item.position.x * item.position.x + item.position.z * item.position.z;
+        if (rSq > arenaLimitSq) {
+          const r = Math.sqrt(rSq);
+          item.position.x = (item.position.x / r) * arenaLimit;
+          item.position.z = (item.position.z / r) * arenaLimit;
+          item.velocity.x *= -0.45;
+          item.velocity.z *= -0.45;
+        }
+
+        item.velocity.x = THREE.MathUtils.damp(item.velocity.x, 0, 4.2, delta);
+        item.velocity.z = THREE.MathUtils.damp(item.velocity.z, 0, 4.2, delta);
+        item.group.position.x = item.position.x;
+        item.group.position.z = item.position.z;
+      } else {
+        item.velocity.set(0, 0, 0);
       }
 
-      // Only animate rotation/bobbing for items reasonably close to player (< 115m) to save CPU
-      const dx = item.basePosition.x - playerPosition.x;
-      const dz = item.basePosition.z - playerPosition.z;
+      // Integración y amortiguación progresiva de angularVelocity tras colisiones
+      const hasAngularSpin =
+        Math.abs(item.angularVelocity.x) > 0.005 ||
+        Math.abs(item.angularVelocity.y) > 0.005 ||
+        Math.abs(item.angularVelocity.z) > 0.005;
+      if (hasAngularSpin) {
+        item.group.rotation.x += item.angularVelocity.x * delta;
+        item.group.rotation.y += item.angularVelocity.y * delta;
+        item.group.rotation.z += item.angularVelocity.z * delta;
+        item.angularVelocity.x = THREE.MathUtils.damp(
+          item.angularVelocity.x,
+          0,
+          4.2,
+          delta
+        );
+        item.angularVelocity.y = THREE.MathUtils.damp(
+          item.angularVelocity.y,
+          0,
+          4.2,
+          delta
+        );
+        item.angularVelocity.z = THREE.MathUtils.damp(
+          item.angularVelocity.z,
+          0,
+          4.2,
+          delta
+        );
+      } else {
+        // Estabilización suave de cabeceo/alabeo al flotar en reposo
+        item.group.rotation.x = THREE.MathUtils.damp(
+          item.group.rotation.x,
+          0,
+          2.5,
+          delta
+        );
+        item.group.rotation.z = THREE.MathUtils.damp(
+          item.group.rotation.z,
+          0,
+          2.5,
+          delta
+        );
+      }
+
+      // Mantenimiento del Plano de Nado y rotación orgánica interna (< 115m del jugador)
+      const dx = item.position.x - playerPosition.x;
+      const dz = item.position.z - playerPosition.z;
       if (dx * dx + dz * dz <= 115 * 115) {
-        const bob = Math.sin(elapsedTime * 2.8 + item.phaseOffset) * 0.22;
-        item.group.position.y = item.basePosition.y + bob;
+        const bob = Math.sin(elapsedTime * 2.8 + item.phase) * 0.22;
+        item.group.position.y = item.position.y + bob;
         item.coreMesh.rotation.x += item.rotationSpeed.x * delta;
         item.coreMesh.rotation.y += item.rotationSpeed.y * delta;
         if (item.kind === 'meat') {
           item.haloMesh.rotation.y += item.rotationSpeed.y * 0.45 * delta;
         }
         const pulse =
-          1.0 + Math.sin(elapsedTime * 4.0 + item.phaseOffset) * 0.1;
+          1.0 + Math.sin(elapsedTime * 4.0 + item.phase) * 0.1;
         item.haloMesh.scale.setScalar(pulse);
       }
 
       this.spatialGrid.insert(item, item.group.position.x, item.group.position.z);
     }
 
-    // 2. Query only the player's cell & adjacent cells from the SpatialHashGrid for normal food collection
-    // Collecting plant, meat, or dna_spore ONLY grants Energy and ADN — never unlocks parts!
+    // 2. Colisión Hidrodinámica y Consumo para el Jugador
     const nearbyFood = this.spatialGrid.queryCells(
       playerPosition.x,
       playerPosition.z,
@@ -928,10 +1075,10 @@ export class FoodManager {
       ) {
         const dist = Math.max(0.1, Math.sqrt(distSq));
         const pullStep = Math.min(dist * 0.5, 9.2 * delta);
-        item.basePosition.x -= (dx / dist) * pullStep;
-        item.basePosition.z -= (dz / dist) * pullStep;
-        item.group.position.x = item.basePosition.x;
-        item.group.position.z = item.basePosition.z;
+        item.position.x -= (dx / dist) * pullStep;
+        item.position.z -= (dz / dist) * pullStep;
+        item.group.position.x = item.position.x;
+        item.group.position.z = item.position.z;
         dx = item.group.position.x - playerPosition.x;
         dz = item.group.position.z - playerPosition.z;
         distSq = dx * dx + dz * dz;
@@ -943,10 +1090,12 @@ export class FoodManager {
         distSq <= baleenCollectDistSq &&
         isDigestible;
 
-      if (distSq <= collectDistSq || isPlantInBaleenRange) {
+      if (distSq < collectDistSq || isPlantInBaleenRange) {
         if (isDigestible) {
           item.active = false;
           item.group.visible = false;
+          item.velocity.set(0, 0, 0);
+          item.angularVelocity.set(0, 0, 0);
           item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
           itemsEaten++;
           audioManager.playFoodEaten(item.kind);
@@ -964,13 +1113,71 @@ export class FoodManager {
           }
           adnGained += item.adnValue;
         } else {
-          // Gently push incompatible food away and notify HUD
-          const dist = Math.max(0.1, Math.sqrt(distSq));
-          item.basePosition.x += (dx / dist) * 0.9;
-          item.basePosition.z += (dz / dist) * 0.9;
-          item.group.position.x = item.basePosition.x;
-          item.group.position.z = item.basePosition.z;
+          // Empuje hidrodinámico elástico con transferencia de momento y giro en el agua
+          this.applyHydrodynamicRepulsion(
+            item,
+            playerPosition,
+            playerSpeed,
+            collectRadius,
+            dx,
+            dz,
+            distSq
+          );
           blockedFoodKind = item.kind;
+        }
+      }
+    }
+
+    // 2B. Colisión Hidrodinámica y Consumo para todas las demás Células del Ecosistema (Depredadores y Herbívoros)
+    for (let o = 0; o < ecosystemOrganisms.length; o++) {
+      const org = ecosystemOrganisms[o];
+      if (!org.active || org.dyingTimer > 0) continue;
+
+      const orgFood = this.spatialGrid.queryCells(
+        org.position.x,
+        org.position.z,
+        1,
+        this.nearbyFoodBuffer
+      );
+      if (orgFood.length === 0) continue;
+
+      const orgPickupRadius =
+        GAME_CONFIG.FOOD.COLLISION_RADIUS +
+        0.78 * Math.max(0.75, org.profile.scaleMultiplier);
+      const orgPickupDistSq = orgPickupRadius * orgPickupRadius;
+      const orgDiet: DietType = org.profile.isHerbivore
+        ? 'herbivore'
+        : 'carnivore';
+
+      for (let f = 0; f < orgFood.length; f++) {
+        const item = orgFood[f];
+        if (!item.active) continue;
+
+        const dx = item.group.position.x - org.position.x;
+        const dz = item.group.position.z - org.position.z;
+        const distSq = dx * dx + dz * dz;
+
+        if (distSq < orgPickupDistSq) {
+          // Golden DNA spores remain reserved for player evolution; AI organisms push spores or incompatible diet items
+          const aiCanDigest =
+            item.kind !== 'dna_spore' && this.canDigest(orgDiet, item.kind, false);
+          if (aiCanDigest) {
+            item.active = false;
+            item.group.visible = false;
+            item.velocity.set(0, 0, 0);
+            item.angularVelocity.set(0, 0, 0);
+            item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
+          } else {
+            this.applyHydrodynamicRepulsion(
+              item,
+              org.position,
+              org.currentSpeed,
+              orgPickupRadius,
+              dx,
+              dz,
+              distSq
+            );
+          }
         }
       }
     }

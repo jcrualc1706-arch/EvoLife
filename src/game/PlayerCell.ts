@@ -116,6 +116,7 @@ export class PlayerCell {
   private ciliaLeft: THREE.Mesh[] = [];
   private ciliaRight: THREE.Mesh[] = [];
   private readonly spineVertebraeMeshes: THREE.Mesh[] = [];
+  private readonly spineVertebraeHitMeshes: THREE.Mesh[] = [];
   private readonly spineVertebraeMats: THREE.MeshStandardMaterial[] = [];
   private hoveredVertebraIndex: number | null = null;
 
@@ -125,11 +126,20 @@ export class PlayerCell {
   private currentPlacedData: PlacedOrganInstance[] = [];
   private selectedInstanceId: string | null = null;
 
-  // 3D Ghost Preview during Catalog / Organ Drag & Drop
+  // 3D Ghost Preview & Magnetic Snap Ring during Catalog / Organ Drag & Drop
   private dragPreviewGroup!: THREE.Group;
   private dragPreviewId: string | null = null;
   private dragPreviewPrimary: OrganVisualInstance | null = null;
   private dragPreviewMirror: OrganVisualInstance | null = null;
+  private dragSnapRingPrimary!: THREE.Group;
+  private dragSnapRingMirror!: THREE.Group;
+  private dragSnapRingMat!: THREE.MeshBasicMaterial;
+  private dragSnapHaloMat!: THREE.MeshBasicMaterial;
+  private dragTargetAngle = 0;
+  private dragSmoothedAngle = 0;
+  private dragPreviewMirrorSymmetry = false;
+  private dragPreviewIsValid = true;
+  private dragPreviewInitialized = false;
 
   // 3D Spore Workshop Spine Stretch Arrows, Orientation Gizmo & Bioluminescent Lab Dish
   private editorLabDishGroup!: THREE.Group;
@@ -279,6 +289,7 @@ export class PlayerCell {
 
       this.group.add(vMesh);
       this.spineVertebraeMeshes.push(vMesh);
+      this.spineVertebraeHitMeshes.push(vHit);
     }
 
     // 3. Internal Organelles (Mitochondria / Vacuoles)
@@ -350,6 +361,43 @@ export class PlayerCell {
 
     this.dragPreviewGroup = new THREE.Group();
     this.dragPreviewGroup.visible = false;
+
+    // Magnetic Snapping Socket Rings (Primary + Mirror) for tactile membrane anchoring feedback
+    const snapRingGeo = new THREE.RingGeometry(0.24, 0.34, 28);
+    const snapHaloGeo = new THREE.CircleGeometry(0.24, 24);
+    this.disposableGeometries.push(snapRingGeo, snapHaloGeo);
+
+    this.dragSnapRingMat = new THREE.MeshBasicMaterial({
+      color: 0x34d399,
+      transparent: true,
+      opacity: 0.92,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+    this.dragSnapHaloMat = new THREE.MeshBasicMaterial({
+      color: 0x22d3ee,
+      transparent: true,
+      opacity: 0.32,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+    this.disposableMaterials.push(this.dragSnapRingMat, this.dragSnapHaloMat);
+
+    this.dragSnapRingPrimary = new THREE.Group();
+    const primaryRingMesh = new THREE.Mesh(snapRingGeo, this.dragSnapRingMat);
+    primaryRingMesh.renderOrder = 18;
+    const primaryHaloMesh = new THREE.Mesh(snapHaloGeo, this.dragSnapHaloMat);
+    primaryHaloMesh.renderOrder = 17;
+    this.dragSnapRingPrimary.add(primaryRingMesh, primaryHaloMesh);
+
+    this.dragSnapRingMirror = new THREE.Group();
+    const mirrorRingMesh = new THREE.Mesh(snapRingGeo, this.dragSnapRingMat);
+    mirrorRingMesh.renderOrder = 18;
+    const mirrorHaloMesh = new THREE.Mesh(snapHaloGeo, this.dragSnapHaloMat);
+    mirrorHaloMesh.renderOrder = 17;
+    this.dragSnapRingMirror.add(mirrorRingMesh, mirrorHaloMesh);
+
+    this.dragPreviewGroup.add(this.dragSnapRingPrimary, this.dragSnapRingMirror);
     this.group.add(this.dragPreviewGroup);
 
     // 7. 4 Articulated Amphibian Legs with Webbed Feet (for Creature Stage)
@@ -936,7 +984,7 @@ export class PlayerCell {
   }
 
   /**
-   * Updates the 3D Ghost Preview organ shown while dragging a piece over the cell in the Editor.
+   * Updates the 3D Ghost Preview organ & magnetic snapping ring shown while dragging a piece over the cell in the Editor.
    */
   public setDragPreview(
     adaptationId: string | null,
@@ -946,6 +994,7 @@ export class PlayerCell {
   ): void {
     if (!adaptationId) {
       this.dragPreviewGroup.visible = false;
+      this.dragPreviewInitialized = false;
       return;
     }
 
@@ -966,26 +1015,64 @@ export class PlayerCell {
       this.dragPreviewMirror = createOrganVisual(normId);
       this.dragPreviewGroup.add(this.dragPreviewPrimary.group);
       this.dragPreviewGroup.add(this.dragPreviewMirror.group);
+      this.dragPreviewInitialized = false;
     }
 
+    this.dragTargetAngle = angle;
+    if (!this.dragPreviewInitialized || !this.dragPreviewGroup.visible) {
+      this.dragSmoothedAngle = angle;
+      this.dragPreviewInitialized = true;
+    } else {
+      // Shortest-angle interpolation for immediate responsive feedback without angular jumps
+      let deltaAngle = this.dragTargetAngle - this.dragSmoothedAngle;
+      while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
+      while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
+      this.dragSmoothedAngle += deltaAngle * 0.48;
+    }
+
+    this.dragPreviewMirrorSymmetry = mirrorSymmetry;
+    this.dragPreviewIsValid = isValid;
     this.dragPreviewGroup.visible = true;
-    const mode = isValid ? 'preview_valid' : 'preview_invalid';
+    this.applyDragPreviewTransforms(this.dragSmoothedAngle);
+  }
+
+  private applyDragPreviewTransforms(angle: number): void {
+    if (!this.dragPreviewId) return;
+    const mode = this.dragPreviewIsValid ? 'preview_valid' : 'preview_invalid';
+    this.dragSnapRingMat.color.setHex(
+      this.dragPreviewIsValid ? 0x34d399 : 0xf43f5e
+    );
+    this.dragSnapHaloMat.color.setHex(
+      this.dragPreviewIsValid ? 0x22d3ee : 0xf43f5e
+    );
 
     if (this.dragPreviewPrimary) {
-      const t = this.getMembraneAttachmentTransform(angle, normId);
+      const t = this.getMembraneAttachmentTransform(angle, this.dragPreviewId);
       this.dragPreviewPrimary.group.position.set(t.x, t.y, t.z);
       this.dragPreviewPrimary.group.rotation.y = t.normalAngle;
       this.dragPreviewPrimary.setHighlight(mode);
+
+      this.dragSnapRingPrimary.visible = true;
+      this.dragSnapRingPrimary.position.set(t.x, t.y + 0.02, t.z);
+      this.dragSnapRingPrimary.rotation.set(0, t.normalAngle, 0);
     }
 
     if (this.dragPreviewMirror) {
-      const showMirror = mirrorSymmetry && Math.abs(Math.sin(angle)) > 0.16;
+      const showMirror =
+        this.dragPreviewMirrorSymmetry && Math.abs(Math.sin(angle)) > 0.16;
       this.dragPreviewMirror.group.visible = showMirror;
+      this.dragSnapRingMirror.visible = showMirror;
       if (showMirror) {
-        const tm = this.getMembraneAttachmentTransform(-angle, normId);
+        const tm = this.getMembraneAttachmentTransform(
+          -angle,
+          this.dragPreviewId
+        );
         this.dragPreviewMirror.group.position.set(tm.x, tm.y, tm.z);
         this.dragPreviewMirror.group.rotation.y = tm.normalAngle;
         this.dragPreviewMirror.setHighlight(mode);
+
+        this.dragSnapRingMirror.position.set(tm.x, tm.y + 0.02, tm.z);
+        this.dragSnapRingMirror.rotation.set(0, tm.normalAngle, 0);
       }
     }
   }
@@ -1142,7 +1229,7 @@ export class PlayerCell {
   }
 
   public getVertebraObjects(): THREE.Object3D[] {
-    return this.spineVertebraeMeshes;
+    return this.spineVertebraeHitMeshes;
   }
 
   public getOrientationGizmoObject(): THREE.Object3D | null {
@@ -1520,6 +1607,21 @@ export class PlayerCell {
     }
 
     if (this.dragPreviewGroup.visible) {
+      let deltaAngle = this.dragTargetAngle - this.dragSmoothedAngle;
+      while (deltaAngle > Math.PI) deltaAngle -= Math.PI * 2;
+      while (deltaAngle < -Math.PI) deltaAngle += Math.PI * 2;
+      this.dragSmoothedAngle = THREE.MathUtils.damp(
+        this.dragSmoothedAngle,
+        this.dragSmoothedAngle + deltaAngle,
+        24.0,
+        delta
+      );
+      this.applyDragPreviewTransforms(this.dragSmoothedAngle);
+
+      const snapScale = 1.0 + Math.sin(elapsedTime * 9.5) * 0.12;
+      this.dragSnapRingPrimary.scale.setScalar(snapScale);
+      this.dragSnapRingMirror.scale.setScalar(snapScale);
+
       this.dragPreviewPrimary?.animate(elapsedTime, 0.4, false);
       this.dragPreviewMirror?.animate(elapsedTime, 0.4, false);
     }
