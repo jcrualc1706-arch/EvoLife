@@ -1053,7 +1053,7 @@ export class IntroCinematicController {
       }
       if (t >= 4.75 && !this.playedReentryRoar) {
         this.playedReentryRoar = true;
-        audioManager.playMeteorAtmosphericEntry(heatRatio);
+        audioManager.playMeteorAtmosphericEntry(3.6);
       }
       if (
         this.plasmaOuterMat &&

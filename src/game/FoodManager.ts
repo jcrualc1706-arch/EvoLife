@@ -226,7 +226,7 @@ export class FoodManager {
   private readonly sharedMaterials: THREE.Material[] = [];
   private readonly sharedTextures: THREE.Texture[] = [];
   private chloroplastTreeCoords: THREE.Vector3[] = [];
-  private activeArenaRadius = 90;
+  private activeArenaRadius = 110;
   private meatDropCursor = 0;
   private dynamicNoduleCursor = 0;
   private readonly chemoreceptorTarget = new THREE.Vector3();
@@ -745,6 +745,50 @@ export class FoodManager {
     }
 
     return count;
+  }
+
+  /**
+   * DevTools helper: Spawns a rich cluster of plants, meat chunks, and DNA spores directly in front of the player.
+   */
+  public spawnDevClusterNear(
+    playerPosition: THREE.Vector3,
+    headingAngle = 0
+  ): void {
+    const forwardX = -Math.sin(headingAngle);
+    const forwardZ = -Math.cos(headingAngle);
+    const centerX = playerPosition.x + forwardX * 7.5;
+    const centerZ = playerPosition.z + forwardZ * 7.5;
+
+    const placePoolSubset = (kind: FoodKind, count: number, radius: number) => {
+      const candidates = this.items.filter((it) => it.kind === kind);
+      if (candidates.length === 0) return;
+      for (let k = 0; k < count; k++) {
+        const chosen =
+          candidates.find((it) => !it.active) ??
+          candidates[(this.meatDropCursor + k) % candidates.length];
+        this.meatDropCursor++;
+        const ang = (k / Math.max(1, count)) * Math.PI * 2 + Math.random() * 0.4;
+        const dist = 1.2 + Math.random() * radius;
+        chosen.position.set(
+          centerX + Math.cos(ang) * dist,
+          GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+          centerZ + Math.sin(ang) * dist
+        );
+        chosen.velocity.set(
+          Math.cos(ang) * 2.2,
+          0,
+          Math.sin(ang) * 2.2
+        );
+        chosen.group.position.copy(chosen.position);
+        chosen.active = true;
+        chosen.respawnTimer = 0;
+        chosen.group.visible = true;
+      }
+    };
+
+    placePoolSubset('plant', 5, 3.8);
+    placePoolSubset('meat', 5, 3.8);
+    placePoolSubset('dna_spore', 3, 2.8);
   }
 
   /**

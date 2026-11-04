@@ -14,10 +14,13 @@ import {
   SpeciesType,
 } from './types';
 
+type CreatureAttitude = 'herbivore' | 'neutral' | 'hostile';
+
 interface SpeciesProfile {
   species: SpeciesType;
   name: string;
   tier: 1 | 2 | 3;
+  attitude: CreatureAttitude;
   isHerbivore: boolean;
   isSessile?: boolean;
   count: number;
@@ -56,8 +59,9 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'herbivore',
     name: 'Célula Filtradora',
     tier: 1,
+    attitude: 'herbivore',
     isHerbivore: true,
-    count: 4,
+    count: 3,
     wanderSpeed: 4.8,
     activeSpeed: 8.8,
     detectionRadius: 14.0,
@@ -77,15 +81,16 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'nematocito',
     name: 'Nematocito Acordonado',
     tier: 1,
+    attitude: 'herbivore',
     isHerbivore: true,
-    count: 3,
+    count: 2,
     wanderSpeed: 3.9,
     activeSpeed: 7.4,
     detectionRadius: 15.0,
     loseInterestRadius: 22.0,
-    attackRange: 2.6,
-    attackDamage: 10,
-    attackCooldownSec: 1.8,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
     scaleMultiplier: 0.92,
     primaryTraits: ['weapon_harpoon_cell', 'sense_stalk_compound_eye', 'simple_flagellum'],
   },
@@ -93,8 +98,9 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'gasteropodo',
     name: 'Gasterópodo Sulfuroso',
     tier: 1,
+    attitude: 'herbivore',
     isHerbivore: true,
-    count: 3,
+    count: 2,
     wanderSpeed: 3.0,
     activeSpeed: 5.6,
     detectionRadius: 12.5,
@@ -114,23 +120,59 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'esponja_espicular',
     name: 'Esponja Espicular',
     tier: 1,
+    attitude: 'herbivore',
     isHerbivore: true,
     isSessile: true,
-    count: 3,
+    count: 2,
     wanderSpeed: 0,
     activeSpeed: 0,
     detectionRadius: 10.0,
     loseInterestRadius: 15.0,
-    attackRange: 2.4,
-    attackDamage: 8,
-    attackCooldownSec: 2.0,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
     scaleMultiplier: 0.98,
     primaryTraits: ['defense_silica_spicules', 'chitin_spike'],
+  },
+  clorofita_solar: {
+    species: 'clorofita_solar',
+    name: 'Clorofita Solar',
+    tier: 1,
+    attitude: 'herbivore',
+    isHerbivore: true,
+    count: 3,
+    wanderSpeed: 5.2,
+    activeSpeed: 9.8,
+    detectionRadius: 16.5,
+    loseInterestRadius: 24.0,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
+    scaleMultiplier: 0.82,
+    primaryTraits: ['chloroplast_1', 'cilia_waves', 'eye_photoreceptor'],
+  },
+  fito_medusa: {
+    species: 'fito_medusa',
+    name: 'Fitomedusa de Cristal',
+    tier: 1,
+    attitude: 'herbivore',
+    isHerbivore: true,
+    count: 3,
+    wanderSpeed: 3.8,
+    activeSpeed: 7.6,
+    detectionRadius: 15.0,
+    loseInterestRadius: 22.0,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
+    scaleMultiplier: 0.9,
+    primaryTraits: ['mouth_filter', 'simple_flagellum', 'chloroplast_1'],
   },
   hunter: {
     species: 'hunter',
     name: 'Mandíbula Rápida',
     tier: 1,
+    attitude: 'hostile',
     isHerbivore: false,
     count: 3,
     wanderSpeed: GAME_CONFIG.PREDATOR.WANDER_SPEED,
@@ -152,8 +194,9 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'perforador',
     name: 'Perforador Abisal',
     tier: 2,
+    attitude: 'hostile',
     isHerbivore: false,
-    count: 3,
+    count: 2,
     wanderSpeed: 5.1,
     activeSpeed: 10.0,
     detectionRadius: 26.0,
@@ -168,8 +211,9 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'vibora_fosa',
     name: 'Víbora de Fosa',
     tier: 2,
+    attitude: 'hostile',
     isHerbivore: false,
-    count: 3,
+    count: 2,
     wanderSpeed: 4.8,
     activeSpeed: 9.3,
     detectionRadius: 24.5,
@@ -184,15 +228,16 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'medusa_biolum',
     name: 'Medusa Bioluminiscente',
     tier: 2,
+    attitude: 'herbivore',
     isHerbivore: true,
-    count: 3,
+    count: 2,
     wanderSpeed: 4.3,
     activeSpeed: 8.5,
     detectionRadius: 16.5,
     loseInterestRadius: 24.0,
-    attackRange: 3.5,
-    attackDamage: 12,
-    attackCooldownSec: 2.2,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
     scaleMultiplier: 1.1,
     primaryTraits: [
       'weapon_flash_photophore',
@@ -200,16 +245,51 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'movement_ribbon_fin',
     ],
   },
+  espora_refulgente: {
+    species: 'espora_refulgente',
+    name: 'Espora Refulgente',
+    tier: 2,
+    attitude: 'herbivore',
+    isHerbivore: true,
+    count: 2,
+    wanderSpeed: 4.2,
+    activeSpeed: 8.4,
+    detectionRadius: 16.0,
+    loseInterestRadius: 23.5,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
+    scaleMultiplier: 1.08,
+    primaryTraits: ['weapon_flash_photophore', 'eye_stalks', 'cilia_waves'],
+  },
+  pluricelular_pastador: {
+    species: 'pluricelular_pastador',
+    name: 'Pluricelular Pastador',
+    tier: 2,
+    attitude: 'herbivore',
+    isHerbivore: true,
+    count: 2,
+    wanderSpeed: 4.0,
+    activeSpeed: 8.0,
+    detectionRadius: 15.5,
+    loseInterestRadius: 23.0,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
+    scaleMultiplier: 1.18,
+    primaryTraits: ['mouth_filter_baleen', 'chloroplast_1', 'simple_flagellum'],
+  },
   anquilocelula: {
     species: 'anquilocelula',
     name: 'Anquilocélula de Fondo',
     tier: 2,
+    attitude: 'neutral',
     isHerbivore: false,
     count: 2,
     wanderSpeed: 3.5,
-    activeSpeed: 7.0,
-    detectionRadius: 19.5,
-    loseInterestRadius: 27.5,
+    activeSpeed: 7.2,
+    detectionRadius: 20.0,
+    loseInterestRadius: 28.0,
     attackRange: 3.5,
     attackDamage: 22,
     attackCooldownSec: 1.7,
@@ -221,10 +301,74 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'cilia_waves',
     ],
   },
+  quelicerado_abisal: {
+    species: 'quelicerado_abisal',
+    name: 'Quelicerado de Fosa',
+    tier: 2,
+    attitude: 'neutral',
+    isHerbivore: false,
+    count: 2,
+    wanderSpeed: 3.8,
+    activeSpeed: 8.6,
+    detectionRadius: 22.0,
+    loseInterestRadius: 30.0,
+    attackRange: 3.4,
+    attackDamage: 21,
+    attackCooldownSec: 1.5,
+    scaleMultiplier: 1.18,
+    primaryTraits: [
+      'mouth_crusher_mandibles',
+      'defense_chitin_shield_plate',
+      'simple_flagellum',
+    ],
+  },
+  nautilo_espinoso: {
+    species: 'nautilo_espinoso',
+    name: 'Nautilocefalópodo Espinoso',
+    tier: 2,
+    attitude: 'neutral',
+    isHerbivore: false,
+    count: 2,
+    wanderSpeed: 3.6,
+    activeSpeed: 8.2,
+    detectionRadius: 21.0,
+    loseInterestRadius: 29.0,
+    attackRange: 3.3,
+    attackDamage: 19,
+    attackCooldownSec: 1.6,
+    scaleMultiplier: 1.16,
+    primaryTraits: [
+      'chitin_spike',
+      'membrane_armor',
+      'hydro_siphon',
+    ],
+  },
+  aguijon_electrico: {
+    species: 'aguijon_electrico',
+    name: 'Aguijón Eléctrico',
+    tier: 2,
+    attitude: 'hostile',
+    isHerbivore: false,
+    count: 2,
+    wanderSpeed: 5.6,
+    activeSpeed: 11.2,
+    detectionRadius: 27.0,
+    loseInterestRadius: 36.0,
+    attackRange: 3.4,
+    attackDamage: 22,
+    attackCooldownSec: 1.35,
+    scaleMultiplier: 1.16,
+    primaryTraits: [
+      'electric_cell',
+      'chitin_spike',
+      'movement_whip_flagella',
+    ],
+  },
   nebula_gelatinosa: {
     species: 'nebula_gelatinosa',
     name: 'Nébula Gelatinosa',
     tier: 2,
+    attitude: 'herbivore',
     isHerbivore: true,
     count: 2,
     wanderSpeed: 3.2,
@@ -246,6 +390,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'mirador_abisal',
     name: 'Mirador Abisal',
     tier: 2,
+    attitude: 'herbivore',
     isHerbivore: true,
     count: 2,
     wanderSpeed: 4.3,
@@ -265,10 +410,54 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'simple_flagellum',
     ],
   },
+  titan_verde: {
+    species: 'titan_verde',
+    name: 'Coloso Fitoplanctónico',
+    tier: 3,
+    attitude: 'herbivore',
+    isHerbivore: true,
+    count: 2,
+    wanderSpeed: 3.4,
+    activeSpeed: 7.8,
+    detectionRadius: 18.0,
+    loseInterestRadius: 27.0,
+    attackRange: 0,
+    attackDamage: 0,
+    attackCooldownSec: 0,
+    scaleMultiplier: 1.46,
+    primaryTraits: [
+      'chloroplast_1',
+      'sense_stalk_compound_eye',
+      'movement_macro_cilia_skirt',
+      'membrane_armor',
+    ],
+  },
+  triturador_fumarola: {
+    species: 'triturador_fumarola',
+    name: 'Triturador de Grieta',
+    tier: 3,
+    attitude: 'neutral',
+    isHerbivore: false,
+    count: 2,
+    wanderSpeed: 3.3,
+    activeSpeed: 7.8,
+    detectionRadius: 24.0,
+    loseInterestRadius: 34.0,
+    attackRange: 3.9,
+    attackDamage: 30,
+    attackCooldownSec: 1.75,
+    scaleMultiplier: 1.52,
+    primaryTraits: [
+      'mouth_crusher_mandibles',
+      'defense_hydrothermal_carapace',
+      'weapon_tail_club',
+    ],
+  },
   bala_fumarola: {
     species: 'bala_fumarola',
     name: 'Bala de Fumarola',
     tier: 3,
+    attitude: 'hostile',
     isHerbivore: false,
     count: 2,
     wanderSpeed: 7.0,
@@ -289,6 +478,7 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
     species: 'leviathan',
     name: 'Megacélula Acorazada',
     tier: 3,
+    attitude: 'hostile',
     isHerbivore: false,
     count: 2,
     wanderSpeed: 3.6,
@@ -305,6 +495,28 @@ const SPECIES_PROFILES: Record<SpeciesType, SpeciesProfile> = {
       'electric_cell',
       'membrane_armor',
       'simple_flagellum',
+    ],
+  },
+  leviatan_sauro: {
+    species: 'leviatan_sauro',
+    name: 'Leviatán Hendidor',
+    tier: 3,
+    attitude: 'hostile',
+    isHerbivore: false,
+    count: 2,
+    wanderSpeed: 4.4,
+    activeSpeed: 9.6,
+    detectionRadius: 28.0,
+    loseInterestRadius: 38.0,
+    attackRange: 4.0,
+    attackDamage: 32,
+    attackCooldownSec: 1.6,
+    scaleMultiplier: 1.58,
+    primaryTraits: [
+      'mouth_crusher_mandibles',
+      'chitin_spike',
+      'movement_whip_flagella',
+      'defense_hydrothermal_carapace',
     ],
   },
 };
@@ -325,6 +537,7 @@ interface OrganismEntity {
   stunTimer: number;
   poisonTimer: number;
   poisonTickTimer: number;
+  provokedTimer: number;
   socialCooldown: number;
   wanderTarget: THREE.Vector3;
   wanderRetargetTimer: number;
@@ -353,12 +566,8 @@ interface OrganismEntity {
   legsGroup: THREE.Group;
   legs: THREE.Mesh[];
   stateRingMat: THREE.MeshBasicMaterial;
-  uncataloguedRimMat: THREE.MeshBasicMaterial;
-  uncataloguedRimMesh: THREE.Mesh;
   coreMat: THREE.MeshStandardMaterial;
   geneticTraits: string[];
-  geneMarkerGroup: THREE.Group;
-  geneMarkerCrystal: THREE.Mesh;
 }
 
 interface FloatingDamagePopup {
@@ -473,13 +682,10 @@ export class PredatorManager {
   private ringGeo!: THREE.BufferGeometry;
   private healthRingPlaneGeo!: THREE.BufferGeometry;
   private deathSphereGeo!: THREE.BufferGeometry;
-  private uncataloguedRimGeo!: THREE.BufferGeometry;
   private leviathanPlateGeo!: THREE.BufferGeometry;
   private herbivoreBodyGeo!: THREE.BufferGeometry;
   private herbivoreCiliaGeo!: THREE.BufferGeometry;
   private creatureLegGeo!: THREE.BufferGeometry;
-  private geneCrystalGeo!: THREE.BufferGeometry;
-  private geneHaloGeo!: THREE.BufferGeometry;
 
   // Shared Static Materials
   private hunterBodyMat!: THREE.MeshPhysicalMaterial;
@@ -498,15 +704,22 @@ export class PredatorManager {
   private nebulaBodyMat!: THREE.MeshPhysicalMaterial;
   private balaBodyMat!: THREE.MeshPhysicalMaterial;
   private miradorBodyMat!: THREE.MeshPhysicalMaterial;
+  private clorofitaBodyMat!: THREE.MeshPhysicalMaterial;
+  private esporaBodyMat!: THREE.MeshPhysicalMaterial;
+  private pastadorBodyMat!: THREE.MeshPhysicalMaterial;
+  private queliceradoBodyMat!: THREE.MeshPhysicalMaterial;
+  private trituradorBodyMat!: THREE.MeshPhysicalMaterial;
+  private aguijonBodyMat!: THREE.MeshPhysicalMaterial;
+  private sauroBodyMat!: THREE.MeshPhysicalMaterial;
   private shellArmorMat!: THREE.MeshStandardMaterial;
+  private pearlShellMat!: THREE.MeshStandardMaterial;
+  private basaltArmorMat!: THREE.MeshStandardMaterial;
   private eyeScleraMat!: THREE.MeshPhysicalMaterial;
   private predatorEyeMat!: THREE.MeshStandardMaterial;
   private herbivoreEyeMat!: THREE.MeshStandardMaterial;
   private eyePupilMat!: THREE.MeshStandardMaterial;
   private organelleMat!: THREE.MeshStandardMaterial;
   private electricArcMat!: THREE.MeshBasicMaterial;
-  private geneCrystalMat!: THREE.MeshStandardMaterial;
-  private geneHaloMat!: THREE.MeshBasicMaterial;
 
   constructor(scene: THREE.Scene) {
     this.initSharedAssets();
@@ -666,9 +879,6 @@ export class PredatorManager {
     this.ringGeo = new THREE.RingGeometry(1.3, 1.68, 32);
     this.ringGeo.rotateX(-Math.PI / 2);
 
-    this.uncataloguedRimGeo = new THREE.RingGeometry(1.72, 2.08, 36);
-    this.uncataloguedRimGeo.rotateX(-Math.PI / 2);
-
     this.leviathanPlateGeo = new THREE.DodecahedronGeometry(0.55, 0);
     this.leviathanPlateGeo.scale(1.4, 0.45, 1.1);
 
@@ -680,11 +890,6 @@ export class PredatorManager {
 
     this.creatureLegGeo = new THREE.CapsuleGeometry(0.14, 0.72, 6, 8);
     this.creatureLegGeo.translate(0, -0.36, 0);
-
-    this.geneCrystalGeo = new THREE.OctahedronGeometry(0.32, 0);
-    this.geneCrystalGeo.scale(0.85, 1.45, 0.85);
-    this.geneHaloGeo = new THREE.RingGeometry(0.4, 0.56, 20);
-    this.geneHaloGeo.rotateX(-Math.PI / 2);
 
     this.healthRingPlaneGeo = new THREE.PlaneGeometry(3.4, 3.4);
     this.healthRingPlaneGeo.rotateX(-Math.PI / 2);
@@ -711,13 +916,10 @@ export class PredatorManager {
       this.ringGeo,
       this.healthRingPlaneGeo,
       this.deathSphereGeo,
-      this.uncataloguedRimGeo,
       this.leviathanPlateGeo,
       this.herbivoreBodyGeo,
       this.herbivoreCiliaGeo,
-      this.creatureLegGeo,
-      this.geneCrystalGeo,
-      this.geneHaloGeo
+      this.creatureLegGeo
     );
 
     // Multi-layered Translucent Outer Membranes (MeshPhysicalMaterial) for all species
@@ -910,12 +1112,116 @@ export class PredatorManager {
       opacity: 0.87,
     });
 
+    this.clorofitaBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0x84cc16,
+      emissive: 0x3f6212,
+      emissiveIntensity: 0.42,
+      roughness: 0.14,
+      transmission: 0.76,
+      thickness: 0.95,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.86,
+    });
+
+    this.esporaBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0x10b981,
+      emissive: 0x047857,
+      emissiveIntensity: 0.48,
+      roughness: 0.15,
+      transmission: 0.72,
+      thickness: 1.05,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.87,
+    });
+
+    this.pastadorBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0x15803d,
+      emissive: 0x14532d,
+      emissiveIntensity: 0.38,
+      roughness: 0.16,
+      transmission: 0.68,
+      thickness: 1.15,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.88,
+    });
+
+    this.queliceradoBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0x475569,
+      emissive: 0x1e293b,
+      emissiveIntensity: 0.34,
+      roughness: 0.22,
+      metalness: 0.24,
+      transmission: 0.56,
+      thickness: 1.2,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.9,
+    });
+
+    this.trituradorBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0x334155,
+      emissive: 0x0f172a,
+      emissiveIntensity: 0.36,
+      roughness: 0.26,
+      metalness: 0.32,
+      transmission: 0.5,
+      thickness: 1.35,
+      clearcoat: 0.95,
+      transparent: true,
+      opacity: 0.92,
+    });
+
+    this.aguijonBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0xdb2777,
+      emissive: 0x831843,
+      emissiveIntensity: 0.48,
+      roughness: 0.14,
+      metalness: 0.12,
+      transmission: 0.68,
+      thickness: 1.05,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.88,
+    });
+
+    this.sauroBodyMat = new THREE.MeshPhysicalMaterial({
+      color: 0x991b1b,
+      emissive: 0x450a0a,
+      emissiveIntensity: 0.52,
+      roughness: 0.18,
+      metalness: 0.2,
+      transmission: 0.58,
+      thickness: 1.4,
+      clearcoat: 1.0,
+      transparent: true,
+      opacity: 0.92,
+    });
+
     this.shellArmorMat = new THREE.MeshStandardMaterial({
       color: 0xb45309,
       emissive: 0x451a03,
       emissiveIntensity: 0.28,
       roughness: 0.45,
       metalness: 0.48,
+    });
+
+    this.pearlShellMat = new THREE.MeshStandardMaterial({
+      color: 0xe2e8f0,
+      emissive: 0x64748b,
+      emissiveIntensity: 0.32,
+      roughness: 0.24,
+      metalness: 0.52,
+    });
+
+    this.basaltArmorMat = new THREE.MeshStandardMaterial({
+      color: 0x1e293b,
+      emissive: 0x0f172a,
+      emissiveIntensity: 0.35,
+      roughness: 0.55,
+      metalness: 0.62,
     });
 
     this.eyeScleraMat = new THREE.MeshPhysicalMaterial({
@@ -961,22 +1267,6 @@ export class PredatorManager {
       opacity: 0.85,
     });
 
-    this.geneCrystalMat = new THREE.MeshStandardMaterial({
-      color: 0xfef08a,
-      emissive: 0x10b981,
-      emissiveIntensity: 2.0,
-      roughness: 0.15,
-      metalness: 0.4,
-    });
-
-    this.geneHaloMat = new THREE.MeshBasicMaterial({
-      color: 0xfacc15,
-      transparent: true,
-      opacity: 0.88,
-      side: THREE.DoubleSide,
-      depthWrite: false,
-    });
-
     this.disposableMaterials.push(
       this.hunterBodyMat,
       this.hunterMandibleMat,
@@ -994,15 +1284,22 @@ export class PredatorManager {
       this.nebulaBodyMat,
       this.balaBodyMat,
       this.miradorBodyMat,
+      this.clorofitaBodyMat,
+      this.esporaBodyMat,
+      this.pastadorBodyMat,
+      this.queliceradoBodyMat,
+      this.trituradorBodyMat,
+      this.aguijonBodyMat,
+      this.sauroBodyMat,
       this.shellArmorMat,
+      this.pearlShellMat,
+      this.basaltArmorMat,
       this.eyeScleraMat,
       this.predatorEyeMat,
       this.herbivoreEyeMat,
       this.eyePupilMat,
       this.organelleMat,
-      this.electricArcMat,
-      this.geneCrystalMat,
-      this.geneHaloMat
+      this.electricArcMat
     );
   }
 
@@ -2422,6 +2719,637 @@ export class PredatorManager {
           break;
         }
 
+        case 'clorofita_solar': {
+          // 14. Clorofita Solar (Herbivore 🟢 Tier 1): Translucent lime-green spherical cell + internal floating chloroplast discs + 1 large peaceful frontal eye + 4 fan-like vibrating cilia
+          const body = new THREE.Mesh(
+            this.sphericalBodyGeo,
+            this.clorofitaBodyMat
+          );
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh.scale.setScalar(0.86);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.45);
+          this.addExpressiveEye(group, 0, 0.22, -1.04, 0, 1.18, false);
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            2,
+            1.02,
+            -0.25,
+            0.52,
+            1.05
+          );
+          break;
+        }
+
+        case 'fito_medusa': {
+          // 15. Fitomedusa de Cristal (Herbivore 🟢 Tier 1): Transparent turquoise gelatinous bell + central abyssal eye + 3 filamentous undulating flagella
+          const body = new THREE.Mesh(this.medusaBellGeo, this.herbivoreBodyMat);
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.38);
+          this.addExpressiveEye(group, 0, 0.25, -0.92, 0, 1.12, false);
+          for (const tx of [-0.32, 0, 0.32]) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.herbivoreBodyMat,
+              tx,
+              -0.06,
+              0.88,
+              4,
+              0.35,
+              0.74,
+              tx * 0.2,
+              0.18,
+              tx * 1.8
+            );
+          }
+          break;
+        }
+
+        case 'espora_refulgente': {
+          // 16. Espora Refulgente (Herbivore 🟢 Tier 2): Domed emerald body + yellow bioluminescent photophores + 2 lateral stalked eyes + crown of wheel-beating cilia
+          const body = new THREE.Mesh(
+            this.sphericalBodyGeo,
+            this.esporaBodyMat
+          );
+          body.scale.set(1.12, 0.92, 1.12);
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.46);
+          for (const side of [-1, 1] as const) {
+            this.attachOrganToCreature(
+              group,
+              attachedOrgans,
+              'eye_stalks',
+              side * 0.62,
+              0.32,
+              -0.82,
+              side * 0.35,
+              1.05
+            );
+            this.addExpressiveEye(
+              group,
+              side * 0.56,
+              0.24,
+              -0.96,
+              side * 0.32,
+              0.9,
+              false
+            );
+          }
+          this.attachOrganToCreature(
+            group,
+            attachedOrgans,
+            'weapon_flash_photophore',
+            0,
+            0.35,
+            -0.95,
+            0,
+            1.1
+          );
+          this.addOralCiliaCrown(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            8,
+            -1.18,
+            0.42
+          );
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            4,
+            1.08,
+            -0.45,
+            0.36,
+            0.9
+          );
+          break;
+        }
+
+        case 'pluricelular_pastador': {
+          // 17. Pluricelular Pastador (Herbivore 🟢 Tier 2): Segmented colony of 3 translucent forest-green lobes + eyes on each segment + baleen filter mouth + 2 thick caudal flagella
+          for (let segIdx = 0; segIdx < 3; segIdx++) {
+            const lobe = new THREE.Mesh(
+              this.sphericalBodyGeo,
+              this.pastadorBodyMat
+            );
+            const lobeScale = 1.0 - segIdx * 0.12;
+            lobe.scale.set(0.95 * lobeScale, 0.78 * lobeScale, 0.85 * lobeScale);
+            lobe.position.set(0, 0, -0.68 + segIdx * 0.72);
+            group.add(lobe);
+            for (const side of [-1, 1] as const) {
+              this.addExpressiveEye(
+                group,
+                side * (0.58 * lobeScale),
+                0.22,
+                -0.88 + segIdx * 0.72,
+                side * 0.38,
+                0.78 * lobeScale,
+                false
+              );
+            }
+          }
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.45);
+          this.attachOrganToCreature(
+            group,
+            attachedOrgans,
+            'mouth_filter_baleen',
+            0,
+            -0.08,
+            -1.45,
+            0,
+            1.2
+          );
+          for (const side of [-1, 1] as const) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.pastadorBodyMat,
+              side * 0.24,
+              0,
+              1.48,
+              4,
+              0.36,
+              0.92,
+              side * 0.1,
+              0.18,
+              side > 0 ? Math.PI * 0.5 : 0
+            );
+          }
+          break;
+        }
+
+        case 'titan_verde': {
+          // 18. Coloso Fitoplanctónico (Herbivore 🟢 Tier 3): Large translucent emerald ovoid organism + lateral compound eyes + soft cellulose plates + long rows of feathery cilia
+          const body = new THREE.Mesh(
+            this.predatorBodyGeo,
+            this.esporaBodyMat
+          );
+          body.scale.set(1.26, 0.92, 1.24);
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh.scale.setScalar(1.1);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.54);
+          for (let s = 0; s < 3; s++) {
+            const plate = new THREE.Mesh(
+              this.leviathanPlateGeo,
+              this.organelleMat
+            );
+            plate.position.set(0, 0.58 - s * 0.06, -0.4 + s * 0.55);
+            group.add(plate);
+          }
+          for (const side of [-1, 1] as const) {
+            this.attachOrganToCreature(
+              group,
+              attachedOrgans,
+              'sense_stalk_compound_eye',
+              side * 0.78,
+              0.3,
+              -0.92,
+              side * 0.4,
+              1.2
+            );
+            this.addExpressiveEye(
+              group,
+              side * 0.72,
+              0.26,
+              -1.08,
+              side * 0.35,
+              1.05,
+              false
+            );
+          }
+          this.addOralCiliaCrown(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            10,
+            -1.45,
+            0.48
+          );
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.herbivoreCiliaMat,
+            6,
+            1.26,
+            -0.75,
+            0.34,
+            1.02
+          );
+          break;
+        }
+
+        case 'quelicerado_abisal': {
+          // 19. Quelicerado de Fosa (Neutral ⚪ Tier 2): Flat chitinous deep grey/blue body + folded mouth pincers + 2 small protected eyes + twin rear flagella
+          const body = new THREE.Mesh(
+            this.sphericalBodyGeo,
+            this.queliceradoBodyMat
+          );
+          body.scale.set(1.28, 0.62, 1.18);
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.44);
+
+          mandibleLeft = this.buildSerratedMandible(
+            -1,
+            this.pearlShellMat,
+            this.eyeScleraMat,
+            0.95
+          );
+          mandibleLeft.position.set(-0.42, -0.05, -1.28);
+          mandibleLeft.rotation.y = -0.35;
+          group.add(mandibleLeft);
+
+          mandibleRight = this.buildSerratedMandible(
+            1,
+            this.pearlShellMat,
+            this.eyeScleraMat,
+            0.95
+          );
+          mandibleRight.position.set(0.42, -0.05, -1.28);
+          mandibleRight.rotation.y = 0.35;
+          group.add(mandibleRight);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.52,
+              0.22,
+              -0.92,
+              side * 0.2,
+              0.82,
+              true,
+              true,
+              this.basaltArmorMat
+            );
+          }
+          this.addLateralCiliaRows(
+            group,
+            ciliaMeshes,
+            this.pearlShellMat,
+            4,
+            1.22,
+            -0.45,
+            0.34,
+            0.85
+          );
+          for (const side of [-1, 1] as const) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.queliceradoBodyMat,
+              side * 0.25,
+              -0.04,
+              1.28,
+              4,
+              0.34,
+              0.82,
+              side * 0.1,
+              0.16,
+              side > 0 ? Math.PI * 0.5 : 0
+            );
+          }
+          break;
+        }
+
+        case 'nautilo_espinoso': {
+          // 20. Nautilocefalópodo Espinoso (Neutral ⚪ Tier 2): Pearlescent spiral fossil shell over vermiform body + lateral eyes + rostral defensive spike + siphon flagella
+          const body = new THREE.Mesh(
+            this.elongatedBodyGeo,
+            this.queliceradoBodyMat
+          );
+          body.scale.set(0.95, 0.85, 1.05);
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.42);
+
+          for (let s = 0; s < 3; s++) {
+            const shellRing = new THREE.Mesh(
+              this.leviathanPlateGeo,
+              this.pearlShellMat
+            );
+            shellRing.position.set(0, 0.56 - s * 0.05, -0.2 + s * 0.42);
+            shellRing.scale.setScalar(1.05 - s * 0.14);
+            group.add(shellRing);
+          }
+
+          this.attachOrganToCreature(
+            group,
+            attachedOrgans,
+            'chitin_spike',
+            0,
+            0.05,
+            -1.48,
+            0,
+            1.25
+          );
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.52,
+              0.24,
+              -0.98,
+              side * 0.35,
+              0.92,
+              false
+            );
+          }
+          for (const tx of [-0.22, 0, 0.22]) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.pearlShellMat,
+              tx,
+              -0.06,
+              1.38,
+              4,
+              0.34,
+              0.78,
+              tx * 0.15,
+              0.16,
+              tx * 2.0
+            );
+          }
+          break;
+        }
+
+        case 'triturador_fumarola': {
+          // 21. Triturador de Grieta (Neutral ⚪ Tier 3): Heavy armored beast with dark basalt carapace + slow crushing mandibles + armored eyes + heavy tail club & flagella
+          const body = new THREE.Mesh(
+            this.predatorBodyGeo,
+            this.trituradorBodyMat
+          );
+          body.scale.set(1.24, 0.92, 1.18);
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.5);
+
+          for (let s = 0; s < 3; s++) {
+            const plate = new THREE.Mesh(
+              this.leviathanPlateGeo,
+              this.basaltArmorMat
+            );
+            plate.position.set(0, 0.62 - s * 0.06, -0.38 + s * 0.58);
+            plate.scale.setScalar(1.18);
+            group.add(plate);
+          }
+
+          mandibleLeft = this.buildSerratedMandible(
+            -1,
+            this.pearlShellMat,
+            this.eyeScleraMat,
+            1.35
+          );
+          mandibleLeft.position.set(-0.58, -0.06, -1.42);
+          mandibleLeft.rotation.y = -0.26;
+          group.add(mandibleLeft);
+
+          mandibleRight = this.buildSerratedMandible(
+            1,
+            this.pearlShellMat,
+            this.eyeScleraMat,
+            1.35
+          );
+          mandibleRight.position.set(0.58, -0.06, -1.42);
+          mandibleRight.rotation.y = 0.26;
+          group.add(mandibleRight);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.62,
+              0.28,
+              -0.96,
+              side * 0.22,
+              0.92,
+              true,
+              true,
+              this.basaltArmorMat
+            );
+          }
+          this.attachOrganToCreature(
+            group,
+            attachedOrgans,
+            'weapon_tail_club',
+            0,
+            0,
+            1.52,
+            Math.PI,
+            1.35
+          );
+          for (const side of [-1, 1] as const) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.trituradorBodyMat,
+              side * 0.34,
+              -0.06,
+              1.38,
+              4,
+              0.36,
+              0.92,
+              side * 0.14,
+              0.16,
+              side > 0 ? Math.PI : 0
+            );
+          }
+          break;
+        }
+
+        case 'aguijon_electrico': {
+          // 22. Aguijón Eléctrico (Hostile 🔴 Tier 2): Elongated violet-red fusiform hunter + feline frontal eyes + caudal stinger + bioelectric discharge rings + whip flagella
+          const body = new THREE.Mesh(
+            this.elongatedBodyGeo,
+            this.aguijonBodyMat
+          );
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.42);
+
+          mandibleLeft = this.buildSerratedMandible(
+            -1,
+            this.hunterMandibleMat,
+            this.eyeScleraMat,
+            0.96
+          );
+          mandibleLeft.position.set(-0.42, -0.04, -1.52);
+          mandibleLeft.rotation.y = -0.22;
+          group.add(mandibleLeft);
+
+          mandibleRight = this.buildSerratedMandible(
+            1,
+            this.hunterMandibleMat,
+            this.eyeScleraMat,
+            0.96
+          );
+          mandibleRight.position.set(0.42, -0.04, -1.52);
+          mandibleRight.rotation.y = 0.22;
+          group.add(mandibleRight);
+
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.44,
+              0.28,
+              -1.15,
+              side * 0.14,
+              0.95,
+              true,
+              true,
+              this.hunterMandibleMat
+            );
+          }
+          this.attachOrganToCreature(
+            group,
+            attachedOrgans,
+            'chitin_spike',
+            0,
+            0.08,
+            1.62,
+            Math.PI,
+            1.28
+          );
+          this.addBioelectricArcs(group, electricArcMeshes, 3, 1.05);
+          for (const side of [-1, 1] as const) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.aguijonBodyMat,
+              side * 0.24,
+              0,
+              1.48,
+              5,
+              0.36,
+              0.92,
+              side * 0.1,
+              0.22,
+              side > 0 ? Math.PI * 0.6 : 0
+            );
+          }
+          break;
+        }
+
+        case 'leviatan_sauro': {
+          // 23. Leviatán Hendidor (Hostile 🔴 Tier 3): Colossal apex predator + dark crimson armored head + multiple converging stalker eyes + double serrated mandibles + 3 whip flagella
+          const body = new THREE.Mesh(this.predatorBodyGeo, this.sauroBodyMat);
+          body.scale.set(1.22, 0.9, 1.28);
+          group.add(body);
+          coreMesh = new THREE.Mesh(this.predatorCoreGeo, coreMat);
+          coreMesh.scale.setScalar(1.15);
+          group.add(coreMesh);
+          this.addInternalOrganelles(group, organelleMeshes, coreMat, 0.52);
+
+          for (let s = 0; s < 3; s++) {
+            const plate = new THREE.Mesh(
+              this.leviathanPlateGeo,
+              this.hunterMandibleMat
+            );
+            plate.position.set(0, 0.62 - s * 0.06, -0.42 + s * 0.62);
+            plate.scale.setScalar(1.15);
+            group.add(plate);
+          }
+
+          mandibleLeft = this.buildSerratedMandible(
+            -1,
+            this.hunterMandibleMat,
+            this.eyeScleraMat,
+            1.42
+          );
+          mandibleLeft.position.set(-0.62, -0.05, -1.48);
+          mandibleLeft.rotation.y = -0.25;
+          group.add(mandibleLeft);
+
+          mandibleRight = this.buildSerratedMandible(
+            1,
+            this.hunterMandibleMat,
+            this.eyeScleraMat,
+            1.42
+          );
+          mandibleRight.position.set(0.62, -0.05, -1.48);
+          mandibleRight.rotation.y = 0.25;
+          group.add(mandibleRight);
+
+          // Inner secondary pair of serrated fangs
+          for (const side of [-1, 1] as const) {
+            const innerJaw = this.buildSerratedMandible(
+              side,
+              this.leviathanMandibleMat,
+              this.eyeScleraMat,
+              0.92
+            );
+            innerJaw.position.set(side * 0.32, -0.12, -1.42);
+            innerJaw.rotation.y = side * 0.16;
+            group.add(innerJaw);
+          }
+
+          // Multiple converging stalker eyes (4 eyes)
+          for (const side of [-1, 1] as const) {
+            this.addExpressiveEye(
+              group,
+              side * 0.54,
+              0.3,
+              -1.02,
+              side * 0.14,
+              0.96,
+              true,
+              true,
+              this.hunterMandibleMat
+            );
+            this.addExpressiveEye(
+              group,
+              side * 0.72,
+              0.18,
+              -0.72,
+              side * 0.28,
+              0.76,
+              true,
+              true,
+              this.hunterMandibleMat
+            );
+          }
+
+          for (const tx of [-0.32, 0, 0.32]) {
+            this.addArticulatedFlagellum(
+              group,
+              flagellaChains,
+              tailSegments,
+              this.sauroBodyMat,
+              tx,
+              0,
+              1.48,
+              5,
+              0.38,
+              1.05,
+              tx * 0.18,
+              0.22,
+              tx * 1.9
+            );
+          }
+          break;
+        }
+
         default: {
           // HERBIVORE ("Célula Filtradora")
           // Emerald/turquoise translucent capsule + glowing nucleus & chloroplasts + feathery oral cilia wheel + large peaceful lateral eyes + lateral cilia + 2 fine rear flagella
@@ -2508,11 +3436,17 @@ export class PredatorManager {
         }
       }
 
-      // Tactical State Indicator Ring underneath
+      // Unified Ground Attitude Circle (Green 0x22c55e for Herbivores, White 0xf8fafc for Neutral, Red 0xef4444 for Hostile)
+      const initialRingColor =
+        profile.attitude === 'herbivore'
+          ? 0x22c55e
+          : profile.attitude === 'neutral'
+          ? 0xf8fafc
+          : 0xef4444;
       const stateRingMat = new THREE.MeshBasicMaterial({
-        color: profile.isHerbivore ? 0x2dd4bf : 0xf59e0b,
+        color: initialRingColor,
         transparent: true,
-        opacity: 0.28,
+        opacity: 0.45,
         side: THREE.DoubleSide,
         depthWrite: false,
       });
@@ -2520,22 +3454,6 @@ export class PredatorManager {
       const ringMesh = new THREE.Mesh(this.ringGeo, stateRingMat);
       ringMesh.position.y = -0.95;
       group.add(ringMesh);
-
-      // Golden/Emerald Outer Rim Glow when organism carries an uncatalogued adaptation
-      const uncataloguedRimMat = new THREE.MeshBasicMaterial({
-        color: 0xfacc15,
-        transparent: true,
-        opacity: 0.55,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-      this.disposableMaterials.push(uncataloguedRimMat);
-      const uncataloguedRimMesh = new THREE.Mesh(
-        this.uncataloguedRimGeo,
-        uncataloguedRimMat
-      );
-      uncataloguedRimMesh.position.y = -0.92;
-      group.add(uncataloguedRimMesh);
 
       // Pre-allocated Terrestrial Legs Group (4 legs, shown in Creature Stage)
       const legsGroup = new THREE.Group();
@@ -2560,19 +3478,6 @@ export class PredatorManager {
         legs.push(legMesh);
       }
       group.add(legsGroup);
-
-      // Dorsal Uncatalogued Gene Carrier Marker (Crystal + Golden Halo)
-      const geneMarkerGroup = new THREE.Group();
-      geneMarkerGroup.position.set(0, 1.38, 0);
-      const geneMarkerCrystal = new THREE.Mesh(
-        this.geneCrystalGeo,
-        this.geneCrystalMat
-      );
-      const geneMarkerHalo = new THREE.Mesh(this.geneHaloGeo, this.geneHaloMat);
-      geneMarkerHalo.position.y = -0.18;
-      geneMarkerGroup.add(geneMarkerCrystal);
-      geneMarkerGroup.add(geneMarkerHalo);
-      group.add(geneMarkerGroup);
 
       // 3D Circular Health Bar Ring (ShaderMaterial around/above the organism, visible only when damaged/in combat)
       const healthRingMat = new THREE.ShaderMaterial({
@@ -2625,6 +3530,7 @@ export class PredatorManager {
         stunTimer: 0,
         poisonTimer: 0,
         poisonTickTimer: 0,
+        provokedTimer: 0,
         socialCooldown: 0,
         wanderTarget: new THREE.Vector3(),
         wanderRetargetTimer: 0,
@@ -2653,12 +3559,8 @@ export class PredatorManager {
         legsGroup,
         legs,
         stateRingMat,
-        uncataloguedRimMat,
-        uncataloguedRimMesh,
         coreMat,
         geneticTraits: [...profile.primaryTraits],
-        geneMarkerGroup,
-        geneMarkerCrystal,
       };
 
       this.organisms.push(entity);
@@ -2787,22 +3689,22 @@ export class PredatorManager {
   ): void {
     const total = this.organisms.length;
     const angle = (index / total) * Math.PI * 2 + Math.random() * 0.5;
-    // Distribute Tiers across the 240m arena so the player encounters Tier 1 nearby, Tier 2 mid-range, Tier 3 deeper out
+    // Distribute Tiers across the expanded 320m arena: Tier 1 inner/mid, Tier 2 mid/outer, Tier 3 colossi in deep outer reefs
     const minDist =
       entity.profile.tier === 1
-        ? 16.0
+        ? 18.0
         : entity.profile.tier === 2
-        ? 28.0
-        : 46.0;
+        ? 38.0
+        : 75.0;
     const maxExtra =
       entity.profile.tier === 1
-        ? 95.0
+        ? 125.0
         : entity.profile.tier === 2
-        ? 145.0
-        : 170.0;
+        ? 195.0
+        : 225.0;
     const radius = Math.min(
-      GAME_CONFIG.WORLD.ARENA_RADIUS - 12,
-      minDist + ((index * 19) % maxExtra) + Math.random() * 14
+      GAME_CONFIG.WORLD.ARENA_RADIUS - 14,
+      minDist + ((index * 23) % maxExtra) + Math.random() * 18
     );
 
     entity.position.set(
@@ -2823,6 +3725,7 @@ export class PredatorManager {
     entity.stunTimer = 0;
     entity.poisonTimer = 0;
     entity.poisonTickTimer = 0;
+    entity.provokedTimer = 0;
     entity.socialCooldown = 0;
     entity.health = entity.maxHealth;
     entity.combatRevealTimer = 0;
@@ -2937,6 +3840,7 @@ export class PredatorManager {
       if (!p.active) continue;
 
       p.state = 'DEAMBULAR';
+      p.provokedTimer = 0;
       p.lungeTimer = 0;
       p.attackCooldown = Math.max(p.attackCooldown, 3.2);
       p.currentSpeed = p.profile.wanderSpeed * 0.85;
@@ -3117,6 +4021,12 @@ export class PredatorManager {
 
     if (killedByPlayer) {
       audioManager.playBiteAttack();
+      if (p.profile.attitude === 'herbivore' && p.health > 0) {
+        p.state = 'HUIR';
+      } else if (p.profile.attitude === 'neutral' && p.health > 0) {
+        p.provokedTimer = 14.0;
+        p.state = 'PERSEGUIR';
+      }
     }
 
     if (p.health <= 0) {
@@ -3331,6 +4241,9 @@ export class PredatorManager {
       if (p.combatRevealTimer > 0) {
         p.combatRevealTimer = Math.max(0, p.combatRevealTimer - safeDelta);
       }
+      if (p.provokedTimer > 0) {
+        p.provokedTimer = Math.max(0, p.provokedTimer - safeDelta);
+      }
 
       // Apply physical knockback displacement with water damping
       if (p.knockbackVelocity.lengthSq() > 0.01) {
@@ -3381,22 +4294,10 @@ export class PredatorManager {
         dxToPlayer * dxToPlayer + dzToPlayer * dzToPlayer
       );
 
-      // Check if this organism carries any uncatalogued adaptation for the 3D golden/emerald rim & radar
+      // Check if this organism carries any uncatalogued adaptation for HUD telemetry
       const carriesUncatalogued = discoveredIds
         ? p.geneticTraits.some((traitId) => !discoveredIds.has(traitId))
         : false;
-      p.geneMarkerGroup.visible = carriesUncatalogued;
-      p.uncataloguedRimMesh.visible = carriesUncatalogued;
-      if (carriesUncatalogued && distToPlayer <= 110) {
-        p.geneMarkerCrystal.rotation.y += safeDelta * 2.8;
-        p.geneMarkerGroup.position.y =
-          1.38 + Math.sin(elapsedTime * 4.2 + p.id) * 0.14;
-        const rimPulse = 0.4 + Math.sin(elapsedTime * 4.5 + p.id) * 0.22;
-        p.uncataloguedRimMat.opacity = rimPulse;
-        p.uncataloguedRimMat.color.setHex(
-          Math.sin(elapsedTime * 3.0 + p.id) > 0 ? 0xfacc15 : 0x10b981
-        );
-      }
 
       // Animate attached 3D organs when within visible camera frustum range (< 95m)
       if (distToPlayer <= 95) {
@@ -3679,6 +4580,27 @@ export class PredatorManager {
         this.pickWanderTarget(p);
       }
 
+      // DevTools Freeze AI: hold organisms in place with idle breathing/shader animation and no hostile attacks
+      if (this.isAIFrozen) {
+        p.state = 'DEAMBULAR';
+        p.currentSpeed = 0;
+        p.lungeTimer = 0;
+        p.position.y =
+          GAME_CONFIG.WORLD.SWIM_PLANE_Y +
+          depthOffsetY +
+          Math.sin(elapsedTime * 2.2 + p.id) * 0.1;
+        this.animateBiologicalAnatomy(p, elapsedTime, safeDelta, 0.35);
+        this.telemetryCache[i].state = p.state;
+        this.telemetryCache[i].distanceToPlayer = distToPlayer;
+        if (distToPlayer < nearestDistance) {
+          nearestDistance = distToPlayer;
+          nearestState = p.state;
+          nearestSpeciesName = p.speciesName;
+          nearestHasUncataloguedGene = carriesUncatalogued;
+        }
+        continue;
+      }
+
       const poisonSpeedFactor = p.poisonTimer > 0 ? 0.55 : 1.0;
 
       // Query spatial neighbors around `p` (32m cell + adjacent cells) for O(1) AI interactions
@@ -3770,14 +4692,8 @@ export class PredatorManager {
         if (p.state === 'HUIR') {
           _toTarget.set(-closestThreatDx, 0, -closestThreatDz);
           targetSpeed = p.profile.activeSpeed * locoFactor * poisonSpeedFactor;
-          p.stateRingMat.color.setHex(
-            p.hitFlashTimer > 0
-              ? 0xf43f5e
-              : p.poisonTimer > 0
-              ? 0x84cc16
-              : 0x38bdf8
-          );
-          p.stateRingMat.opacity = 0.65;
+          p.stateRingMat.color.setHex(0x10b981);
+          p.stateRingMat.opacity = 0.85;
           p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.4 : 1.3;
         } else {
           p.wanderRetargetTimer -= safeDelta;
@@ -3790,23 +4706,8 @@ export class PredatorManager {
             _toTarget.y = 0;
           }
 
-          p.stateRingMat.color.setHex(
-            p.hitFlashTimer > 0
-              ? 0xf43f5e
-              : p.socialCooldown > 0
-              ? 0x4ade80
-              : p.poisonTimer > 0
-              ? 0x84cc16
-              : 0x2dd4bf
-          );
-          p.stateRingMat.opacity =
-            p.hitFlashTimer > 0
-              ? 0.85
-              : p.socialCooldown > 0
-              ? 0.78
-              : p.poisonTimer > 0
-              ? 0.55
-              : 0.24;
+          p.stateRingMat.color.setHex(0x22c55e);
+          p.stateRingMat.opacity = 0.45;
           p.coreMat.emissiveIntensity =
             p.hitFlashTimer > 0 ? 2.2 : p.socialCooldown > 0 ? 1.4 : 0.75;
         }
@@ -3880,47 +4781,72 @@ export class PredatorManager {
         continue;
       }
 
-      // --- 2. CARNIVORE / TERRITORIAL PREDATOR LOGIC ---
-      // Find nearest active prey in the SpatialHashGrid neighborhood for AI-vs-AI battles!
+      // --- 2. CARNIVORE / NEUTRAL TERRITORIAL / HOSTILE PREDATOR LOGIC ---
+      const isNeutral = p.profile.attitude === 'neutral';
+
+      // If player aggressively rams/collides into a Neutral creature, provoke it!
+      if (isNeutral && distToPlayer <= 2.65 && !isPlayerAirborne) {
+        p.provokedTimer = 14.0;
+        if (p.state === 'DEAMBULAR') {
+          p.state = 'PERSEGUIR';
+        }
+      }
+
+      // Effective detection radius against the player: 0 for unprovoked Neutral creatures
+      const effectivePlayerDetectionRadius =
+        isNeutral && p.provokedTimer <= 0 ? 0 : p.profile.detectionRadius;
+
+      // Find nearest active AI prey in the SpatialHashGrid neighborhood (only Hostile predators actively hunt AI prey unprovoked)
       let nearestHerbivore: OrganismEntity | null = null;
       let distToHerbivore = Infinity;
-      for (let j = 0; j < neighbors.length; j++) {
-        const candidate = neighbors[j];
-        if (!candidate.active || candidate.dyingTimer > 0 || candidate.id === p.id) {
-          continue;
-        }
-        // Predators hunt herbivores or lower-tier organisms
-        if (
-          !candidate.profile.isHerbivore &&
-          candidate.profile.tier >= p.profile.tier
-        ) {
-          continue;
-        }
-        const hDx = candidate.position.x - p.position.x;
-        const hDz = candidate.position.z - p.position.z;
-        const hDist = Math.sqrt(hDx * hDx + hDz * hDz);
-        if (hDist < distToHerbivore) {
-          distToHerbivore = hDist;
-          nearestHerbivore = candidate;
+      if (!isNeutral) {
+        for (let j = 0; j < neighbors.length; j++) {
+          const candidate = neighbors[j];
+          if (!candidate.active || candidate.dyingTimer > 0 || candidate.id === p.id) {
+            continue;
+          }
+          if (
+            !candidate.profile.isHerbivore &&
+            candidate.profile.tier >= p.profile.tier
+          ) {
+            continue;
+          }
+          const hDx = candidate.position.x - p.position.x;
+          const hDz = candidate.position.z - p.position.z;
+          const hDist = Math.sqrt(hDx * hDx + hDz * hDz);
+          if (hDist < distToHerbivore) {
+            distToHerbivore = hDist;
+            nearestHerbivore = candidate;
+          }
         }
       }
 
       const huntingHerbivore =
+        !isNeutral &&
         nearestHerbivore !== null &&
         distToHerbivore < distToPlayer &&
         distToHerbivore <= p.profile.detectionRadius;
 
       const activePreyDist = huntingHerbivore ? distToHerbivore : distToPlayer;
+      const activeDetectionRadius = huntingHerbivore
+        ? p.profile.detectionRadius
+        : effectivePlayerDetectionRadius;
       const activePreyPos =
         huntingHerbivore && nearestHerbivore
           ? nearestHerbivore.position
           : playerPosition;
 
+      if (isNeutral && p.provokedTimer <= 0 && (p.state === 'PERSEGUIR' || p.state === 'ATACAR')) {
+        p.state = 'DEAMBULAR';
+        this.pickWanderTarget(p);
+      }
+
       switch (p.state) {
         case 'DEAMBULAR':
           if (
             p.attackCooldown <= 1.5 &&
-            activePreyDist <= p.profile.detectionRadius
+            activeDetectionRadius > 0 &&
+            activePreyDist <= activeDetectionRadius
           ) {
             p.state = 'PERSEGUIR';
           }
@@ -3931,6 +4857,7 @@ export class PredatorManager {
             p.state = 'ATACAR';
           } else if (activePreyDist > p.profile.loseInterestRadius) {
             p.state = 'DEAMBULAR';
+            p.provokedTimer = 0;
             this.pickWanderTarget(p);
           }
           break;
@@ -3961,30 +4888,16 @@ export class PredatorManager {
         }
 
         targetSpeed = p.profile.wanderSpeed * locoFactor * poisonSpeedFactor;
-        p.stateRingMat.color.setHex(
-          p.hitFlashTimer > 0
-            ? 0xf43f5e
-            : p.poisonTimer > 0
-            ? 0x84cc16
-            : p.profile.tier === 3
-            ? 0xa855f7
-            : 0xf59e0b
-        );
-        p.stateRingMat.opacity = p.hitFlashTimer > 0 ? 0.88 : p.poisonTimer > 0 ? 0.6 : 0.24;
+        p.stateRingMat.color.setHex(isNeutral ? 0xf8fafc : 0xef4444);
+        p.stateRingMat.opacity = 0.45;
         p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.4 : 0.65;
       } else if (p.state === 'PERSEGUIR') {
         _toTarget.subVectors(activePreyPos, p.position);
         _toTarget.y = 0;
         targetSpeed = p.profile.activeSpeed * locoFactor * poisonSpeedFactor;
 
-        p.stateRingMat.color.setHex(
-          p.hitFlashTimer > 0
-            ? 0xf43f5e
-            : p.poisonTimer > 0
-            ? 0x84cc16
-            : 0xf97316
-        );
-        p.stateRingMat.opacity = p.hitFlashTimer > 0 ? 0.9 : 0.58;
+        p.stateRingMat.color.setHex(isNeutral ? 0xf8fafc : 0xf43f5e);
+        p.stateRingMat.opacity = 0.85;
         p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.4 : 1.25;
       } else {
         // ATACAR (against either AI Prey or Player)
@@ -3997,7 +4910,7 @@ export class PredatorManager {
           locoFactor *
           poisonSpeedFactor;
 
-        p.stateRingMat.color.setHex(0xef4444);
+        p.stateRingMat.color.setHex(isNeutral ? 0xf8fafc : 0xef4444);
         p.stateRingMat.opacity = 0.85;
         p.coreMat.emissiveIntensity = p.hitFlashTimer > 0 ? 2.6 : 1.8;
 
@@ -4234,6 +5147,60 @@ export class PredatorManager {
       }
     }
     return count;
+  }
+
+  public isAIFrozen = false;
+
+  public setAIFrozen(frozen: boolean): void {
+    this.isAIFrozen = frozen;
+  }
+
+  public clearAllOrganisms(): void {
+    for (let i = 0; i < this.organisms.length; i++) {
+      const p = this.organisms[i];
+      p.active = false;
+      p.group.visible = false;
+      p.healthRingMesh.visible = false;
+      p.respawnTimer = 45.0;
+    }
+  }
+
+  public forceSpawnSpeciesNearPlayer(
+    species: SpeciesType,
+    playerPosition: THREE.Vector3,
+    headingAngle = 0
+  ): string {
+    const target =
+      this.organisms.find((o) => o.profile.species === species && !o.active) ??
+      this.organisms.find((o) => o.profile.species === species) ??
+      this.organisms[0];
+    if (!target) return 'Criatura';
+
+    const forwardX = -Math.sin(headingAngle);
+    const forwardZ = -Math.cos(headingAngle);
+    const lateralX = -forwardZ;
+    const lateralZ = forwardX;
+    const jitterLat = (Math.random() - 0.5) * 4.5;
+    const distAhead = 10.5 + Math.random() * 2.5;
+
+    target.position.set(
+      playerPosition.x + forwardX * distAhead + lateralX * jitterLat,
+      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+      playerPosition.z + forwardZ * distAhead + lateralZ * jitterLat
+    );
+    target.headingAngle = headingAngle + Math.PI;
+    target.group.position.copy(target.position);
+    target.group.rotation.set(0, target.headingAngle, 0);
+    target.active = true;
+    target.group.visible = true;
+    target.dyingTimer = 0;
+    target.stunTimer = 0;
+    target.poisonTimer = 0;
+    target.health = target.maxHealth;
+    target.state = 'DEAMBULAR';
+    target.attackCooldown = 1.5;
+    this.pickWanderTarget(target);
+    return target.speciesName;
   }
 
   public getActiveOrganismsForFoodCollision(): readonly {

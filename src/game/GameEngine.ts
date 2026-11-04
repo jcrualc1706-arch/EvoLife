@@ -5,7 +5,16 @@ import { GAME_CONFIG } from './config';
 import {
   ADAPTATION_CATALOG,
   INITIAL_INSTALLED_ADAPTATIONS,
+  MAX_CREATURE_COMPLEXITY,
+  computeCreatureComplexity,
+  computeCreatureStats,
   computeStackedMultiplier,
+  getOrganComplexityCost,
+  isArmAdaptation,
+  isCellOnlyAdaptation,
+  isFootAdaptation,
+  isHandAdaptation,
+  isLegAdaptation,
   normalizeAdaptationId,
 } from './evolutionData';
 import { FoodManager } from './FoodManager';
@@ -14,34 +23,70 @@ import { InputController } from './InputController';
 import { IntroCinematicController } from './IntroCinematicController';
 import { PlayerCell } from './PlayerCell';
 import { PredatorManager } from './PredatorManager';
-import { SaveSystem, SlotSavePayload } from './SaveSystem';
+import {
+  PLANET_CATALOG,
+  SaveSystem,
+  SlotSavePayload,
+} from './SaveSystem';
 import { SceneEnvironment } from './SceneEnvironment';
 import { SolarSystemView } from './SolarSystemView';
 import {
+  BrainCinematicState,
   CellBodyShape,
   CellColorTheme,
   CellularEvolutionSlot,
   CellularGrowthStage,
+  CreatureBodyArchetype,
+  CreatureMorphologySliders,
+  CreaturePaintConfig,
+  DEFAULT_CREATURE_MORPHOLOGY,
+  DEFAULT_CREATURE_PAINT,
+  DEFAULT_CREATURE_STATS,
   DEFAULT_GAME_SETTINGS,
   DEFAULT_ORGAN_MORPHOLOGY,
   DietType,
   DiscoveryState,
+  EditorPreviewAction,
+  EditorSelectionTarget,
   EvolutionaryStage,
   GameSettings,
   GameStatus,
+  BodySegmentConfig,
+  BodySegmentId,
+  BODY_SEGMENT_ORDER,
   GameUISnapshot,
   GenesisConfig,
   InnateTraitId,
   InputState,
   IntroCinematicState,
+  MORPHOLOGY_SCALE_LIMITS,
   PlacedOrganInstance,
   PlacedOrganMorphology,
   PlanetSlotMetadata,
+  PlanetTheme,
   PlanetaryTransitionState,
   PlayerStats,
   PredatorBehaviorState,
+  SpeciesType,
+  SpineVertebraNode,
   UnlockedBannerNotification,
+  createDefaultBodySegments,
+  createDefaultSpineNodes,
 } from './types';
+
+interface EditorHistorySnapshot {
+  spineLength: number;
+  spineSegments: 1 | 2 | 3;
+  torsoRadii: [number, number, number];
+  spineNodes: SpineVertebraNode[];
+  bodySegments?: BodySegmentConfig[];
+  creatureMorphology?: CreatureMorphologySliders;
+  placedOrgans: PlacedOrganInstance[];
+  paintConfig: CreaturePaintConfig;
+  adn: number;
+  bodyShape: CellBodyShape;
+  colorTheme: CellColorTheme;
+}
 
 export class GameEngine {
   private readonly container: HTMLElement;
@@ -74,6 +119,10 @@ export class GameEngine {
   private installedAdaptations: Record<string, number> = {};
   private readonly unlockedSlotIds = new Set<string>();
   private selectedPlacedInstanceId: string | null = null;
+  private selectedBodySegmentId: BodySegmentId | null = 'pecho';
+  private selectedSphereIndex: number | null = 2;
+  private hoveredBodySegmentId: BodySegmentId | null = null;
+  private editorSelectionTarget: EditorSelectionTarget = 'body';
   private organInstanceCounter = 1;
   private static readonly SETTINGS_STORAGE_KEY = 'evolife_settings_v1';
   private lastFrameExecutionMs = 0;
@@ -90,10 +139,21 @@ export class GameEngine {
   private isActivelyRepositioning = false;
   private draggingSpineArrow: 'arrow_front' | 'arrow_rear' | null = null;
   private draggingOrientationInstanceId: string | null = null;
+  private draggingVertebraIndex: number | null = null;
+  private vertebraDragStartClient = { x: 0, y: 0 };
+  private vertebraDragStartNode: SpineVertebraNode | null = null;
+  private vertebraDragStartNodes: SpineVertebraNode[] | null = null;
+  private draggingLimbJointRole: 'proximal' | 'middle' | 'distal' | null = null;
+  private limbJointDragStartClient = { x: 0, y: 0 };
+  private limbJointDragStartMorph: PlacedOrganMorphology | null = null;
   private hoveredVertebraIndex: number | null = null;
   private hoveredVertebraSegmentIndex: 0 | 1 | 2 | null = null;
   private isRightClickOrbiting = false;
   private orbitLastClientPos = { x: 0, y: 0 };
+  private readonly editorHistoryStack: EditorHistorySnapshot[] = [];
+  private readonly editorRedoStack: EditorHistorySnapshot[] = [];
+  private lastWheelHistoryTimestamp = 0;
+  private editorPreviewAction: EditorPreviewAction = 'idle';
 
   private animationFrameId: number | null = null;
   private uiSyncAccumulator = 0;
@@ -118,6 +178,7 @@ export class GameEngine {
   // Planetary Atmospheric Entry / Orbital Ascent Cinematic State
   private planetaryTransition: PlanetaryTransitionState | undefined = undefined;
   private introCinematicState: IntroCinematicState | undefined = undefined;
+  private brainCinematicState: BrainCinematicState | undefined = undefined;
   private pendingTransitionAction: 'play_saved' | 'new_game' | 'exit_to_menu' | null =
     null;
   private pendingTransitionGenesis: GenesisConfig | undefined = undefined;
@@ -129,6 +190,10 @@ export class GameEngine {
   private respawnInvulnerabilityTimer = 0;
   private lastAttackerSpeciesName: string | null = null;
   private deathCauseDescription = 'Colapso de la membrana celular';
+
+  // DevTools / Debug Suite State
+  public isGodModeActive = false;
+  public isAIFrozen = false;
 
   private readonly onUISnapshot: (snapshot: GameUISnapshot) => void;
   private readonly boundResize: () => void;
@@ -199,6 +264,23 @@ export class GameEngine {
       () => this.togglePause(),
       () => this.toggleEditor()
     );
+    this.inputController.attachCanvas(
+      this.renderer.domElement,
+      (clientX, clientY, outWorldPos) => {
+        if (
+          this.status !== 'playing' ||
+          this.matingCallTimer > 0 ||
+          Boolean(this.planetaryTransition?.active)
+        ) {
+          return false;
+        }
+        if (!this.updateRaycasterFromClientCoords(clientX, clientY)) {
+          return false;
+        }
+        outWorldPos.copy(this.planeHitPoint);
+        return true;
+      }
+    );
 
     this.stats = this.createInitialStats();
     this.loadSettingsFromLocalStorage();
@@ -231,6 +313,7 @@ export class GameEngine {
     );
 
     this.resetAdaptationStateToInitial();
+    this.syncActivePlanetPalette(this.activeSlotId);
     this.loadFromLocalStorage(this.activeSlotId);
     this.syncCatalogAndOrganismState();
     this.syncWorldStageScale(this.stats.growthStage, true);
@@ -311,11 +394,11 @@ export class GameEngine {
   }
 
   private static getArenaRadiusForStage(stage: CellularGrowthStage): number {
-    if (stage === 1) return 90;
-    if (stage === 2) return 135;
-    if (stage === 3) return 180;
-    if (stage === 4) return 220;
-    return 250;
+    if (stage === 1) return 110;
+    if (stage === 2) return 165;
+    if (stage === 3) return 220;
+    if (stage === 4) return 275;
+    return GAME_CONFIG.WORLD.ARENA_RADIUS;
   }
 
   private syncWorldStageScale(
@@ -336,6 +419,14 @@ export class GameEngine {
     }
   }
 
+  public get playerCell(): PlayerCell {
+    return this.player;
+  }
+
+  public get playerStats(): PlayerStats {
+    return this.stats;
+  }
+
   private createDefaultPlacedOrgans(
     initialDiet: DietType = 'herbivore'
   ): PlacedOrganInstance[] {
@@ -351,31 +442,31 @@ export class GameEngine {
         instanceId: `organ_init_${mouthAdaptationId}`,
         adaptationId: mouthAdaptationId,
         angle: Math.PI,
-        axialOffset: -0.95,
+        axialOffset: -1.0,
         mirrorSymmetry: false,
         orientationYaw: 0,
         orientationPitch: 0,
-        morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
-      },
-      {
-        instanceId: 'organ_init_flagellum',
-        adaptationId: 'simple_flagellum',
-        angle: 0,
-        axialOffset: 0.95,
-        mirrorSymmetry: false,
-        orientationYaw: 0,
-        orientationPitch: 0,
-        morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+        morphology: { scaleOverall: 1.0, scaleWidth: 1.0, scaleHeight: 1.0 },
       },
       {
         instanceId: 'organ_init_eyes',
         adaptationId: 'eye_photoreceptor',
-        angle: Math.PI * 0.78,
-        axialOffset: -0.75,
+        angle: Math.PI * 0.82,
+        axialOffset: -0.65,
         mirrorSymmetry: true,
         orientationYaw: 0,
         orientationPitch: 0,
-        morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+        morphology: { scaleOverall: 1.0, scaleWidth: 1.0, scaleHeight: 1.0 },
+      },
+      {
+        instanceId: 'organ_init_flagellum',
+        adaptationId: 'simple_flagellum',
+        angle: 0.0,
+        axialOffset: 1.0,
+        mirrorSymmetry: false,
+        orientationYaw: 0,
+        orientationPitch: 0,
+        morphology: { scaleOverall: 1.0, scaleWidth: 1.0, scaleHeight: 1.0 },
       },
     ];
   }
@@ -488,6 +579,38 @@ export class GameEngine {
     if (id === 'grasping_arms' || id === 'acid_spit') {
       return { angle: Math.PI * 0.72, axialOffset: -0.6, mirrorSymmetry: true };
     }
+    if (isLegAdaptation(id)) {
+      const legAngles = [Math.PI * 0.42, Math.PI * 0.26, Math.PI * 0.56];
+      const angle = legAngles[stackIndex % legAngles.length];
+      return {
+        angle,
+        axialOffset: Math.cos(angle),
+        mirrorSymmetry: true,
+      };
+    }
+    if (isArmAdaptation(id)) {
+      const armAngles = [Math.PI * 0.72, Math.PI * 0.58];
+      const angle = armAngles[stackIndex % armAngles.length];
+      return {
+        angle,
+        axialOffset: Math.cos(angle),
+        mirrorSymmetry: true,
+      };
+    }
+    if (isHandAdaptation(id)) {
+      return {
+        angle: Math.PI * 0.72,
+        axialOffset: -0.62,
+        mirrorSymmetry: true,
+      };
+    }
+    if (isFootAdaptation(id)) {
+      return {
+        angle: Math.PI * 0.42,
+        axialOffset: 0.25,
+        mirrorSymmetry: true,
+      };
+    }
     if (id === 'wings_1') {
       return { angle: Math.PI * 0.5, axialOffset: 0.0, mirrorSymmetry: true };
     }
@@ -508,6 +631,9 @@ export class GameEngine {
         ? 'cyan'
         : 'emerald');
 
+    const initialOrgans = this.createDefaultPlacedOrgans(initialDiet);
+    const initialSpineNodes = createDefaultSpineNodes(5, 1.0);
+
     return {
       speciesName: genesis?.speciesName?.trim().slice(0, 28) || 'Organismo Primigenio',
       bodyShape: genesis?.bodyShape ?? 'fusiforme',
@@ -515,7 +641,14 @@ export class GameEngine {
       spineSegments: 1,
       spineLength: 1.0,
       torsoRadii: [1.0, 1.0, 1.0],
-      placedOrgans: this.createDefaultPlacedOrgans(initialDiet),
+      spineNodes: initialSpineNodes,
+      bodySegments: createDefaultBodySegments(),
+      creatureMorphology: { ...DEFAULT_CREATURE_MORPHOLOGY },
+      paintConfig: { ...DEFAULT_CREATURE_PAINT },
+      complexityScore: computeCreatureComplexity(initialSpineNodes.length, initialOrgans),
+      maxComplexity: MAX_CREATURE_COMPLEXITY,
+      symmetryEnabled: this.settings.autoBilateralSymmetry,
+      placedOrgans: initialOrgans,
       evolutionaryStage: 'cell_stage',
       innateTrait,
       health: GAME_CONFIG.PLAYER.INITIAL_HEALTH,
@@ -526,7 +659,7 @@ export class GameEngine {
       totalAdnEarned: GAME_CONFIG.PLAYER.INITIAL_ADN,
       growthStage: 1,
       nextStageAdnThreshold: 50,
-      activeArenaRadius: 90,
+      activeArenaRadius: 110,
       diet: initialDiet,
       foodEaten: 0,
       survivalTime: 0,
@@ -543,6 +676,7 @@ export class GameEngine {
       electricLevel: 0,
       defensePercent: 0,
       visionLevel: 1,
+      creatureStats: { ...DEFAULT_CREATURE_STATS },
     };
   }
 
@@ -554,6 +688,23 @@ export class GameEngine {
       }
     }
     const initialDiet = genesis?.initialDiet ?? 'herbivore';
+    const mouthAdaptationId =
+      initialDiet === 'carnivore'
+        ? 'mouth_jaw'
+        : initialDiet === 'omnivore'
+        ? 'mouth_proboscis'
+        : 'mouth_filter';
+
+    this.installedAdaptations = {
+      [mouthAdaptationId]: 1,
+      eye_photoreceptor: 1,
+      simple_flagellum: 1,
+    };
+    this.unlockedSlotIds.clear();
+    this.unlockedSlotIds.add(mouthAdaptationId);
+    this.unlockedSlotIds.add('eye_photoreceptor');
+    this.unlockedSlotIds.add('simple_flagellum');
+
     this.stats.placedOrgans = this.createDefaultPlacedOrgans(initialDiet);
     this.selectedPlacedInstanceId = null;
     for (const org of this.stats.placedOrgans) {
@@ -735,6 +886,10 @@ export class GameEngine {
           spineSegments: this.stats.spineSegments,
           spineLength: this.stats.spineLength,
           torsoRadii: this.stats.torsoRadii,
+          spineNodes: this.stats.spineNodes,
+          bodySegments: this.stats.bodySegments,
+          creatureMorphology: this.stats.creatureMorphology,
+          paintConfig: this.stats.paintConfig,
           placedOrgans: this.stats.placedOrgans,
           evolutionaryStage: this.stats.evolutionaryStage,
           innateTrait: this.stats.innateTrait,
@@ -807,6 +962,21 @@ export class GameEngine {
                 0.5,
                 2.5
               ),
+              upperJointAngle: THREE.MathUtils.clamp(
+                Number(rawMorph?.upperJointAngle) || 0,
+                -Math.PI * 0.48,
+                Math.PI * 0.48
+              ),
+              middleJointAngle: THREE.MathUtils.clamp(
+                Number(rawMorph?.middleJointAngle) || 0,
+                -Math.PI * 0.55,
+                Math.PI * 0.55
+              ),
+              boneLength: THREE.MathUtils.clamp(
+                Number(rawMorph?.boneLength) || 1.0,
+                0.55,
+                1.85
+              ),
               colorOverride:
                 typeof rawMorph?.colorOverride === 'string' &&
                 rawMorph.colorOverride.trim().length > 0
@@ -831,6 +1001,14 @@ export class GameEngine {
               localYaw: yaw,
               localPitch: pitch,
               morphology: restoredMorph,
+              targetSegmentId:
+                item.targetSegmentId === 'cabeza' ||
+                item.targetSegmentId === 'cuello' ||
+                item.targetSegmentId === 'pecho' ||
+                item.targetSegmentId === 'abdomen' ||
+                item.targetSegmentId === 'cola'
+                  ? item.targetSegmentId
+                  : undefined,
             });
           }
         }
@@ -909,10 +1087,103 @@ export class GameEngine {
         ];
       }
 
+      if (
+        Array.isArray(parsed.stats.spineNodes) &&
+        parsed.stats.spineNodes.length >= 3
+      ) {
+        this.stats.spineNodes = parsed.stats.spineNodes.slice(0, 9).map((n) => ({
+          x: Number(n.x) || 0,
+          y: Number(n.y) || 0,
+          z: Number(n.z) || 0,
+          radius: THREE.MathUtils.clamp(Number(n.radius) || 1.0, 0.4, 2.5),
+          pitch: Number(n.pitch) || 0,
+          yaw: Number(n.yaw) || 0,
+        }));
+      } else {
+        this.stats.spineNodes = createDefaultSpineNodes(5, this.stats.spineLength);
+      }
+
+      if (
+        Array.isArray(parsed.stats.bodySegments) &&
+        parsed.stats.bodySegments.length === 5
+      ) {
+        const defSegs = createDefaultBodySegments();
+        this.stats.bodySegments = defSegs.map((def, i) => {
+          const rawSeg = parsed.stats.bodySegments?.[i];
+          if (!rawSeg) return def;
+          return {
+            id: def.id,
+            label: def.label,
+            radius: THREE.MathUtils.clamp(
+              Number(rawSeg.radius) || def.radius,
+              MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+              MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+            ),
+            lengthZ: THREE.MathUtils.clamp(Number(rawSeg.lengthZ) || def.lengthZ, 0.5, 2.0),
+            pitchAngle: THREE.MathUtils.clamp(Number(rawSeg.pitchAngle) || 0, -0.8, 0.8),
+            yawAngle: THREE.MathUtils.clamp(Number(rawSeg.yawAngle) || 0, -0.6, 0.6),
+          };
+        });
+      } else {
+        this.stats.bodySegments = createDefaultBodySegments();
+      }
+
+      if (
+        parsed.stats.creatureMorphology &&
+        typeof parsed.stats.creatureMorphology === 'object'
+      ) {
+        const rawArch = parsed.stats.creatureMorphology.archetype;
+        const validArch: CreatureBodyArchetype =
+          rawArch === 'bipedo_agil' ||
+          rawArch === 'cuadrupedo_robusto' ||
+          rawArch === 'reptiliano_rastreador' ||
+          rawArch === 'humanoide_erguido' ||
+          rawArch === 'serpentino'
+            ? rawArch
+            : DEFAULT_CREATURE_MORPHOLOGY.archetype;
+        this.stats.creatureMorphology = {
+          archetype: validArch,
+          heightScale: THREE.MathUtils.clamp(
+            Number(parsed.stats.creatureMorphology.heightScale) || 1.0,
+            0.7,
+            1.6
+          ),
+          widthScale: THREE.MathUtils.clamp(
+            Number(parsed.stats.creatureMorphology.widthScale) || 1.0,
+            0.6,
+            1.8
+          ),
+          musculatureScale: THREE.MathUtils.clamp(
+            Number(parsed.stats.creatureMorphology.musculatureScale) || 1.0,
+            0.7,
+            1.9
+          ),
+        };
+      } else {
+        this.stats.creatureMorphology = { ...DEFAULT_CREATURE_MORPHOLOGY };
+      }
+
+      if (parsed.stats.paintConfig && typeof parsed.stats.paintConfig === 'object') {
+        this.stats.paintConfig = {
+          ...DEFAULT_CREATURE_PAINT,
+          ...parsed.stats.paintConfig,
+        };
+      } else {
+        this.stats.paintConfig = { ...DEFAULT_CREATURE_PAINT };
+      }
+
       const evoStageRaw = parsed.stats.evolutionaryStage;
       const validEvoStage: EvolutionaryStage =
         evoStageRaw === 'creature_stage' ? 'creature_stage' : 'cell_stage';
       this.stats.evolutionaryStage = validEvoStage;
+
+      if (validEvoStage === 'creature_stage') {
+        for (const def of ADAPTATION_CATALOG) {
+          if (def.stage === 'creature_stage' || !isCellOnlyAdaptation(def.id)) {
+            this.discoveredAdaptationIds.add(def.id);
+          }
+        }
+      }
 
       const traitRaw = parsed.stats.innateTrait;
       this.stats.innateTrait =
@@ -981,8 +1252,13 @@ export class GameEngine {
         validEvoStage === 'creature_stage',
         this.stats.spineSegments,
         this.stats.spineLength,
-        this.stats.torsoRadii
+        this.stats.torsoRadii,
+        this.stats.spineNodes,
+        this.stats.paintConfig,
+        this.stats.bodySegments,
+        this.stats.creatureMorphology
       );
+      this.syncActivePlanetPalette(slotId);
       this.environment.setStageEnvironment(validEvoStage);
       this.predatorManager.setStageMode(validEvoStage);
       this.introCinematicController?.setMonumentCoreTheme(this.stats.colorTheme);
@@ -1037,15 +1313,28 @@ export class GameEngine {
     this.solarSystemView.selectSlot(slotId);
   }
 
+  public setMenuCameraMode(mode: 'title_menu' | 'planet_select'): void {
+    this.solarSystemView.setMenuCameraMode(mode);
+  }
+
   public deletePlanetSlot(slotId: number): void {
     this.planetSlots = SaveSystem.deleteSlotSave(slotId);
     this.solarSystemView.syncSlots(this.planetSlots);
     this.emitUISnapshot();
   }
 
+  private syncActivePlanetPalette(slotId = this.activeSlotId): void {
+    const slotMeta = this.planetSlots.find((s) => s.slotId === slotId);
+    const catalogDef = PLANET_CATALOG.find((p) => p.slotId === slotId);
+    const slotTheme: PlanetTheme =
+      slotMeta?.planetTheme ?? catalogDef?.planetTheme ?? 'oceanic';
+    this.environment.applyPlanetPalette(slotTheme);
+  }
+
   private executePlayPlanetSlotImmediate(slotId: number): void {
     const safeSlot = Math.max(1, Math.min(6, Math.floor(slotId)));
     this.activeSlotId = safeSlot;
+    this.syncActivePlanetPalette(safeSlot);
     this.loadFromLocalStorage(safeSlot);
     this.syncCatalogAndOrganismState();
     this.status = 'playing';
@@ -1069,8 +1358,19 @@ export class GameEngine {
         ? Math.max(1, Math.min(6, Math.floor(slotId)))
         : this.selectedMenuSlotId ?? this.activeSlotId;
     this.activeSlotId = targetSlot;
+    this.syncActivePlanetPalette(targetSlot);
     this.restartGame(genesisConfig);
-    this.saveToLocalStorage();
+
+    const config: GenesisConfig = genesisConfig ?? {
+      speciesName: this.stats.speciesName,
+      initialDiet: this.stats.diet,
+      innateTrait: this.stats.innateTrait,
+      bodyShape: this.stats.bodyShape,
+      colorTheme: this.stats.colorTheme,
+    };
+    SaveSystem.createInitialSaveData(targetSlot, config);
+    this.planetSlots = SaveSystem.loadAllPlanetSlots();
+    this.solarSystemView?.syncSlots(this.planetSlots);
   }
 
   public playPlanetSlot(slotId: number): void {
@@ -1217,6 +1517,36 @@ export class GameEngine {
     this.emitUISnapshot();
   }
 
+  public exitToMenuWithoutSaving(): void {
+    if (this.status === 'editing' || this.matingCallTimer > 0) {
+      this.setEditorSandboxIsolation(false);
+      this.player.setEditorMode(false);
+      this.cameraController.resetEditorOrbit();
+    }
+    this.matingCallTimer = 0;
+    this.player.hideMateCell();
+    this.inputController.resetInputs();
+
+    // Reload persisted slot metadata without saving recent in-memory changes
+    this.planetSlots = SaveSystem.loadAllPlanetSlots();
+    this.solarSystemView?.syncSlots(this.planetSlots);
+
+    const info = this.solarSystemView.getPlanetAtmosphereInfo(this.activeSlotId);
+    this.status = 'playing';
+    this.pendingTransitionAction = 'exit_to_menu';
+    this.transitionSwitchedScene = false;
+    this.planetaryTransition = {
+      active: true,
+      mode: 'exiting_to_orbit',
+      progress: 0,
+      atmosphereOverlayOpacity: 0,
+      atmosphereColorHex: info.atmosphereColorHex,
+      planetName: info.planetName,
+    };
+    this.timer.update();
+    this.emitUISnapshot();
+  }
+
   public manualSaveGame(): void {
     if (this.status === 'gameover' || this.stats.health <= 0) return;
     this.saveToLocalStorage();
@@ -1341,6 +1671,7 @@ export class GameEngine {
       this.renderer.toneMappingExposure =
         this.settings.graphicsQuality === 'high' ? 1.12 : 1.05;
     }
+    this.inputController.setSteeringMode(this.settings.steeringMode);
     this.environment.setParticleQuality(this.settings.graphicsQuality);
     this.environment.setUserFogDistancePercent(
       this.settings.fogDistancePercent
@@ -1534,6 +1865,8 @@ export class GameEngine {
       this.getStacks('defense_hydrothermal_carapace') > 0 ? 35 : 0;
     const shieldPlateHealthBonus =
       this.getStacks('defense_chitin_shield_plate') > 0 ? 15 : 0;
+    const plantigradeHealthBonus = this.getStacks('leg_plantigrade') * 15;
+    const brawnyArmHealthBonus = this.getStacks('arm_brawny') * 10;
 
     this.stats.maxHealth =
       GAME_CONFIG.PLAYER.MAX_HEALTH +
@@ -1541,7 +1874,9 @@ export class GameEngine {
       armorHealthBonus +
       neutralizerBonus +
       hydrothermalCarapaceBonus +
-      shieldPlateHealthBonus;
+      shieldPlateHealthBonus +
+      plantigradeHealthBonus +
+      brawnyArmHealthBonus;
     this.stats.health = Math.min(this.stats.maxHealth, this.stats.health);
 
     const chloroStacks = this.getStacks('chloroplast_1');
@@ -1571,6 +1906,11 @@ export class GameEngine {
     const tailClubStacks = this.getStacks('weapon_tail_club');
     const silicaSpiculeStacks = this.getStacks('defense_silica_spicules');
     const armsStacks = this.getStacks('grasping_arms');
+    const brawnyArms = this.getStacks('arm_brawny');
+    const prayingArms = this.getStacks('arm_praying');
+    const talonHands = this.getStacks('hand_talons');
+    const insectClawHands = this.getStacks('hand_insect_claw');
+    const ungulateLegs = this.getStacks('leg_ungulate');
     const acidStacks = this.getStacks('acid_spit');
     const poisonStacks = this.getStacks('poison_gland');
     const electricStacks = this.getStacks('electric_cell');
@@ -1597,6 +1937,11 @@ export class GameEngine {
       tailClubStacks * 20 +
       silicaSpiculeStacks * 8 +
       armsStacks * 18 +
+      brawnyArms * 10 +
+      prayingArms * 18 +
+      talonHands * 12 +
+      insectClawHands * 14 +
+      ungulateLegs * 8 +
       acidStacks * 15;
     // Carnivore serrated mandible bonus (+15% bite damage)
     this.stats.attackPower =
@@ -1612,6 +1957,9 @@ export class GameEngine {
       this.getStacks('defense_chitin_shield_plate') > 0 ? 20 : 0;
     const camoRed =
       this.getStacks('defense_camouflage_chromatophores') > 0 ? 12 : 0;
+    const reptilianLegRed = this.getStacks('leg_reptilian') * 10;
+    const armoredArmRed = this.getStacks('arm_armored') * 12;
+    const clawHandRed = insectClawHands * 5;
     const lateralRed = lateralLineStacks > 0 ? 10 : 0;
     const elasticMembraneRed =
       this.stats.innateTrait === 'elastic_membrane' ? 20 : 0;
@@ -1627,6 +1975,9 @@ export class GameEngine {
           hydroCarapaceRed +
           shieldPlateRed +
           camoRed +
+          reptilianLegRed +
+          armoredArmRed +
+          clawHandRed +
           lateralRed +
           elasticMembraneRed
       )
@@ -1640,6 +1991,18 @@ export class GameEngine {
       lateralLineStacks +
       (biolumProbeStacks > 0 ? 2 : 0) +
       (this.stats.innateTrait === 'abyssal_bioluminescence' ? 1 : 0);
+
+    // Compute Spore Terrestrial Creature Stage Stats (Locomoción, Combate, Social, Agarre)
+    this.stats.creatureStats = computeCreatureStats((id) => this.getStacks(id));
+
+    // Compute Spore Complexity Meter (Complejímetro: max 100)
+    const activeNodes = this.stats.spineNodes?.length ?? 5;
+    this.stats.complexityScore = computeCreatureComplexity(
+      activeNodes,
+      this.stats.placedOrgans
+    );
+    this.stats.maxComplexity = MAX_CREATURE_COMPLEXITY;
+    this.stats.symmetryEnabled = this.settings.autoBilateralSymmetry;
   }
 
   private addAdn(amount: number): boolean {
@@ -1706,12 +2069,486 @@ export class GameEngine {
     this.draggingCatalogAdaptationId = normId;
   }
 
+  private captureEditorSnapshot(): EditorHistorySnapshot {
+    const fallbackNodes =
+      this.stats.spineNodes && this.stats.spineNodes.length >= 3
+        ? this.stats.spineNodes
+        : createDefaultSpineNodes(5, this.stats.spineLength);
+    return {
+      spineLength: this.stats.spineLength,
+      spineSegments: this.stats.spineSegments,
+      torsoRadii: [...this.stats.torsoRadii] as [number, number, number],
+      spineNodes: fallbackNodes.map((n) => ({ ...n })),
+      bodySegments: (this.stats.bodySegments ?? createDefaultBodySegments()).map((s) => ({ ...s })),
+      creatureMorphology: {
+        ...(this.stats.creatureMorphology ?? DEFAULT_CREATURE_MORPHOLOGY),
+      },
+      placedOrgans: this.stats.placedOrgans.map((o) => ({
+        ...o,
+        morphology: { ...(o.morphology ?? DEFAULT_ORGAN_MORPHOLOGY) },
+      })),
+      paintConfig: {
+        ...(this.stats.paintConfig ?? DEFAULT_CREATURE_PAINT),
+      },
+      adn: this.stats.adn,
+      bodyShape: this.stats.bodyShape,
+      colorTheme: this.stats.colorTheme,
+    };
+  }
+
+  private pushEditorHistorySnapshot(): void {
+    if (this.status !== 'editing') return;
+    this.editorHistoryStack.push(this.captureEditorSnapshot());
+    if (this.editorHistoryStack.length > 20) {
+      this.editorHistoryStack.shift();
+    }
+    this.editorRedoStack.length = 0;
+  }
+
+  private applyEditorSnapshot(snap: EditorHistorySnapshot): void {
+    this.stats.spineLength = snap.spineLength;
+    this.stats.spineSegments = snap.spineSegments;
+    this.stats.torsoRadii = [...snap.torsoRadii] as [number, number, number];
+    this.stats.spineNodes = snap.spineNodes.map((n) => ({ ...n }));
+    if (snap.bodySegments) {
+      this.stats.bodySegments = snap.bodySegments.map((s) => ({ ...s }));
+    }
+    if (snap.creatureMorphology) {
+      this.stats.creatureMorphology = { ...snap.creatureMorphology };
+    }
+    this.stats.placedOrgans = snap.placedOrgans.map((o) => ({
+      ...o,
+      morphology: { ...(o.morphology ?? DEFAULT_ORGAN_MORPHOLOGY) },
+    }));
+    this.stats.paintConfig = { ...snap.paintConfig };
+    this.stats.adn = snap.adn;
+    this.stats.bodyShape = snap.bodyShape;
+    this.stats.colorTheme = snap.colorTheme;
+
+    if (
+      this.selectedPlacedInstanceId &&
+      !this.stats.placedOrgans.some(
+        (o) => o.instanceId === this.selectedPlacedInstanceId
+      )
+    ) {
+      this.selectedPlacedInstanceId = null;
+    }
+
+    this.player.applyMorphology(
+      this.stats.bodyShape,
+      this.stats.colorTheme,
+      this.stats.evolutionaryStage === 'creature_stage',
+      this.stats.spineSegments,
+      this.stats.spineLength,
+      this.stats.torsoRadii,
+      this.stats.spineNodes,
+      this.stats.paintConfig,
+      this.stats.bodySegments,
+      this.stats.creatureMorphology
+    );
+    this.syncCatalogAndOrganismState();
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public undoEditorAction(): void {
+    if (this.status !== 'editing' || this.editorHistoryStack.length === 0) {
+      return;
+    }
+    const previous = this.editorHistoryStack.pop()!;
+    this.editorRedoStack.push(this.captureEditorSnapshot());
+    if (this.editorRedoStack.length > 20) {
+      this.editorRedoStack.shift();
+    }
+    audioManager.playButtonClick();
+    this.applyEditorSnapshot(previous);
+    this.setEventMessage('Acción deshecha [Ctrl+Z]');
+    this.emitUISnapshot();
+  }
+
+  public redoEditorAction(): void {
+    if (this.status !== 'editing' || this.editorRedoStack.length === 0) {
+      return;
+    }
+    const next = this.editorRedoStack.pop()!;
+    this.editorHistoryStack.push(this.captureEditorSnapshot());
+    if (this.editorHistoryStack.length > 20) {
+      this.editorHistoryStack.shift();
+    }
+    audioManager.playButtonClick();
+    this.applyEditorSnapshot(next);
+    this.setEventMessage('Acción rehecha [Ctrl+Y]');
+    this.emitUISnapshot();
+  }
+
+  public setEditorPreviewAction(action: EditorPreviewAction): void {
+    this.editorPreviewAction = action;
+    this.player.setEditorPreviewAction(action);
+    audioManager.playButtonClick();
+    this.emitUISnapshot();
+  }
+
   public selectPlacedOrgan(instanceId: string | null): void {
     this.selectedPlacedInstanceId = instanceId;
+    if (instanceId !== null) {
+      this.selectedBodySegmentId = null;
+      this.selectedSphereIndex = null;
+      this.player.setSelectedSphereIndex(null);
+      const org = this.stats.placedOrgans.find(
+        (o) => o.instanceId === instanceId
+      );
+      if (org) {
+        const normId = normalizeAdaptationId(org.adaptationId);
+        if (isLegAdaptation(normId) || isFootAdaptation(normId)) {
+          this.editorSelectionTarget = 'legs';
+        } else if (isArmAdaptation(normId) || isHandAdaptation(normId)) {
+          this.editorSelectionTarget = 'arms';
+        } else {
+          this.editorSelectionTarget = 'body';
+        }
+        this.player.setEditorSelectionTarget(this.editorSelectionTarget);
+      }
+    }
+    // Selección neutra: solo actualiza el resaltado visual del órgano sin recalcular ni alterar position.y
+    this.player.setSelectedOrganInstanceId(this.selectedPlacedInstanceId);
+    this.emitUISnapshot();
+  }
+
+  public selectBodySegment(segmentId: BodySegmentId | null): void {
+    this.selectedBodySegmentId = segmentId;
+    const idx =
+      segmentId !== null ? BODY_SEGMENT_ORDER.indexOf(segmentId) : -1;
+    this.selectedSphereIndex = idx >= 0 ? idx : null;
+
+    if (segmentId !== null) {
+      this.selectedPlacedInstanceId = null;
+      this.editorSelectionTarget = 'body';
+      this.player.setEditorSelectionTarget('body');
+      this.player.setSelectedOrganInstanceId(null);
+    }
+    // Selección neutra: no toca position.y ni ejecuta funciones de auto-elevación de patas
+    this.player.setSelectedBodySegment(segmentId);
+    audioManager.playButtonClick();
+    this.emitUISnapshot();
+  }
+
+  public selectBodySphere(sphereIndex: number | null): void {
+    if (
+      sphereIndex === null ||
+      sphereIndex < 0 ||
+      sphereIndex >= BODY_SEGMENT_ORDER.length
+    ) {
+      this.selectedSphereIndex = null;
+      this.selectedBodySegmentId = null;
+      this.player.setSelectedSphereIndex(null);
+    } else {
+      const safeIdx = Math.round(sphereIndex);
+      this.selectedSphereIndex = safeIdx;
+      this.selectedBodySegmentId = BODY_SEGMENT_ORDER[safeIdx];
+      this.selectedPlacedInstanceId = null;
+      this.editorSelectionTarget = 'body';
+      this.player.setEditorSelectionTarget('body');
+      this.player.setSelectedOrganInstanceId(null);
+      this.player.setSelectedSphereIndex(safeIdx);
+    }
+    audioManager.playButtonClick();
+    this.emitUISnapshot();
+  }
+
+  public setEditorSelectionTarget(target: EditorSelectionTarget): void {
+    this.editorSelectionTarget = target;
+    if (target === null) {
+      this.selectedPlacedInstanceId = null;
+      this.selectedBodySegmentId = null;
+      this.selectedSphereIndex = null;
+      this.player.setSelectedSphereIndex(null);
+      this.player.setSelectedOrganInstanceId(null);
+    } else if (target === 'body') {
+      if (this.selectedSphereIndex === null) {
+        this.selectedSphereIndex = 2; // 'pecho' por defecto
+        this.selectedBodySegmentId = 'pecho';
+        this.player.setSelectedSphereIndex(2);
+      }
+      if (this.selectedPlacedInstanceId) {
+        const selOrg = this.stats.placedOrgans.find(
+          (o) => o.instanceId === this.selectedPlacedInstanceId
+        );
+        if (
+          selOrg &&
+          (isLegAdaptation(selOrg.adaptationId) ||
+            isFootAdaptation(selOrg.adaptationId) ||
+            isArmAdaptation(selOrg.adaptationId) ||
+            isHandAdaptation(selOrg.adaptationId))
+        ) {
+          this.selectedPlacedInstanceId = null;
+          this.player.setSelectedOrganInstanceId(null);
+        }
+      }
+    } else if (target === 'legs') {
+      this.selectedBodySegmentId = null;
+      this.selectedSphereIndex = null;
+      this.player.setSelectedSphereIndex(null);
+      const firstLeg = this.stats.placedOrgans.find((o) =>
+        isLegAdaptation(o.adaptationId)
+      );
+      if (firstLeg && !this.selectedPlacedInstanceId) {
+        this.selectedPlacedInstanceId = firstLeg.instanceId;
+      }
+      this.player.setSelectedOrganInstanceId(this.selectedPlacedInstanceId);
+    } else if (target === 'arms') {
+      this.selectedBodySegmentId = null;
+      this.selectedSphereIndex = null;
+      this.player.setSelectedSphereIndex(null);
+      const firstArm = this.stats.placedOrgans.find((o) =>
+        isArmAdaptation(o.adaptationId)
+      );
+      if (firstArm && !this.selectedPlacedInstanceId) {
+        this.selectedPlacedInstanceId = firstArm.instanceId;
+      }
+      this.player.setSelectedOrganInstanceId(this.selectedPlacedInstanceId);
+    }
+    this.player.setEditorSelectionTarget(target);
+    this.emitUISnapshot();
+  }
+
+  public getEditorSelectionTarget(): EditorSelectionTarget {
+    return this.editorSelectionTarget;
+  }
+
+  public adjustBodySphereRadius(sphereIndex: number, delta: number): void {
+    const safeIdx = THREE.MathUtils.clamp(Math.round(sphereIndex), 0, 4);
+    this.player.adjustBodySphereRadius(safeIdx, delta);
+    this.stats.bodySegments = this.player.getBodySegments();
+
+    const seg = this.stats.bodySegments[safeIdx];
+    const cab =
+      this.stats.bodySegments.find((s) => s.id === 'cabeza')?.radius ?? 1.0;
+    const pch =
+      this.stats.bodySegments.find((s) => s.id === 'pecho')?.radius ?? 1.0;
+    const col =
+      this.stats.bodySegments.find((s) => s.id === 'cola')?.radius ?? 1.0;
+    this.stats.torsoRadii = [
+      THREE.MathUtils.clamp(
+        cab,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+      ),
+      THREE.MathUtils.clamp(
+        pch,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+      ),
+      THREE.MathUtils.clamp(
+        col,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+      ),
+    ];
+
+    if (seg) {
+      this.setEventMessage(
+        `Radio de ${seg.label}: ${Math.round(seg.radius * 100)}% (Límites: 45% - 220%)`
+      );
+    }
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public adjustCreatureGroundHeight(deltaY: number): void {
+    const nextY = this.player.adjustCreatureGroundHeight(deltaY);
+    this.stats.bodyGroundOffsetY = this.player.bodyGroundOffsetY;
+    this.setEventMessage(
+      `Altura del Cuerpo sobre el Suelo: ${nextY.toFixed(2)}m`
+    );
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public adjustLimbThickness(limbId: string, delta: number): void {
+    let targetLimbs: PlacedOrganInstance[] = [];
+    let isLegGroup = true;
+
+    if (limbId === 'legs' || limbId === 'arms') {
+      isLegGroup = limbId === 'legs';
+      targetLimbs = this.stats.placedOrgans.filter((o) => {
+        const norm = normalizeAdaptationId(o.adaptationId);
+        return isLegGroup ? isLegAdaptation(norm) : isArmAdaptation(norm);
+      });
+    } else {
+      const specific = this.stats.placedOrgans.find(
+        (o) => o.instanceId === limbId
+      );
+      if (specific) {
+        const norm = normalizeAdaptationId(specific.adaptationId);
+        if (isLegAdaptation(norm) || isFootAdaptation(norm)) {
+          isLegGroup = true;
+          targetLimbs = this.stats.placedOrgans.filter((o) =>
+            isLegAdaptation(normalizeAdaptationId(o.adaptationId))
+          );
+        } else if (isArmAdaptation(norm) || isHandAdaptation(norm)) {
+          isLegGroup = false;
+          targetLimbs = this.stats.placedOrgans.filter((o) =>
+            isArmAdaptation(normalizeAdaptationId(o.adaptationId))
+          );
+        } else {
+          targetLimbs = [specific];
+        }
+      }
+    }
+
+    if (targetLimbs.length === 0) {
+      this.setEventMessage(
+        isLegGroup
+          ? 'No hay piernas equipadas para escalar'
+          : 'No hay brazos equipados para escalar'
+      );
+      this.emitUISnapshot();
+      return;
+    }
+
+    let lastScalePct = 100;
+    for (const limb of targetLimbs) {
+      const cur = limb.morphology ?? { ...DEFAULT_ORGAN_MORPHOLOGY };
+      const nextScaleOverall = THREE.MathUtils.clamp(
+        (cur.scaleOverall ?? 1.0) + delta,
+        MORPHOLOGY_SCALE_LIMITS.limbThickness.min,
+        MORPHOLOGY_SCALE_LIMITS.limbThickness.max
+      );
+      const nextScaleWidth = THREE.MathUtils.clamp(
+        (cur.scaleWidth ?? 1.0) + delta * 0.5,
+        MORPHOLOGY_SCALE_LIMITS.limbThickness.min,
+        MORPHOLOGY_SCALE_LIMITS.limbThickness.max
+      );
+      const nextBoneLength = THREE.MathUtils.clamp(
+        (cur.boneLength ?? 1.0) + delta * 0.55,
+        MORPHOLOGY_SCALE_LIMITS.limbThickness.min,
+        MORPHOLOGY_SCALE_LIMITS.limbThickness.max
+      );
+      limb.morphology = {
+        ...cur,
+        scaleOverall: nextScaleOverall,
+        scaleWidth: nextScaleWidth,
+        boneLength: nextBoneLength,
+      };
+      lastScalePct = Math.round(nextScaleOverall * 100);
+    }
+
+    // Re-sync organs with recomputeBaseClearance = false so the creature height Y does not jump
     this.player.syncPlacedOrgans(
       this.stats.placedOrgans,
-      this.selectedPlacedInstanceId
+      this.selectedPlacedInstanceId,
+      false
     );
+    this.setEventMessage(
+      isLegGroup
+        ? `Grosor/Escala de Piernas: ${lastScalePct}% (Límites: 50% - 180%)`
+        : `Grosor/Escala de Brazos: ${lastScalePct}% (Límites: 50% - 180%)`
+    );
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public adjustLimbScale(limbType: 'legs' | 'arms', deltaScale: number): void {
+    this.adjustLimbThickness(limbType, deltaScale);
+  }
+
+  public updateBodySegment(
+    segmentId: BodySegmentId,
+    partial: Partial<BodySegmentConfig>
+  ): void {
+    const currentSegments =
+      this.stats.bodySegments && this.stats.bodySegments.length === 5
+        ? this.stats.bodySegments.map((s) => ({ ...s }))
+        : createDefaultBodySegments();
+    const idx = currentSegments.findIndex((s) => s.id === segmentId);
+    if (idx === -1) return;
+
+    const cur = currentSegments[idx];
+    currentSegments[idx] = {
+      ...cur,
+      radius:
+        partial.radius !== undefined
+          ? THREE.MathUtils.clamp(
+              partial.radius,
+              MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+              MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+            )
+          : cur.radius,
+      lengthZ:
+        partial.lengthZ !== undefined
+          ? THREE.MathUtils.clamp(partial.lengthZ, 0.5, 2.0)
+          : cur.lengthZ,
+      pitchAngle:
+        partial.pitchAngle !== undefined
+          ? THREE.MathUtils.clamp(partial.pitchAngle, -0.8, 0.8)
+          : cur.pitchAngle,
+      yawAngle:
+        partial.yawAngle !== undefined
+          ? THREE.MathUtils.clamp(partial.yawAngle, -0.6, 0.6)
+          : cur.yawAngle,
+    };
+
+    this.stats.bodySegments = currentSegments;
+
+    // Keep legacy torsoRadii in sync for compatibility
+    const cab = currentSegments.find((s) => s.id === 'cabeza')?.radius ?? 1.0;
+    const pch = currentSegments.find((s) => s.id === 'pecho')?.radius ?? 1.0;
+    const col = currentSegments.find((s) => s.id === 'cola')?.radius ?? 1.0;
+    this.stats.torsoRadii = [
+      THREE.MathUtils.clamp(
+        cab,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+      ),
+      THREE.MathUtils.clamp(
+        pch,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+      ),
+      THREE.MathUtils.clamp(
+        col,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+        MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+      ),
+    ];
+
+    this.player.setBodySegments(currentSegments);
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public updateCreatureMorphology(
+    partial: Partial<CreatureMorphologySliders>
+  ): void {
+    const isArchetypeChange = partial.archetype !== undefined;
+    if (isArchetypeChange) {
+      this.pushEditorHistorySnapshot();
+      this.stats.bodyGroundOffsetY = 0;
+      this.player.bodyGroundOffsetY = 0;
+    }
+    const cur = this.stats.creatureMorphology ?? {
+      ...DEFAULT_CREATURE_MORPHOLOGY,
+    };
+    const next: CreatureMorphologySliders = {
+      archetype: partial.archetype ?? cur.archetype,
+      heightScale:
+        partial.heightScale !== undefined
+          ? THREE.MathUtils.clamp(partial.heightScale, 0.7, 1.6)
+          : cur.heightScale,
+      widthScale:
+        partial.widthScale !== undefined
+          ? THREE.MathUtils.clamp(partial.widthScale, 0.6, 1.8)
+          : cur.widthScale,
+      musculatureScale:
+        partial.musculatureScale !== undefined
+          ? THREE.MathUtils.clamp(partial.musculatureScale, 0.7, 1.9)
+          : cur.musculatureScale,
+    };
+    this.stats.creatureMorphology = next;
+    this.editorSelectionTarget = 'body';
+    this.player.setEditorSelectionTarget('body');
+    this.player.setCreatureMorphology(next, isArchetypeChange);
+    this.saveToLocalStorage();
     this.emitUISnapshot();
   }
 
@@ -1724,20 +2561,66 @@ export class GameEngine {
     );
     if (!target) return;
 
+    const normId = normalizeAdaptationId(target.adaptationId);
+    const isLimb =
+      isLegAdaptation(normId) ||
+      isArmAdaptation(normId) ||
+      isFootAdaptation(normId) ||
+      isHandAdaptation(normId);
+    const scaleLimits = isLimb
+      ? MORPHOLOGY_SCALE_LIMITS.limbThickness
+      : MORPHOLOGY_SCALE_LIMITS.organScale;
+
     const cur = target.morphology ?? { ...DEFAULT_ORGAN_MORPHOLOGY };
     const nextMorph: PlacedOrganMorphology = {
       scaleOverall:
         partialMorphology.scaleOverall !== undefined
-          ? THREE.MathUtils.clamp(partialMorphology.scaleOverall, 0.5, 2.2)
+          ? THREE.MathUtils.clamp(
+              partialMorphology.scaleOverall,
+              scaleLimits.min,
+              scaleLimits.max
+            )
           : cur.scaleOverall,
       scaleWidth:
         partialMorphology.scaleWidth !== undefined
-          ? THREE.MathUtils.clamp(partialMorphology.scaleWidth, 0.5, 2.0)
+          ? THREE.MathUtils.clamp(
+              partialMorphology.scaleWidth,
+              scaleLimits.min,
+              scaleLimits.max
+            )
           : cur.scaleWidth,
       scaleHeight:
         partialMorphology.scaleHeight !== undefined
-          ? THREE.MathUtils.clamp(partialMorphology.scaleHeight, 0.5, 2.5)
+          ? THREE.MathUtils.clamp(
+              partialMorphology.scaleHeight,
+              MORPHOLOGY_SCALE_LIMITS.organScale.min,
+              MORPHOLOGY_SCALE_LIMITS.organScale.max
+            )
           : cur.scaleHeight,
+      upperJointAngle:
+        partialMorphology.upperJointAngle !== undefined
+          ? THREE.MathUtils.clamp(
+              partialMorphology.upperJointAngle,
+              -Math.PI * 0.48,
+              Math.PI * 0.48
+            )
+          : cur.upperJointAngle ?? 0,
+      middleJointAngle:
+        partialMorphology.middleJointAngle !== undefined
+          ? THREE.MathUtils.clamp(
+              partialMorphology.middleJointAngle,
+              -Math.PI * 0.55,
+              Math.PI * 0.55
+            )
+          : cur.middleJointAngle ?? 0,
+      boneLength:
+        partialMorphology.boneLength !== undefined
+          ? THREE.MathUtils.clamp(
+              partialMorphology.boneLength,
+              MORPHOLOGY_SCALE_LIMITS.limbThickness.min,
+              MORPHOLOGY_SCALE_LIMITS.limbThickness.max
+            )
+          : cur.boneLength ?? 1.0,
       colorOverride:
         'colorOverride' in partialMorphology
           ? partialMorphology.colorOverride
@@ -1747,7 +2630,8 @@ export class GameEngine {
     target.morphology = nextMorph;
     this.player.syncPlacedOrgans(
       this.stats.placedOrgans,
-      this.selectedPlacedInstanceId
+      this.selectedPlacedInstanceId,
+      false
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
@@ -1776,7 +2660,8 @@ export class GameEngine {
 
     this.player.syncPlacedOrgans(
       this.stats.placedOrgans,
-      this.selectedPlacedInstanceId
+      this.selectedPlacedInstanceId,
+      false
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
@@ -1788,6 +2673,7 @@ export class GameEngine {
     );
     if (!target) return;
 
+    this.pushEditorHistorySnapshot();
     target.orientationYaw = 0;
     target.orientationPitch = 0;
     target.localYaw = 0;
@@ -1796,7 +2682,8 @@ export class GameEngine {
 
     this.player.syncPlacedOrgans(
       this.stats.placedOrgans,
-      this.selectedPlacedInstanceId
+      this.selectedPlacedInstanceId,
+      false
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
@@ -1808,24 +2695,78 @@ export class GameEngine {
     );
     if (idx === -1) return false;
 
+    this.pushEditorHistorySnapshot();
     const removed = this.stats.placedOrgans[idx];
+    const removedNormId = normalizeAdaptationId(removed.adaptationId);
     const slot = this.preparedEvolutionCatalog.find(
-      (s) => s.id === normalizeAdaptationId(removed.adaptationId)
+      (s) => s.id === removedNormId
     );
-    const refundAdn = slot ? slot.costAdn : 0;
+    let totalRefundAdn = slot ? slot.costAdn : 0;
 
     this.stats.placedOrgans.splice(idx, 1);
-    this.stats.adn += refundAdn;
     if (this.selectedPlacedInstanceId === instanceId) {
       this.selectedPlacedInstanceId = null;
     }
+
+    // Cascade refund: if removing a leg or arm leaves excess attached feet or hands without a parent limb,
+    // automatically detach and refund those dependent feet/hands to the player's DNA budget.
+    let cascadedCount = 0;
+    if (isLegAdaptation(removedNormId)) {
+      const remainingLegs = this.stats.placedOrgans.filter((o) =>
+        isLegAdaptation(o.adaptationId)
+      ).length;
+      for (let i = this.stats.placedOrgans.length - 1; i >= 0; i--) {
+        const currentFeet = this.stats.placedOrgans.filter((o) =>
+          isFootAdaptation(o.adaptationId)
+        ).length;
+        if (currentFeet <= remainingLegs) break;
+        if (isFootAdaptation(this.stats.placedOrgans[i].adaptationId)) {
+          const depOrg = this.stats.placedOrgans[i];
+          const depSlot = this.preparedEvolutionCatalog.find(
+            (s) => s.id === normalizeAdaptationId(depOrg.adaptationId)
+          );
+          totalRefundAdn += depSlot ? depSlot.costAdn : 0;
+          if (this.selectedPlacedInstanceId === depOrg.instanceId) {
+            this.selectedPlacedInstanceId = null;
+          }
+          this.stats.placedOrgans.splice(i, 1);
+          cascadedCount++;
+        }
+      }
+    } else if (isArmAdaptation(removedNormId)) {
+      const remainingArms = this.stats.placedOrgans.filter((o) =>
+        isArmAdaptation(o.adaptationId)
+      ).length;
+      for (let i = this.stats.placedOrgans.length - 1; i >= 0; i--) {
+        const currentHands = this.stats.placedOrgans.filter((o) =>
+          isHandAdaptation(o.adaptationId)
+        ).length;
+        if (currentHands <= remainingArms) break;
+        if (isHandAdaptation(this.stats.placedOrgans[i].adaptationId)) {
+          const depOrg = this.stats.placedOrgans[i];
+          const depSlot = this.preparedEvolutionCatalog.find(
+            (s) => s.id === normalizeAdaptationId(depOrg.adaptationId)
+          );
+          totalRefundAdn += depSlot ? depSlot.costAdn : 0;
+          if (this.selectedPlacedInstanceId === depOrg.instanceId) {
+            this.selectedPlacedInstanceId = null;
+          }
+          this.stats.placedOrgans.splice(i, 1);
+          cascadedCount++;
+        }
+      }
+    }
+
+    this.stats.adn += totalRefundAdn;
 
     this.syncCatalogAndOrganismState();
     this.saveToLocalStorage();
     audioManager.playEvolutionRemove();
     if (slot) {
+      const cascadeNote =
+        cascadedCount > 0 ? ' (incluye extremidad distal acoplada)' : '';
       this.setEventMessage(
-        `Pieza vendida: ${slot.name} (+${refundAdn} ADN reembolsado)`
+        `Pieza vendida: ${slot.name}${cascadeNote} (+${totalRefundAdn} ADN reembolsado)`
       );
     }
     this.emitUISnapshot();
@@ -1836,29 +2777,347 @@ export class GameEngine {
     this.stats.spineLength = THREE.MathUtils.clamp(length, 0.75, 1.75);
     this.stats.spineSegments =
       this.stats.spineLength >= 1.32 ? 3 : this.stats.spineLength >= 1.12 ? 2 : 1;
+
+    // Dynamically adjust active vertebra count (4..12) when extending/compressing spine
+    const desiredCount = THREE.MathUtils.clamp(
+      Math.round(4 + ((this.stats.spineLength - 0.75) / 1.0) * 8),
+      4,
+      12
+    );
+    const currentNodes =
+      this.stats.spineNodes && this.stats.spineNodes.length >= 3
+        ? [...this.stats.spineNodes]
+        : createDefaultSpineNodes(6, this.stats.spineLength);
+
+    if (desiredCount !== currentNodes.length) {
+      // Resample existing posture & elliptical radii smoothly onto `desiredCount` vertebrae
+      const resampled: SpineVertebraNode[] = [];
+      const halfSpan = 0.86 * this.stats.spineLength;
+      for (let i = 0; i < desiredCount; i++) {
+        const t = desiredCount > 1 ? i / (desiredCount - 1) : 0.5;
+        const srcIdxFloat = t * (currentNodes.length - 1);
+        const idx0 = Math.floor(srcIdxFloat);
+        const idx1 = Math.min(currentNodes.length - 1, idx0 + 1);
+        const frac = srcIdxFloat - idx0;
+        const n0 = currentNodes[idx0];
+        const n1 = currentNodes[idx1];
+        const interpRadius = THREE.MathUtils.lerp(n0.radius, n1.radius, frac);
+        const interpRadiusX = THREE.MathUtils.lerp(
+          n0.radiusX ?? n0.radius * 0.96,
+          n1.radiusX ?? n1.radius * 0.96,
+          frac
+        );
+        const interpRadiusY = THREE.MathUtils.lerp(
+          n0.radiusY ?? n0.radius * 0.92,
+          n1.radiusY ?? n1.radius * 0.92,
+          frac
+        );
+        resampled.push({
+          x: THREE.MathUtils.lerp(n0.x, n1.x, frac),
+          y: THREE.MathUtils.lerp(n0.y, n1.y, frac),
+          z: THREE.MathUtils.lerp(-halfSpan, halfSpan, t),
+          radius: interpRadius,
+          radiusX: interpRadiusX,
+          radiusY: interpRadiusY,
+          rotationRoll: THREE.MathUtils.lerp(
+            n0.rotationRoll ?? 0,
+            n1.rotationRoll ?? 0,
+            frac
+          ),
+          pitch: THREE.MathUtils.lerp(n0.pitch, n1.pitch, frac),
+          yaw: THREE.MathUtils.lerp(n0.yaw, n1.yaw, frac),
+        });
+      }
+      this.stats.spineNodes = resampled;
+    } else {
+      const halfSpan = 0.86 * this.stats.spineLength;
+      this.stats.spineNodes = currentNodes.map((n, i) => {
+        const t = currentNodes.length > 1 ? i / (currentNodes.length - 1) : 0.5;
+        return {
+          ...n,
+          z: THREE.MathUtils.lerp(-halfSpan, halfSpan, t),
+        };
+      });
+    }
+
+    this.recalculateVitalCaps();
     this.player.applyMorphology(
       this.stats.bodyShape,
       this.stats.colorTheme,
       this.stats.evolutionaryStage === 'creature_stage',
       this.stats.spineSegments,
       this.stats.spineLength,
-      this.stats.torsoRadii
+      this.stats.torsoRadii,
+      this.stats.spineNodes,
+      this.stats.paintConfig,
+      this.stats.bodySegments
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
   }
 
-  public setTorsoRadius(segmentIndex: 0 | 1 | 2, radius: number): void {
+  public setVertebraCount(count: number): void {
+    this.pushEditorHistorySnapshot();
+    const safeCount = THREE.MathUtils.clamp(Math.round(count), 4, 12);
+    const nextLen = THREE.MathUtils.clamp(
+      0.75 + ((safeCount - 4) / 8) * 1.0,
+      0.75,
+      1.75
+    );
+    this.setSpineLength(nextLen);
+  }
+
+  public updateVertebraNode(
+    index: number,
+    partial: Partial<SpineVertebraNode>
+  ): void {
+    const nodes =
+      this.stats.spineNodes && this.stats.spineNodes.length >= 3
+        ? this.stats.spineNodes.map((n) => ({ ...n }))
+        : createDefaultSpineNodes(6, this.stats.spineLength);
+    if (index < 0 || index >= nodes.length) return;
+
+    // Anti-buckling Z bounds: keep vertebra strictly between its anterior and posterior neighbors
+    const minZ = index > 0 ? nodes[index - 1].z + 0.11 : -1.75;
+    const maxZ = index < nodes.length - 1 ? nodes[index + 1].z - 0.11 : 1.75;
+
+    const cur = nodes[index];
+    const nextRadius =
+      partial.radius !== undefined
+        ? THREE.MathUtils.clamp(partial.radius, 0.35, 2.5)
+        : cur.radius;
+    const radiusRatio =
+      cur.radius > 0.001 ? nextRadius / cur.radius : 1.0;
+
+    nodes[index] = {
+      x:
+        partial.x !== undefined
+          ? THREE.MathUtils.clamp(partial.x, -0.75, 0.75)
+          : cur.x,
+      y:
+        partial.y !== undefined
+          ? THREE.MathUtils.clamp(partial.y, -0.65, 1.35)
+          : cur.y,
+      z:
+        partial.z !== undefined
+          ? THREE.MathUtils.clamp(partial.z, minZ, maxZ)
+          : THREE.MathUtils.clamp(cur.z, minZ, maxZ),
+      radius: nextRadius,
+      radiusX:
+        partial.radiusX !== undefined
+          ? THREE.MathUtils.clamp(partial.radiusX, 0.35, 2.5)
+          : THREE.MathUtils.clamp(
+              (cur.radiusX ?? cur.radius * 0.96) * radiusRatio,
+              0.35,
+              2.5
+            ),
+      radiusY:
+        partial.radiusY !== undefined
+          ? THREE.MathUtils.clamp(partial.radiusY, 0.35, 2.5)
+          : THREE.MathUtils.clamp(
+              (cur.radiusY ?? cur.radius * 0.92) * radiusRatio,
+              0.35,
+              2.5
+            ),
+      rotationRoll:
+        partial.rotationRoll !== undefined
+          ? partial.rotationRoll
+          : cur.rotationRoll ?? 0,
+      pitch:
+        partial.pitch !== undefined
+          ? THREE.MathUtils.clamp(partial.pitch, -Math.PI * 0.45, Math.PI * 0.45)
+          : cur.pitch,
+      yaw:
+        partial.yaw !== undefined
+          ? THREE.MathUtils.clamp(partial.yaw, -Math.PI * 0.45, Math.PI * 0.45)
+          : cur.yaw,
+    };
+
+    // Sync legacy torsoRadii for compatibility
+    const t = nodes.length > 1 ? index / (nodes.length - 1) : 0.5;
+    const segIdx: 0 | 1 | 2 = t < 0.34 ? 0 : t > 0.66 ? 2 : 1;
     const nextRadii: [number, number, number] = [...this.stats.torsoRadii];
-    nextRadii[segmentIndex] = THREE.MathUtils.clamp(radius, 0.6, 1.55);
+    nextRadii[segIdx] = THREE.MathUtils.clamp(nodes[index].radius, 0.6, 1.55);
     this.stats.torsoRadii = nextRadii;
+
+    this.stats.spineNodes = nodes;
+    this.player.setSpineNodes(nodes);
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public applySpinePosturePreset(
+    preset: 'quadruped' | 'biped_upright' | 'predator_arch' | 'serpentine'
+  ): void {
+    this.pushEditorHistorySnapshot();
+    const nodes =
+      this.stats.spineNodes && this.stats.spineNodes.length >= 3
+        ? this.stats.spineNodes.map((n) => ({ ...n }))
+        : createDefaultSpineNodes(5, this.stats.spineLength);
+    const halfSpan = 0.86 * this.stats.spineLength;
+
+    for (let i = 0; i < nodes.length; i++) {
+      const t = nodes.length > 1 ? i / (nodes.length - 1) : 0.5; // 0 = head, 1 = tail
+      if (preset === 'biped_upright') {
+        // Upright humanoid/bipedal posture: head elevated high, pelvis lower
+        nodes[i].x = 0;
+        nodes[i].y = THREE.MathUtils.lerp(1.05, -0.15, Math.pow(t, 0.85));
+        nodes[i].z = THREE.MathUtils.lerp(-halfSpan * 0.55, halfSpan * 0.75, t);
+        nodes[i].pitch = THREE.MathUtils.lerp(-0.55, 0.1, t);
+      } else if (preset === 'predator_arch') {
+        // Dorsal raptor arch: raised thorax, lowered prowling head and counterbalanced tail
+        nodes[i].x = 0;
+        nodes[i].y = Math.sin(t * Math.PI) * 0.52 + (1 - t) * 0.22;
+        nodes[i].z = THREE.MathUtils.lerp(-halfSpan * 0.92, halfSpan * 0.95, t);
+        nodes[i].pitch = Math.cos(t * Math.PI) * 0.32;
+      } else if (preset === 'serpentine') {
+        // S-curve lateral undulation
+        nodes[i].x = Math.sin(t * Math.PI * 2) * 0.34;
+        nodes[i].y = Math.cos(t * Math.PI) * 0.18;
+        nodes[i].z = THREE.MathUtils.lerp(-halfSpan, halfSpan, t);
+        nodes[i].yaw = Math.cos(t * Math.PI * 2) * 0.28;
+      } else {
+        // 'quadruped' horizontal neutral spine
+        nodes[i].x = 0;
+        nodes[i].y = Math.sin(t * Math.PI) * 0.08;
+        nodes[i].z = THREE.MathUtils.lerp(-halfSpan, halfSpan, t);
+        nodes[i].pitch = 0;
+        nodes[i].yaw = 0;
+      }
+    }
+
+    this.stats.spineNodes = nodes;
+    this.player.setSpineNodes(nodes);
+
+    // Also update 5-segment modular body posture (pitchAngle & yawAngle)
+    const segs =
+      this.stats.bodySegments && this.stats.bodySegments.length === 5
+        ? this.stats.bodySegments.map((s) => ({ ...s }))
+        : createDefaultBodySegments();
+    for (const seg of segs) {
+      if (preset === 'biped_upright') {
+        if (seg.id === 'cuello') seg.pitchAngle = 0.48;
+        else if (seg.id === 'cabeza') seg.pitchAngle = 0.28;
+        else if (seg.id === 'pecho') seg.pitchAngle = 0.22;
+        else if (seg.id === 'abdomen') seg.pitchAngle = -0.15;
+        else if (seg.id === 'cola') seg.pitchAngle = 0.25;
+        seg.yawAngle = 0;
+      } else if (preset === 'predator_arch') {
+        if (seg.id === 'cuello') seg.pitchAngle = 0.34;
+        else if (seg.id === 'cabeza') seg.pitchAngle = -0.18;
+        else if (seg.id === 'pecho') seg.pitchAngle = 0.08;
+        else if (seg.id === 'abdomen') seg.pitchAngle = 0.14;
+        else if (seg.id === 'cola') seg.pitchAngle = 0.36;
+        seg.yawAngle = 0;
+      } else if (preset === 'serpentine') {
+        if (seg.id === 'cuello') {
+          seg.pitchAngle = 0.12;
+          seg.yawAngle = 0.28;
+        } else if (seg.id === 'cabeza') {
+          seg.pitchAngle = 0.05;
+          seg.yawAngle = -0.22;
+        } else if (seg.id === 'pecho') {
+          seg.pitchAngle = 0;
+          seg.yawAngle = 0.14;
+        } else if (seg.id === 'abdomen') {
+          seg.pitchAngle = 0.06;
+          seg.yawAngle = -0.26;
+        } else if (seg.id === 'cola') {
+          seg.pitchAngle = 0.16;
+          seg.yawAngle = 0.32;
+        }
+      } else {
+        // 'quadruped' neutral posture
+        seg.pitchAngle = 0;
+        seg.yawAngle = 0;
+      }
+    }
+    this.stats.bodySegments = segs;
+    this.player.setBodySegments(segs);
+
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public updatePaintConfig(partial: Partial<CreaturePaintConfig>): void {
+    this.pushEditorHistorySnapshot();
+    const current = this.stats.paintConfig ?? { ...DEFAULT_CREATURE_PAINT };
+    const nextConfig: CreaturePaintConfig = {
+      ...current,
+      ...partial,
+    };
+    this.stats.paintConfig = nextConfig;
+    this.player.applyPaintConfig(nextConfig);
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public toggleEditorSymmetry(): void {
+    const nextSym = !this.settings.autoBilateralSymmetry;
+    this.settings.autoBilateralSymmetry = nextSym;
+    this.stats.symmetryEnabled = nextSym;
+    this.saveSettingsToLocalStorage();
+    audioManager.playButtonClick();
+    this.setEventMessage(
+      nextSym
+        ? 'Simetría Bilateral [Tab / A]: ACTIVADA (Doble pieza en espejo)'
+        : 'Simetría Bilateral [Tab / A]: DESACTIVADA (Pieza única / Asimétrica)'
+    );
+    this.emitUISnapshot();
+  }
+
+  public setTorsoRadius(segmentIndex: 0 | 1 | 2, radius: number): void {
+    const clamped = THREE.MathUtils.clamp(radius, 0.4, 2.5);
+    const nextRadii: [number, number, number] = [...this.stats.torsoRadii];
+    nextRadii[segmentIndex] = THREE.MathUtils.clamp(clamped, 0.6, 1.55);
+    this.stats.torsoRadii = nextRadii;
+
+    // Also update corresponding nodes in spineNodes
+    if (this.stats.spineNodes && this.stats.spineNodes.length >= 3) {
+      const nodes = this.stats.spineNodes.map((n, idx, arr) => {
+        const t = arr.length > 1 ? idx / (arr.length - 1) : 0.5;
+        const nodeSeg: 0 | 1 | 2 = t < 0.34 ? 0 : t > 0.66 ? 2 : 1;
+        if (nodeSeg === segmentIndex) {
+          return { ...n, radius: clamped };
+        }
+        return { ...n };
+      });
+      this.stats.spineNodes = nodes;
+    }
+
+    // Also update corresponding 5-segment modular body nodes
+    const segs =
+      this.stats.bodySegments && this.stats.bodySegments.length === 5
+        ? this.stats.bodySegments.map((s) => ({ ...s }))
+        : createDefaultBodySegments();
+    for (const seg of segs) {
+      if (segmentIndex === 0 && (seg.id === 'cabeza' || seg.id === 'cuello')) {
+        seg.radius = THREE.MathUtils.clamp(
+          seg.id === 'cuello' ? clamped * 0.85 : clamped,
+          0.4,
+          2.0
+        );
+      } else if (
+        segmentIndex === 1 &&
+        (seg.id === 'pecho' || seg.id === 'abdomen')
+      ) {
+        seg.radius = THREE.MathUtils.clamp(clamped, 0.4, 2.0);
+      } else if (segmentIndex === 2 && seg.id === 'cola') {
+        seg.radius = THREE.MathUtils.clamp(clamped * 0.78, 0.4, 2.0);
+      }
+    }
+    this.stats.bodySegments = segs;
+
     this.player.applyMorphology(
       this.stats.bodyShape,
       this.stats.colorTheme,
       this.stats.evolutionaryStage === 'creature_stage',
       this.stats.spineSegments,
       this.stats.spineLength,
-      this.stats.torsoRadii
+      this.stats.torsoRadii,
+      this.stats.spineNodes,
+      this.stats.paintConfig,
+      this.stats.bodySegments
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
@@ -1886,11 +3145,45 @@ export class GameEngine {
 
     this.updateRaycasterFromClientCoords(e.clientX, e.clientY);
 
-    // 0. Check if clicking the floating Spore Orientation Gizmo sphere in front of the selected organ
+    // 0A. Check if clicking one of the 3D Limb Joint Gizmo spheres ('proximal' | 'middle' | 'distal') on the selected limb
+    const limbJointGizmos = this.player.getSelectedLimbJointGizmoObjects();
+    if (limbJointGizmos.length > 0 && this.selectedPlacedInstanceId) {
+      const jointHits = this.raycaster.intersectObjects(limbJointGizmos, true);
+      if (jointHits.length > 0) {
+        let jObj: THREE.Object3D | null = jointHits[0].object;
+        while (jObj && !jObj.userData.limbJointRole) {
+          jObj = jObj.parent;
+        }
+        const role = jObj?.userData.limbJointRole as
+          | 'proximal'
+          | 'middle'
+          | 'distal'
+          | undefined;
+        if (role) {
+          const targetOrg = this.stats.placedOrgans.find(
+            (o) => o.instanceId === this.selectedPlacedInstanceId
+          );
+          if (targetOrg) {
+            this.pushEditorHistorySnapshot();
+            audioManager.playButtonClick();
+            this.draggingLimbJointRole = role;
+            this.limbJointDragStartClient = { x: e.clientX, y: e.clientY };
+            this.limbJointDragStartMorph = {
+              ...(targetOrg.morphology ?? DEFAULT_ORGAN_MORPHOLOGY),
+            };
+            this.renderer.domElement.style.cursor = 'grabbing';
+            return;
+          }
+        }
+      }
+    }
+
+    // 0B. Check if clicking the floating Spore Orientation Gizmo sphere in front of the selected organ
     const gizmoObj = this.player.getOrientationGizmoObject();
     if (gizmoObj && this.selectedPlacedInstanceId) {
       const gizmoHits = this.raycaster.intersectObject(gizmoObj, true);
       if (gizmoHits.length > 0) {
+        this.pushEditorHistorySnapshot();
         this.draggingOrientationInstanceId = this.selectedPlacedInstanceId;
         this.player.setOrientationGizmoHovered(true);
         this.renderer.domElement.style.cursor = 'grabbing';
@@ -1913,6 +3206,7 @@ export class GameEngine {
         | 'arrow_rear'
         | undefined;
       if (handle) {
+        this.pushEditorHistorySnapshot();
         audioManager.playButtonClick();
         this.draggingSpineArrow = handle;
         this.player.setHoveredSpineControl(handle, null);
@@ -1932,6 +3226,85 @@ export class GameEngine {
       }
       const hitInstanceId = obj?.userData.placedInstanceId as string | undefined;
       if (hitInstanceId) {
+        // Alt + Left Click duplicates the clicked organ immediately if DNA & Complexity allow
+        if (e.altKey) {
+          const sourceOrg = this.stats.placedOrgans.find(
+            (o) => o.instanceId === hitInstanceId
+          );
+          if (sourceOrg) {
+            const slotId = normalizeAdaptationId(sourceOrg.adaptationId);
+            const slot = this.preparedEvolutionCatalog.find(
+              (s) => s.id === slotId
+            );
+            const currentStacks = this.installedAdaptations[slotId] ?? 0;
+            const effectiveSymmetry = this.settings.autoBilateralSymmetry
+              ? sourceOrg.mirrorSymmetry
+              : false;
+            const addedComplexity = getOrganComplexityCost(
+              slotId,
+              effectiveSymmetry
+            );
+            const currentComplexity = this.stats.complexityScore ?? 0;
+
+            if (slot && currentStacks >= slot.maxStacks) {
+              this.setEventMessage(
+                `Máximo de copias alcanzado para ${slot.name} (${slot.maxStacks}/${slot.maxStacks})`
+              );
+              this.emitUISnapshot();
+              return;
+            }
+            if (slot && this.stats.adn < slot.costAdn) {
+              this.setEventMessage(
+                `ADN insuficiente para duplicar ${slot.name} (Requiere ${slot.costAdn} ADN)`
+              );
+              this.emitUISnapshot();
+              return;
+            }
+            if (currentComplexity + addedComplexity > MAX_CREATURE_COMPLEXITY) {
+              this.setEventMessage(
+                'Complejímetro al 100%: No se puede duplicar la pieza'
+              );
+              this.emitUISnapshot();
+              return;
+            }
+            if (slot) {
+              this.pushEditorHistorySnapshot();
+              this.stats.adn -= slot.costAdn;
+              const dupInstance: PlacedOrganInstance = {
+                instanceId: `organ_${slot.id}_dup_${Date.now()}_${this.organInstanceCounter++}`,
+                adaptationId: slot.id,
+                angle: sourceOrg.angle + 0.14,
+                axialOffset: THREE.MathUtils.clamp(
+                  sourceOrg.axialOffset + 0.12,
+                  -0.96,
+                  0.96
+                ),
+                mirrorSymmetry: effectiveSymmetry,
+                orientationYaw: sourceOrg.orientationYaw ?? 0,
+                orientationPitch: sourceOrg.orientationPitch ?? 0,
+                localYaw: sourceOrg.localYaw ?? 0,
+                localPitch: sourceOrg.localPitch ?? 0,
+                morphology: {
+                  ...(sourceOrg.morphology ?? DEFAULT_ORGAN_MORPHOLOGY),
+                },
+              };
+              this.stats.placedOrgans.push(dupInstance);
+              this.selectedPlacedInstanceId = dupInstance.instanceId;
+              this.syncCatalogAndOrganismState();
+              audioManager.playEvolutionEquip();
+              this.setEventMessage(
+                `Pieza duplicada [Alt+Arrastrar]: ${slot.name} (-${slot.costAdn} ADN)`
+              );
+              this.repositioningInstanceId = dupInstance.instanceId;
+              this.repositionStartScreenPos = { x: e.clientX, y: e.clientY };
+              this.isActivelyRepositioning = true;
+              this.emitUISnapshot();
+              return;
+            }
+          }
+        }
+
+        this.pushEditorHistorySnapshot();
         audioManager.playButtonClick();
         this.selectPlacedOrgan(hitInstanceId);
         this.repositioningInstanceId = hitInstanceId;
@@ -1941,7 +3314,7 @@ export class GameEngine {
       }
     }
 
-    // 3. Check if clicking one of the internal vertebrae hit spheres directly (non-recursive for instant raycasting)
+    // 3. Check if clicking one of the internal vertebrae hit spheres directly (starts 3D Vertebra Flexion Drag)
     const vertebraHits = this.raycaster.intersectObjects(
       this.player.getVertebraObjects(),
       false
@@ -1959,13 +3332,52 @@ export class GameEngine {
       this.hoveredVertebraIndex = vIdx;
       this.hoveredVertebraSegmentIndex = segIdx;
       this.player.setHoveredSpineControl(null, vIdx);
+
+      if (vIdx !== null && this.stats.spineNodes && this.stats.spineNodes[vIdx]) {
+        this.pushEditorHistorySnapshot();
+        audioManager.playButtonClick();
+        this.draggingVertebraIndex = vIdx;
+        this.vertebraDragStartClient = { x: e.clientX, y: e.clientY };
+        this.vertebraDragStartNode = { ...this.stats.spineNodes[vIdx] };
+        this.vertebraDragStartNodes = this.stats.spineNodes.map((n) => ({
+          ...n,
+        }));
+        this.renderer.domElement.style.cursor = 'grabbing';
+      }
       return;
     }
 
-    // Clicked empty space on canvas: deselect current placed organ (hides orientation gizmo)
+    // 4. Check if clicking one of the 5 modular body spheres ('cabeza' | 'cuello' | 'pecho' | 'abdomen' | 'cola') or cellular capsule
+    const segmentHits = this.raycaster.intersectObjects(
+      this.player.getBodySegmentObjects(),
+      false
+    );
+    if (segmentHits.length > 0) {
+      const segObj = segmentHits[0].object;
+      const sphereIdx =
+        typeof segObj.userData.sphereIndex === 'number'
+          ? (segObj.userData.sphereIndex as number)
+          : undefined;
+      const segId =
+        (segObj.userData.bodySegmentId as BodySegmentId | undefined) ?? 'pecho';
+
+      if (sphereIdx !== undefined) {
+        this.selectBodySphere(sphereIdx);
+      } else {
+        this.selectBodySegment(segId);
+      }
+      // Selección neutra: NO altera position.y ni ejecuta funciones de auto-elevación de patas
+      return;
+    }
+
+    // Clicked empty space on podium/canvas: deselect current placed organ, body sphere & contextual target neutrally
     if (this.selectedPlacedInstanceId !== null) {
       this.selectPlacedOrgan(null);
     }
+    if (this.selectedSphereIndex !== null || this.selectedBodySegmentId !== null) {
+      this.selectBodySphere(null);
+    }
+    this.setEditorSelectionTarget(null);
   }
 
   private handleWindowPointerMove(e: PointerEvent): void {
@@ -2005,6 +3417,120 @@ export class GameEngine {
 
     if (this.status !== 'editing') return;
 
+    // Case 0A: Dragging a 3D Limb Joint Gizmo ring ('proximal' | 'middle' | 'distal')
+    if (
+      this.draggingLimbJointRole &&
+      this.selectedPlacedInstanceId &&
+      this.limbJointDragStartMorph
+    ) {
+      const dx = e.clientX - this.limbJointDragStartClient.x;
+      const dy = e.clientY - this.limbJointDragStartClient.y;
+      if (this.draggingLimbJointRole === 'proximal') {
+        const baseUpper = this.limbJointDragStartMorph.upperJointAngle ?? 0;
+        this.updatePlacedOrganMorphology(this.selectedPlacedInstanceId, {
+          upperJointAngle: baseUpper - dy * 0.01 + dx * 0.005,
+        });
+      } else if (this.draggingLimbJointRole === 'middle') {
+        const baseMiddle = this.limbJointDragStartMorph.middleJointAngle ?? 0;
+        this.updatePlacedOrganMorphology(this.selectedPlacedInstanceId, {
+          middleJointAngle: baseMiddle + dy * 0.012 + dx * 0.006,
+        });
+      } else if (this.draggingLimbJointRole === 'distal') {
+        const baseLen = this.limbJointDragStartMorph.boneLength ?? 1.0;
+        this.updatePlacedOrganMorphology(this.selectedPlacedInstanceId, {
+          boneLength: baseLen + (dx - dy) * 0.006,
+        });
+      }
+      this.renderer.domElement.style.cursor = 'grabbing';
+      return;
+    }
+
+    // Case 0B: Dragging an internal vertebra in 3D space with Gaussian Falloff to neighboring vertebrae
+    if (
+      this.draggingVertebraIndex !== null &&
+      this.vertebraDragStartNode !== null
+    ) {
+      const dyScreen = e.clientY - this.vertebraDragStartClient.y;
+      const dxScreen = e.clientX - this.vertebraDragStartClient.x;
+      const deltaY = -dyScreen * 0.0075;
+      const deltaX = this.settings.autoBilateralSymmetry
+        ? 0
+        : dxScreen * 0.006;
+      const deltaPitch = -dyScreen * 0.005;
+
+      const baseNodes =
+        this.vertebraDragStartNodes &&
+        this.vertebraDragStartNodes.length ===
+          (this.stats.spineNodes?.length ?? 0)
+          ? this.vertebraDragStartNodes
+          : this.stats.spineNodes ?? [];
+
+      if (baseNodes.length >= 3) {
+        // Discrete Gaussian damping (selected: 1.0, direct neighbor: 0.45, next neighbor: 0.15)
+        const nextNodes: SpineVertebraNode[] = baseNodes.map((startNode, i) => {
+          const dist = Math.abs(i - this.draggingVertebraIndex!);
+          let weight = 0;
+          if (dist === 0) {
+            weight = 1.0;
+          } else if (dist === 1) {
+            weight = 0.45;
+          } else if (dist === 2) {
+            weight = 0.15;
+          } else {
+            weight = Math.max(0, 0.15 * Math.pow(0.3, dist - 2));
+          }
+          return {
+            ...startNode,
+            x: this.settings.autoBilateralSymmetry
+              ? 0
+              : THREE.MathUtils.clamp(
+                  startNode.x + deltaX * weight,
+                  -0.65,
+                  0.65
+                ),
+            y: THREE.MathUtils.clamp(
+                startNode.y + deltaY * weight,
+                -0.55,
+                1.35
+              ),
+            pitch: THREE.MathUtils.clamp(
+              startNode.pitch + deltaPitch * weight,
+              -Math.PI * 0.42,
+              Math.PI * 0.42
+            ),
+          };
+        });
+        this.stats.spineNodes = nextNodes;
+        this.player.setSpineNodes(nextNodes);
+        this.emitUISnapshot();
+      } else {
+        const nextY = THREE.MathUtils.clamp(
+          this.vertebraDragStartNode.y + deltaY,
+          -0.55,
+          1.35
+        );
+        const nextX = this.settings.autoBilateralSymmetry
+          ? 0
+          : THREE.MathUtils.clamp(
+              this.vertebraDragStartNode.x + deltaX,
+              -0.65,
+              0.65
+            );
+        const nextPitch = THREE.MathUtils.clamp(
+          deltaPitch,
+          -Math.PI * 0.42,
+          Math.PI * 0.42
+        );
+        this.updateVertebraNode(this.draggingVertebraIndex, {
+          x: nextX,
+          y: nextY,
+          pitch: nextPitch,
+        });
+      }
+      this.renderer.domElement.style.cursor = 'grabbing';
+      return;
+    }
+
     const hasPlaneHit = this.updateRaycasterFromClientCoords(
       e.clientX,
       e.clientY
@@ -2025,23 +3551,40 @@ export class GameEngine {
         targetOrg.localYaw = nextYaw;
         this.player.syncPlacedOrgans(
           this.stats.placedOrgans,
-          this.selectedPlacedInstanceId
+          this.selectedPlacedInstanceId,
+          false
         );
       }
       this.renderer.domElement.style.cursor = 'grabbing';
       return;
     }
 
-    // Case A: Dragging a 3D Spine Stretch Arrow to elongate/shorten the torso
+    // Case A: Dragging a 3D Spine Stretch Arrow to elongate/shorten the torso and add/fuse vertebrae
     if (this.draggingSpineArrow) {
       const localPt = this.planeHitPoint.clone();
       this.player.group.worldToLocal(localPt);
-      const targetLen = THREE.MathUtils.clamp(
-        (Math.abs(localPt.z) - 0.45) / 1.38,
-        0.75,
-        1.75
-      );
-      this.setSpineLength(targetLen);
+      const end = this.draggingSpineArrow === 'arrow_front' ? 'head' : 'tail';
+      const tractionRes = this.player.handleSpineTractionDrag(end, localPt.z);
+      if (tractionRes.changed) {
+        this.stats.spineNodes = this.player.getSpineNodes();
+        const firstZ = this.stats.spineNodes[0]?.z ?? -1;
+        const lastZ =
+          this.stats.spineNodes[this.stats.spineNodes.length - 1]?.z ?? 1;
+        this.stats.spineLength = THREE.MathUtils.clamp(
+          (lastZ - firstZ) * 0.58,
+          0.75,
+          1.75
+        );
+        this.recalculateVitalCaps();
+        this.emitUISnapshot();
+      } else {
+        const targetLen = THREE.MathUtils.clamp(
+          (Math.abs(localPt.z) - 0.45) / 1.38,
+          0.75,
+          1.75
+        );
+        this.setSpineLength(targetLen);
+      }
       return;
     }
 
@@ -2054,11 +3597,19 @@ export class GameEngine {
       const slot = this.preparedEvolutionCatalog.find(
         (s) => s.id === this.draggingCatalogAdaptationId
       );
+      const addedComplexity = getOrganComplexityCost(
+        this.draggingCatalogAdaptationId,
+        effectiveSymmetry
+      );
+      const withinComplexity =
+        (this.stats.complexityScore ?? 0) + addedComplexity <=
+        MAX_CREATURE_COMPLEXITY;
       const canInstall =
         Boolean(slot) &&
         slot!.discoveryState !== 'locked_hidden' &&
         slot!.installedStacks < slot!.maxStacks &&
         this.stats.adn >= slot!.costAdn &&
+        withinComplexity &&
         proj.normalizedRadiusDistance <= 2.4;
 
       if (proj.normalizedRadiusDistance <= 2.8) {
@@ -2103,9 +3654,14 @@ export class GameEngine {
               0.55
             );
             targetOrg.mirrorSymmetry = effectiveSymmetry;
+            targetOrg.vertebraIndex = proj.vertebraIndex;
+            targetOrg.axialT = proj.axialT;
+            targetOrg.surfaceAngle = proj.surfaceAngle;
+            targetOrg.targetSegmentId = proj.targetSegmentId;
             this.player.syncPlacedOrgans(
               this.stats.placedOrgans,
-              this.selectedPlacedInstanceId
+              this.selectedPlacedInstanceId,
+              false
             );
             this.player.setDragPreview(null, 0, false, false);
           } else {
@@ -2122,7 +3678,16 @@ export class GameEngine {
       return;
     }
 
-    // Case D: Hover feedback on Orientation Gizmo, 3D Spine Arrows & Internal Vertebrae
+    // Case D: Hover feedback on Limb Joint Gizmos, Orientation Gizmo, 3D Spine Arrows & Internal Vertebrae
+    const limbGizmos = this.player.getSelectedLimbJointGizmoObjects();
+    if (limbGizmos.length > 0) {
+      const jHits = this.raycaster.intersectObjects(limbGizmos, true);
+      if (jHits.length > 0) {
+        this.renderer.domElement.style.cursor = 'grab';
+        return;
+      }
+    }
+
     const gizmoObj = this.player.getOrientationGizmoObject();
     if (gizmoObj) {
       const gizmoHits = this.raycaster.intersectObject(gizmoObj, true);
@@ -2175,10 +3740,31 @@ export class GameEngine {
       this.hoveredVertebraIndex = vIdx;
       this.hoveredVertebraSegmentIndex = segIdx;
       this.player.setHoveredSpineControl(null, vIdx);
-      this.renderer.domElement.style.cursor = 'ns-resize';
+      this.renderer.domElement.style.cursor = 'grab';
       return;
     }
 
+    // Check hover over the 5 modular body segments for wireframe contour feedback
+    const segmentHits = this.raycaster.intersectObjects(
+      this.player.getBodySegmentObjects(),
+      false
+    );
+    if (segmentHits.length > 0) {
+      const segId =
+        (segmentHits[0].object.userData.bodySegmentId as
+          | BodySegmentId
+          | undefined) ?? null;
+      this.hoveredBodySegmentId = segId;
+      this.player.setHoveredBodySegment(segId);
+      this.hoveredVertebraIndex = null;
+      this.hoveredVertebraSegmentIndex = null;
+      this.player.setHoveredSpineControl(null, null);
+      this.renderer.domElement.style.cursor = 'pointer';
+      return;
+    }
+
+    this.hoveredBodySegmentId = null;
+    this.player.setHoveredBodySegment(null);
     this.hoveredVertebraIndex = null;
     this.hoveredVertebraSegmentIndex = null;
     this.player.setHoveredSpineControl(null, null);
@@ -2201,7 +3787,29 @@ export class GameEngine {
       this.repositioningInstanceId = null;
       this.draggingSpineArrow = null;
       this.draggingOrientationInstanceId = null;
+      this.draggingVertebraIndex = null;
+      this.vertebraDragStartNode = null;
+      this.vertebraDragStartNodes = null;
+      this.draggingLimbJointRole = null;
+      this.limbJointDragStartMorph = null;
       return;
+    }
+
+    if (this.draggingLimbJointRole) {
+      this.draggingLimbJointRole = null;
+      this.limbJointDragStartMorph = null;
+      this.renderer.domElement.style.cursor = 'default';
+      this.saveToLocalStorage();
+      this.emitUISnapshot();
+    }
+
+    if (this.draggingVertebraIndex !== null) {
+      this.draggingVertebraIndex = null;
+      this.vertebraDragStartNode = null;
+      this.vertebraDragStartNodes = null;
+      this.renderer.domElement.style.cursor = 'default';
+      this.saveToLocalStorage();
+      this.emitUISnapshot();
     }
 
     if (this.draggingOrientationInstanceId) {
@@ -2233,7 +3841,11 @@ export class GameEngine {
             dragId,
             proj.angle,
             proj.axialOffset,
-            effectiveSymmetry
+            effectiveSymmetry,
+            proj.vertebraIndex,
+            proj.axialT,
+            proj.surfaceAngle,
+            proj.targetSegmentId
           );
         }
       }
@@ -2274,93 +3886,139 @@ export class GameEngine {
 
     this.updateRaycasterFromClientCoords(e.clientX, e.clientY);
 
-    let targetSegIdx: 0 | 1 | 2 | null = this.hoveredVertebraSegmentIndex;
-    let targetVertebraIdx: number | null = this.hoveredVertebraIndex;
-
-    if (targetSegIdx === null) {
-      const vertebraHits = this.raycaster.intersectObjects(
-        this.player.getVertebraObjects(),
-        true
-      );
-      if (vertebraHits.length > 0) {
-        let vObj: THREE.Object3D | null = vertebraHits[0].object;
-        while (vObj && vObj.userData.vertebraIndex === undefined) {
-          vObj = vObj.parent;
-        }
-        if (typeof vObj?.userData.vertebraIndex === 'number') {
-          targetVertebraIdx = vObj.userData.vertebraIndex as number;
-        }
-        if (typeof vObj?.userData.spineSegmentIndex === 'number') {
-          targetSegIdx = vObj.userData.spineSegmentIndex as 0 | 1 | 2;
-        }
+    const nowMs = performance.now();
+    const recordWheelSnapshotIfNeeded = () => {
+      if (nowMs - this.lastWheelHistoryTimestamp > 450) {
+        this.pushEditorHistorySnapshot();
       }
-    }
+      this.lastWheelHistoryTimestamp = nowMs;
+    };
 
-    if (targetSegIdx !== null) {
-      const deltaRadius = e.deltaY < 0 ? 0.065 : -0.065;
-      const currentRadius = this.stats.torsoRadii[targetSegIdx];
-      this.hoveredVertebraIndex = targetVertebraIdx;
-      this.hoveredVertebraSegmentIndex = targetSegIdx;
-      this.player.setHoveredSpineControl(null, targetVertebraIdx);
-      this.setTorsoRadius(targetSegIdx, currentRadius + deltaRadius);
+    if (e.deltaY === 0) return;
+    const direction = e.deltaY < 0 ? 1 : -1;
+
+    // 1. Si hay una esfera del cuerpo seleccionada -> Escalar solo su radio dentro de MORPHOLOGY_SCALE_LIMITS.bodySegment
+    if (this.selectedSphereIndex !== null) {
+      recordWheelSnapshotIfNeeded();
+      const delta = direction * MORPHOLOGY_SCALE_LIMITS.bodySegment.step;
+      this.adjustBodySphereRadius(this.selectedSphereIndex, delta);
       return;
     }
 
-    // If not hovering a vertebra, check if hovering or selecting a placed 3D organ -> wheel scales scaleOverall!
-    let targetOrganId: string | null = null;
-    const organHits = this.raycaster.intersectObjects(
-      this.player.getPlacedOrganRootObjects(),
-      true
-    );
-    if (organHits.length > 0) {
-      let obj: THREE.Object3D | null = organHits[0].object;
-      while (obj && !obj.userData.placedInstanceId) {
-        obj = obj.parent;
-      }
-      if (typeof obj?.userData.placedInstanceId === 'string') {
-        targetOrganId = obj.userData.placedInstanceId;
-      }
-    }
-    if (!targetOrganId && this.selectedPlacedInstanceId) {
-      targetOrganId = this.selectedPlacedInstanceId;
+    // 2. Si hay una extremidad seleccionada (pata o brazo) -> Escalar dentro de MORPHOLOGY_SCALE_LIMITS.limbThickness
+    const selectedOrgan = this.selectedPlacedInstanceId
+      ? this.stats.placedOrgans.find(
+          (o) => o.instanceId === this.selectedPlacedInstanceId
+        )
+      : undefined;
+    const isSelectedOrganLimb = selectedOrgan
+      ? isLegAdaptation(selectedOrgan.adaptationId) ||
+        isFootAdaptation(selectedOrgan.adaptationId) ||
+        isArmAdaptation(selectedOrgan.adaptationId) ||
+        isHandAdaptation(selectedOrgan.adaptationId)
+      : false;
+
+    const selectedLimbId: string | null = isSelectedOrganLimb
+      ? selectedOrgan!.instanceId
+      : this.editorSelectionTarget === 'legs'
+      ? 'legs'
+      : this.editorSelectionTarget === 'arms'
+      ? 'arms'
+      : null;
+
+    if (selectedLimbId !== null) {
+      recordWheelSnapshotIfNeeded();
+      const delta = direction * MORPHOLOGY_SCALE_LIMITS.limbThickness.step;
+      this.adjustLimbThickness(selectedLimbId, delta);
+      return;
     }
 
-    if (targetOrganId) {
-      const targetOrg = this.stats.placedOrgans.find(
-        (o) => o.instanceId === targetOrganId
-      );
-      if (targetOrg) {
-        const curScale = targetOrg.morphology?.scaleOverall ?? 1.0;
-        const deltaScale = e.deltaY < 0 ? 0.08 : -0.08;
-        this.selectPlacedOrgan(targetOrganId);
-        this.updatePlacedOrganMorphology(targetOrganId, {
-          scaleOverall: THREE.MathUtils.clamp(curScale + deltaScale, 0.5, 2.2),
-        });
-      }
+    // 3. Si hay otro órgano externo seleccionado (boca, ojo, púa, glándula, etc.) -> Escalar con MORPHOLOGY_SCALE_LIMITS.organScale
+    if (selectedOrgan && this.selectedPlacedInstanceId) {
+      recordWheelSnapshotIfNeeded();
+      const curScale = selectedOrgan.morphology?.scaleOverall ?? 1.0;
+      const delta = direction * MORPHOLOGY_SCALE_LIMITS.organScale.step;
+      this.updatePlacedOrganMorphology(this.selectedPlacedInstanceId, {
+        scaleOverall: THREE.MathUtils.clamp(
+          curScale + delta,
+          MORPHOLOGY_SCALE_LIMITS.organScale.min,
+          MORPHOLOGY_SCALE_LIMITS.organScale.max
+        ),
+      });
+      return;
     }
+
+    // 4. En fase celular (cell_stage), si el objetivo es el cuerpo pero no se apuntó a una esfera concreta:
+    if (
+      this.stats.evolutionaryStage === 'cell_stage' &&
+      this.editorSelectionTarget === 'body'
+    ) {
+      recordWheelSnapshotIfNeeded();
+      const segIdx: 0 | 1 | 2 = this.hoveredVertebraSegmentIndex ?? 1;
+      const currentRadius = this.stats.torsoRadii[segIdx];
+      this.setTorsoRadius(
+        segIdx,
+        THREE.MathUtils.clamp(
+          currentRadius + direction * MORPHOLOGY_SCALE_LIMITS.bodySegment.step,
+          MORPHOLOGY_SCALE_LIMITS.bodySegment.min,
+          MORPHOLOGY_SCALE_LIMITS.bodySegment.max
+        )
+      );
+      return;
+    }
+
+    // 5. Si no hay nada seleccionado -> Zoom suave de la cámara del podio
+    this.cameraController.zoomEditorCamera(-direction * 0.06);
   }
 
   private handleEditorKeyDown(e: KeyboardEvent): void {
     audioManager.unlock();
     if (this.status === 'intro_cinematic') {
-      if (e.code === 'Space' || e.key === ' ' || e.key === 'Escape') {
+      if (e.code === 'Space' || e.key === ' ') {
         e.preventDefault();
         this.skipIntroCinematic();
       }
       return;
     }
 
-    if (this.status === 'menu') {
-      if (e.key === 'Escape' && this.selectedMenuSlotId !== null) {
+    if (this.status === 'brain_cinematic') {
+      if (e.code === 'Space' || e.key === ' ') {
         e.preventDefault();
-        this.selectMenuPlanetSlot(null);
+        this.skipBrainCinematic();
       }
+      return;
+    }
+
+    if (this.status === 'menu') {
       return;
     }
 
     if (this.status !== 'editing') return;
     const activeTag = document.activeElement?.tagName.toLowerCase();
     if (activeTag === 'input' || activeTag === 'textarea') return;
+
+    // Undo / Redo shortcuts (Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z)
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ') {
+      e.preventDefault();
+      if (e.shiftKey) {
+        this.redoEditorAction();
+      } else {
+        this.undoEditorAction();
+      }
+      return;
+    }
+    if ((e.ctrlKey || e.metaKey) && e.code === 'KeyY') {
+      e.preventDefault();
+      this.redoEditorAction();
+      return;
+    }
+
+    // Tab or KeyA toggles Bilateral Symmetry (Simetría Bilateral) in the 3D Workshop
+    if (e.key === 'Tab' || e.code === 'KeyA') {
+      e.preventDefault();
+      this.toggleEditorSymmetry();
+      return;
+    }
 
     if (
       (e.key === 'Delete' || e.key === 'Backspace') &&
@@ -2383,6 +4041,7 @@ export class GameEngine {
   }
 
   public setBodyShape(shape: CellBodyShape): void {
+    this.pushEditorHistorySnapshot();
     this.stats.bodyShape = shape;
     this.player.applyMorphology(
       this.stats.bodyShape,
@@ -2390,22 +4049,41 @@ export class GameEngine {
       this.stats.evolutionaryStage === 'creature_stage',
       this.stats.spineSegments,
       this.stats.spineLength,
-      this.stats.torsoRadii
+      this.stats.torsoRadii,
+      this.stats.spineNodes,
+      this.stats.paintConfig,
+      this.stats.bodySegments
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
   }
 
   public setColorTheme(theme: CellColorTheme): void {
+    this.pushEditorHistorySnapshot();
     this.stats.colorTheme = theme;
     this.introCinematicController.setMonumentCoreTheme(theme);
+    const themeBaseHex: Record<CellColorTheme, string> = {
+      cyan: '#06b6d4',
+      emerald: '#10b981',
+      crimson: '#f43f5e',
+      violet: '#a855f7',
+    };
+    if (this.stats.paintConfig) {
+      this.stats.paintConfig = {
+        ...this.stats.paintConfig,
+        baseColor: themeBaseHex[theme] ?? '#06b6d4',
+      };
+    }
     this.player.applyMorphology(
       this.stats.bodyShape,
       this.stats.colorTheme,
       this.stats.evolutionaryStage === 'creature_stage',
       this.stats.spineSegments,
       this.stats.spineLength,
-      this.stats.torsoRadii
+      this.stats.torsoRadii,
+      this.stats.spineNodes,
+      this.stats.paintConfig,
+      this.stats.bodySegments
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
@@ -2413,63 +4091,149 @@ export class GameEngine {
 
   public setSpineSegments(segments: 1 | 2 | 3): void {
     this.stats.spineSegments = segments;
-    this.stats.spineLength =
+    const nextLength =
       segments === 3 ? 1.44 : segments === 2 ? 1.22 : 1.0;
-    this.player.applyMorphology(
-      this.stats.bodyShape,
-      this.stats.colorTheme,
-      this.stats.evolutionaryStage === 'creature_stage',
-      this.stats.spineSegments,
-      this.stats.spineLength,
-      this.stats.torsoRadii
-    );
-    this.saveToLocalStorage();
-    this.emitUISnapshot();
+    this.setSpineLength(nextLength);
   }
 
+  /**
+   * Starts the 3D Spore Brain Evolution Sequence ('brain_cinematic') when transitioning
+   * from Stage 5 Cell Stage to the Terrestrial Creature Stage.
+   */
   public evolveToCreatureStage(): void {
     if (this.stats.evolutionaryStage === 'creature_stage') {
       this.closeEditor();
       return;
     }
 
+    // Freeze ocean predators/food and close Petri dish overlay so the camera can zoom into the cell's head
+    this.setEditorSandboxIsolation(false);
+    this.player.setEditorMode(false);
+    this.predatorManager.setEcosystemVisible(false, this.player.position);
+    this.foodManager.setEcosystemVisible(false);
+    this.fossilMeteorManager.setEcosystemVisible(false);
+    this.matingCallTimer = 0;
+    this.player.hideMateCell();
+    this.inputController.resetInputs();
+
+    this.status = 'brain_cinematic';
+    this.player.setBrainCinematicActive(true);
+    this.player.updateBrainCinematic(0, this.elapsedActiveTime);
+    audioManager.playBrainEvolutionSequence();
+
+    this.brainCinematicState = {
+      active: true,
+      phase: 0,
+      progress: 0,
+      elapsed: 0,
+      duration: 5.5,
+      brainVolumeCc: 5,
+      synapticActivityHz: 4,
+      flashOpacity: 0,
+      speciesName: this.stats.speciesName || 'Organismo Primigenio',
+      phaseTitle: 'Fase I · Germinación Axonal y Polarización Craneal',
+      phaseSubtitle:
+        'El núcleo celular hiper-activa sus filamentos dendríticos y proyecta el tallo axonal hacia el polo anterior...',
+    };
+
+    this.timer.update();
+    this.emitUISnapshot();
+  }
+
+  public skipBrainCinematic(): void {
+    if (this.status !== 'brain_cinematic') return;
+    this.completeBrainCinematic(true);
+  }
+
+  private completeBrainCinematic(skipped = false): void {
+    this.player.setBrainCinematicActive(false);
+    this.brainCinematicState = undefined;
+
     this.stats.evolutionaryStage = 'creature_stage';
     this.stats.growthStage = 5;
     this.stats.totalAdnEarned = Math.max(320, this.stats.totalAdnEarned);
     this.completedQuestStep = 4;
 
-    this.setEditorSandboxIsolation(false);
-    this.player.setEditorMode(false);
+    // 1. Retire strictly microbial/cellular parts (flagella, cilia, internal organelles) with 100% DNA refund
+    let refundedCellAdn = 0;
+    const retainedOrgans: PlacedOrganInstance[] = [];
+    for (const org of this.stats.placedOrgans) {
+      const normId = normalizeAdaptationId(org.adaptationId);
+      if (isCellOnlyAdaptation(normId)) {
+        const slot = this.preparedEvolutionCatalog.find((s) => s.id === normId);
+        refundedCellAdn += slot ? slot.costAdn : 15;
+      } else {
+        retainedOrgans.push(org);
+      }
+    }
+    this.stats.placedOrgans = retainedOrgans;
+
+    // Grant refunded DNA + +90 ADN encephalization bonus for terrestrial limbs
+    this.stats.adn += refundedCellAdn + 90;
+
+    // Unlock all terrestrial adaptations + compatible cell-origin budget parts in the Early Creature Creator
+    for (const def of ADAPTATION_CATALOG) {
+      if (def.stage === 'creature_stage' || !isCellOnlyAdaptation(def.id)) {
+        this.discoveredAdaptationIds.add(def.id);
+      }
+    }
+
+    // Note (Spore Early Creature Creator): Do NOT force-equip starter limbs automatically.
+    // The player keeps their compatible cellular parts (mouths, eyes, spikes, poison, electric)
+    // and receives the refunded microbial DNA + 90 ADN bonus so they can freely attach legs
+    // from the palette or confirm a legless crawling creature (slug mode).
+
+    // Set an arched terrestrial spine posture with 6 vertebrae
+    this.stats.spineLength = Math.max(1.25, this.stats.spineLength);
+    this.stats.spineSegments = 2;
+    this.stats.spineNodes = createDefaultSpineNodes(6, this.stats.spineLength).map(
+      (n, idx, arr) => {
+        const t = arr.length > 1 ? idx / (arr.length - 1) : 0.5;
+        return {
+          ...n,
+          y: Math.sin(t * Math.PI) * 0.28 + (1 - t) * 0.26,
+          pitch: Math.cos(t * Math.PI) * 0.18,
+        };
+      }
+    );
+
     this.syncWorldStageScale(5, false);
+    this.player.position.set(0, 0, 5.2);
     this.player.applyMorphology(
       this.stats.bodyShape,
       this.stats.colorTheme,
       true,
       this.stats.spineSegments,
       this.stats.spineLength,
-      this.stats.torsoRadii
+      this.stats.torsoRadii,
+      this.stats.spineNodes,
+      this.stats.paintConfig,
+      this.stats.bodySegments,
+      this.stats.creatureMorphology
     );
     this.syncCatalogAndOrganismState();
     this.stats.health = this.stats.maxHealth;
     this.stats.energy = this.stats.maxEnergy;
     this.stats.isStarving = false;
 
-    this.player.position.set(0, 0, 5.2);
-    this.player.updateEditorIdle(0, this.elapsedActiveTime);
-
     this.environment.setStageEnvironment('creature_stage');
     this.predatorManager.setStageMode('creature_stage');
     this.introCinematicController?.setPermanentMonumentVisible(false);
-    this.currentBiomeName = 'Nido de la Especie (Regeneración Activa)';
+    this.currentBiomeName = 'Nido Costero Terrestre (Taller de Criatura)';
 
-    this.status = 'playing';
-    this.matingCallTimer = 0;
-    this.player.hideMateCell();
+    // Transition directly into the Terrestrial Creature Workshop on the Coastal Sandy Nest
+    this.status = 'editing';
+    this.setEditorSandboxIsolation(true);
+    this.cameraController.resetEditorOrbit();
+    this.player.setEditorMode(true);
+    this.player.updateEditorIdle(0, this.elapsedActiveTime);
     this.inputController.resetInputs();
     this.timer.update();
 
     this.setEventMessage(
-      `¡Transición Terrestre completada! ${this.stats.speciesName || 'Tu especie'} camina sobre la Costa Terrestre`
+      skipped
+        ? `¡Creador de Criatura Temprano (+${refundedCellAdn + 90} ADN)! Añade patas de la paleta o confirma para reptar`
+        : `¡Cerebro Primitivo absorbido (+${refundedCellAdn + 90} ADN)! Ensambla extremidades o sal a tierra reptando`
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
@@ -2501,13 +4265,10 @@ export class GameEngine {
     if (
       this.status === 'gameover' ||
       this.status === 'menu' ||
-      this.status === 'intro_cinematic'
+      this.status === 'intro_cinematic' ||
+      this.status === 'brain_cinematic' ||
+      this.status === 'editing'
     ) {
-      return;
-    }
-
-    if (this.status === 'editing') {
-      this.closeEditor();
       return;
     }
 
@@ -2519,7 +4280,6 @@ export class GameEngine {
       }
       this.player.hideMateCell();
       this.inputController.resetInputs();
-      this.saveToLocalStorage();
       audioManager.playMenuOpenClose();
     } else if (this.status === 'paused') {
       this.status = 'playing';
@@ -2533,13 +4293,10 @@ export class GameEngine {
     if (
       this.status === 'gameover' ||
       this.status === 'menu' ||
-      this.status === 'intro_cinematic'
+      this.status === 'intro_cinematic' ||
+      this.status === 'brain_cinematic' ||
+      this.status === 'editing'
     ) {
-      return;
-    }
-
-    if (this.status === 'editing') {
-      this.closeEditor();
       return;
     }
 
@@ -2596,13 +4353,25 @@ export class GameEngine {
       this.repositioningInstanceId = null;
       this.draggingSpineArrow = null;
       this.draggingOrientationInstanceId = null;
+      this.draggingVertebraIndex = null;
+      this.vertebraDragStartNode = null;
+      this.vertebraDragStartNodes = null;
+      this.draggingLimbJointRole = null;
+      this.limbJointDragStartMorph = null;
       this.hoveredVertebraIndex = null;
       this.hoveredVertebraSegmentIndex = null;
+      this.hoveredBodySegmentId = null;
+      this.selectedBodySegmentId = null;
+      this.selectedSphereIndex = null;
+      this.player.setHoveredBodySegment(null);
+      this.player.setSelectedSphereIndex(null);
       this.isRightClickOrbiting = false;
       this.selectedPlacedInstanceId = null;
       this.renderer.domElement.style.cursor = 'default';
       this.setEditorSandboxIsolation(false);
       this.player.setEditorMode(false);
+      this.editorPreviewAction = 'idle';
+      this.player.setEditorPreviewAction('idle');
       this.player.hideMateCell();
       this.cameraController.resetEditorOrbit();
       this.timer.update();
@@ -2616,7 +4385,11 @@ export class GameEngine {
     rawSlotId: string,
     angle: number,
     axialOffset: number,
-    mirrorSymmetry: boolean
+    mirrorSymmetry: boolean,
+    vertebraIndex?: number,
+    axialT?: number,
+    surfaceAngle?: number,
+    targetSegmentId?: BodySegmentId
   ): boolean {
     const slotId = normalizeAdaptationId(rawSlotId);
     const slot = this.preparedEvolutionCatalog.find((s) => s.id === slotId);
@@ -2644,23 +4417,181 @@ export class GameEngine {
       return false;
     }
 
+    const forceBilateral =
+      isLegAdaptation(slot.id) ||
+      isArmAdaptation(slot.id) ||
+      isHandAdaptation(slot.id) ||
+      isFootAdaptation(slot.id);
+    const effectiveMirror = forceBilateral
+      ? this.settings.autoBilateralSymmetry
+      : mirrorSymmetry;
+
+    const addedComplexity = getOrganComplexityCost(slot.id, effectiveMirror);
+    const currentComplexity = this.stats.complexityScore ?? 0;
+    if (currentComplexity + addedComplexity > MAX_CREATURE_COMPLEXITY) {
+      this.setEventMessage(
+        'Complejímetro al 100%: Retira piezas o vértebras para añadir más adaptaciones'
+      );
+      this.emitUISnapshot();
+      return false;
+    }
+
     const prevMaxHealth = this.stats.maxHealth;
     const prevMaxEnergy = this.stats.maxEnergy;
 
+    const effectiveAngle =
+      forceBilateral && Math.abs(Math.sin(angle)) <= 0.18
+        ? isLegAdaptation(slot.id) || isFootAdaptation(slot.id)
+          ? Math.PI * 0.42
+          : Math.PI * 0.72
+        : angle;
+
+    // Direct replacement/swap when dropping a new Foot onto a limb that already has a foot
+    if (isFootAdaptation(slot.id)) {
+      let existingFootIndex = -1;
+      if (this.selectedPlacedInstanceId) {
+        const selIdx = this.stats.placedOrgans.findIndex(
+          (o) => o.instanceId === this.selectedPlacedInstanceId
+        );
+        if (
+          selIdx !== -1 &&
+          isFootAdaptation(this.stats.placedOrgans[selIdx].adaptationId)
+        ) {
+          existingFootIndex = selIdx;
+        }
+      }
+      if (existingFootIndex === -1) {
+        let minDiff = 0.65;
+        for (let i = 0; i < this.stats.placedOrgans.length; i++) {
+          const org = this.stats.placedOrgans[i];
+          if (isFootAdaptation(org.adaptationId)) {
+            const diff = Math.abs(org.angle - effectiveAngle);
+            if (diff < minDiff) {
+              minDiff = diff;
+              existingFootIndex = i;
+            }
+          }
+        }
+      }
+      if (existingFootIndex !== -1) {
+        this.pushEditorHistorySnapshot();
+        this.stats.adn -= slot.costAdn;
+        const oldFoot = this.stats.placedOrgans[existingFootIndex];
+        oldFoot.adaptationId = slot.id;
+        this.selectedPlacedInstanceId = oldFoot.instanceId;
+        this.syncCatalogAndOrganismState();
+        audioManager.playEvolutionEquip();
+        this.setEventMessage(`Pie sustituido: ${slot.name}`);
+        this.saveToLocalStorage();
+        this.emitUISnapshot();
+        return true;
+      }
+    }
+
+    // Direct replacement/swap when dropping a new Hand onto an arm that already has a hand
+    if (isHandAdaptation(slot.id)) {
+      let existingHandIndex = -1;
+      if (this.selectedPlacedInstanceId) {
+        const selIdx = this.stats.placedOrgans.findIndex(
+          (o) => o.instanceId === this.selectedPlacedInstanceId
+        );
+        if (
+          selIdx !== -1 &&
+          isHandAdaptation(this.stats.placedOrgans[selIdx].adaptationId)
+        ) {
+          existingHandIndex = selIdx;
+        }
+      }
+      if (existingHandIndex === -1) {
+        let minDiff = 0.65;
+        for (let i = 0; i < this.stats.placedOrgans.length; i++) {
+          const org = this.stats.placedOrgans[i];
+          if (isHandAdaptation(org.adaptationId)) {
+            const diff = Math.abs(org.angle - effectiveAngle);
+            if (diff < minDiff) {
+              minDiff = diff;
+              existingHandIndex = i;
+            }
+          }
+        }
+      }
+      if (existingHandIndex !== -1) {
+        this.pushEditorHistorySnapshot();
+        this.stats.adn -= slot.costAdn;
+        const oldHand = this.stats.placedOrgans[existingHandIndex];
+        oldHand.adaptationId = slot.id;
+        this.selectedPlacedInstanceId = oldHand.instanceId;
+        this.syncCatalogAndOrganismState();
+        audioManager.playEvolutionEquip();
+        this.setEventMessage(`Mano sustituida: ${slot.name}`);
+        this.saveToLocalStorage();
+        this.emitUISnapshot();
+        return true;
+      }
+    }
+
+    this.pushEditorHistorySnapshot();
     this.stats.adn -= slot.costAdn;
     const newInstance: PlacedOrganInstance = {
       instanceId: `organ_${slot.id}_${Date.now()}_${this.organInstanceCounter++}`,
       adaptationId: slot.id,
-      angle,
+      angle: effectiveAngle,
       axialOffset,
-      mirrorSymmetry,
+      mirrorSymmetry: effectiveMirror,
       orientationYaw: 0,
       orientationPitch: 0,
       localYaw: 0,
       localPitch: 0,
       morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+      vertebraIndex,
+      axialT,
+      surfaceAngle,
+      targetSegmentId,
     };
     this.stats.placedOrgans.push(newInstance);
+
+    // Pre-assemble default Foot (foot_paw) on newly equipped legs
+    if (isLegAdaptation(slot.id)) {
+      const footInstance: PlacedOrganInstance = {
+        instanceId: `organ_foot_paw_${Date.now()}_${this.organInstanceCounter++}`,
+        adaptationId: 'foot_paw',
+        angle: effectiveAngle,
+        axialOffset,
+        mirrorSymmetry: effectiveMirror,
+        orientationYaw: 0,
+        orientationPitch: 0,
+        localYaw: 0,
+        localPitch: 0,
+        morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+        vertebraIndex,
+        axialT,
+        surfaceAngle,
+        targetSegmentId,
+      };
+      this.stats.placedOrgans.push(footInstance);
+      this.discoveredAdaptationIds.add('foot_paw');
+    } else if (isArmAdaptation(slot.id)) {
+      // Pre-assemble default Hand (hand_primate) on newly equipped arms
+      const handInstance: PlacedOrganInstance = {
+        instanceId: `organ_hand_primate_${Date.now()}_${this.organInstanceCounter++}`,
+        adaptationId: 'hand_primate',
+        angle: effectiveAngle,
+        axialOffset,
+        mirrorSymmetry: effectiveMirror,
+        orientationYaw: 0,
+        orientationPitch: 0,
+        localYaw: 0,
+        localPitch: 0,
+        morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+        vertebraIndex,
+        axialT,
+        surfaceAngle,
+        targetSegmentId,
+      };
+      this.stats.placedOrgans.push(handInstance);
+      this.discoveredAdaptationIds.add('hand_primate');
+    }
+
     this.selectedPlacedInstanceId = newInstance.instanceId;
     this.syncCatalogAndOrganismState();
 
@@ -2755,6 +4686,7 @@ export class GameEngine {
 
     this.inputController.resetInputs();
     this.setEditorSandboxIsolation(false);
+    this.syncActivePlanetPalette(this.activeSlotId);
     this.environment.setStageEnvironment('cell_stage');
     this.predatorManager.setStageMode('cell_stage');
     this.introCinematicController?.setMonumentCoreTheme(this.stats.colorTheme);
@@ -2766,8 +4698,13 @@ export class GameEngine {
       false,
       this.stats.spineSegments,
       this.stats.spineLength,
-      this.stats.torsoRadii
+      this.stats.torsoRadii,
+      this.stats.spineNodes,
+      this.stats.paintConfig,
+      this.stats.bodySegments,
+      this.stats.creatureMorphology
     );
+    this.player.syncPlacedOrgans(this.stats.placedOrgans, null);
     this.syncCatalogAndOrganismState();
     this.stats.health = this.stats.maxHealth;
     this.stats.energy = this.stats.maxEnergy;
@@ -2787,6 +4724,394 @@ export class GameEngine {
   public setTouchControl(key: keyof InputState, active: boolean): void {
     if (this.status !== 'playing') return;
     this.inputController.setControlState(key, active);
+  }
+
+  // --- DEVTOOLS / DEBUG SUITE API ---
+
+  private ensureActiveGameplayForDev(): void {
+    if (this.status === 'intro_cinematic') {
+      this.introCinematicController.finishAndCleanUp(this.player.group);
+      this.solarSystemView.restoreAfterIntroCinematic(this.planetSlots);
+      this.introCinematicState = undefined;
+    }
+    if (this.status === 'brain_cinematic') {
+      this.player.setBrainCinematicActive(false);
+      this.brainCinematicState = undefined;
+    }
+    if (this.planetaryTransition?.active) {
+      this.cameraController.setAtmosphericAltitudeFactor(0, this.player);
+      this.solarSystemView.setPlanetDiveProgress(this.activeSlotId, 0, false);
+      this.planetaryTransition = undefined;
+      this.pendingTransitionAction = null;
+      this.pendingTransitionGenesis = undefined;
+      this.transitionSwitchedScene = false;
+    }
+    if (this.status === 'editing' || this.matingCallTimer > 0) {
+      this.matingCallTimer = 0;
+      this.setEditorSandboxIsolation(false);
+      this.player.setEditorMode(false);
+      this.player.hideMateCell();
+      this.cameraController.resetEditorOrbit();
+    }
+    if (
+      this.status === 'menu' ||
+      this.status === 'paused' ||
+      this.status === 'gameover' ||
+      this.status === 'intro_cinematic' ||
+      this.status === 'brain_cinematic' ||
+      this.status === 'editing'
+    ) {
+      this.status = 'playing';
+      this.setEditorSandboxIsolation(false);
+      this.inputController.resetInputs();
+      this.timer.update();
+    }
+  }
+
+  public devJumpToStage(
+    evolutionaryStage: 'cell_stage' | 'creature_stage',
+    growthStage: 1 | 2 | 3 | 4 | 5 = 1
+  ): void {
+    this.ensureActiveGameplayForDev();
+    this.stats.evolutionaryStage = evolutionaryStage;
+    this.stats.growthStage = growthStage;
+
+    if (evolutionaryStage === 'creature_stage') {
+      this.stats.growthStage = 5;
+      this.stats.totalAdnEarned = Math.max(320, this.stats.totalAdnEarned);
+      this.stats.adn = Math.max(150, this.stats.adn);
+      this.completedQuestStep = 4;
+      this.stats.activeArenaRadius = GAME_CONFIG.WORLD.ARENA_RADIUS;
+
+      // Unlock all terrestrial parts
+      for (const def of ADAPTATION_CATALOG) {
+        if (def.stage === 'creature_stage' || !isCellOnlyAdaptation(def.id)) {
+          this.discoveredAdaptationIds.add(def.id);
+        }
+      }
+
+      // Retire strictly cellular organs and ensure the creature has terrestrial legs if none are installed
+      this.stats.placedOrgans = this.stats.placedOrgans.filter(
+        (o) => !isCellOnlyAdaptation(normalizeAdaptationId(o.adaptationId))
+      );
+      const hasAnyLegs = this.stats.placedOrgans.some((o) =>
+        isLegAdaptation(o.adaptationId)
+      );
+      if (!hasAnyLegs) {
+        this.stats.placedOrgans.push(
+          {
+            instanceId: `dev_leg_pair_1_${Date.now()}`,
+            adaptationId: 'leg_digitigrade',
+            angle: Math.PI * 0.42,
+            axialOffset: 0.25,
+            mirrorSymmetry: true,
+            orientationYaw: 0,
+            orientationPitch: 0,
+            localYaw: 0,
+            localPitch: 0,
+            morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+          },
+          {
+            instanceId: `dev_foot_pair_1_${Date.now()}`,
+            adaptationId: 'foot_paw',
+            angle: Math.PI * 0.42,
+            axialOffset: 0.25,
+            mirrorSymmetry: true,
+            orientationYaw: 0,
+            orientationPitch: 0,
+            localYaw: 0,
+            localPitch: 0,
+            morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+          },
+          {
+            instanceId: `dev_arm_pair_1_${Date.now()}`,
+            adaptationId: 'arm_slender',
+            angle: Math.PI * 0.72,
+            axialOffset: -0.58,
+            mirrorSymmetry: true,
+            orientationYaw: 0,
+            orientationPitch: 0,
+            localYaw: 0,
+            localPitch: 0,
+            morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+          },
+          {
+            instanceId: `dev_hand_pair_1_${Date.now()}`,
+            adaptationId: 'hand_primate',
+            angle: Math.PI * 0.72,
+            axialOffset: -0.58,
+            mirrorSymmetry: true,
+            orientationYaw: 0,
+            orientationPitch: 0,
+            localYaw: 0,
+            localPitch: 0,
+            morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+          }
+        );
+      }
+
+      this.stats.spineLength = Math.max(1.25, this.stats.spineLength);
+      this.stats.spineSegments = 2;
+      this.stats.spineNodes = createDefaultSpineNodes(
+        6,
+        this.stats.spineLength
+      ).map((n, idx, arr) => {
+        const t = arr.length > 1 ? idx / (arr.length - 1) : 0.5;
+        return {
+          ...n,
+          y: Math.sin(t * Math.PI) * 0.28 + (1 - t) * 0.26,
+          pitch: Math.cos(t * Math.PI) * 0.18,
+        };
+      });
+
+      this.syncWorldStageScale(5, false);
+      this.environment.setStageEnvironment('creature_stage');
+      this.predatorManager.setStageMode('creature_stage');
+      this.introCinematicController?.setPermanentMonumentVisible(false);
+      this.player.position.set(0, 0, 5.2);
+      this.player.applyMorphology(
+        this.stats.bodyShape,
+        this.stats.colorTheme,
+        true,
+        this.stats.spineSegments,
+        this.stats.spineLength,
+        this.stats.torsoRadii,
+        this.stats.spineNodes,
+        this.stats.paintConfig,
+        this.stats.bodySegments,
+        this.stats.creatureMorphology
+      );
+      this.syncCatalogAndOrganismState();
+      this.currentBiomeName = 'Nido de la Especie (Regeneración Activa)';
+      this.setEventMessage(
+        'DevTools: Salto instantáneo a Fase de Criatura Terrestre (Nido Costero)'
+      );
+    } else {
+      const stageMinAdn: Record<CellularGrowthStage, number> = {
+        1: 0,
+        2: 50,
+        3: 120,
+        4: 210,
+        5: 320,
+      };
+      this.stats.totalAdnEarned = Math.max(
+        this.stats.totalAdnEarned,
+        stageMinAdn[growthStage]
+      );
+      this.stats.nextStageAdnThreshold =
+        GameEngine.getNextStageAdnThreshold(growthStage);
+
+      // Remove strictly terrestrial limbs when returning to Cell Stage and ensure a flagellum exists
+      this.stats.placedOrgans = this.stats.placedOrgans.filter(
+        (o) =>
+          !isLegAdaptation(o.adaptationId) &&
+          !isArmAdaptation(o.adaptationId) &&
+          !isFootAdaptation(o.adaptationId) &&
+          !isHandAdaptation(o.adaptationId)
+      );
+      const hasAnyFlagellum = this.stats.placedOrgans.some(
+        (o) => normalizeAdaptationId(o.adaptationId) === 'simple_flagellum'
+      );
+      if (!hasAnyFlagellum) {
+        this.stats.placedOrgans.push({
+          instanceId: `dev_flagellum_${Date.now()}`,
+          adaptationId: 'simple_flagellum',
+          angle: 0,
+          axialOffset: 0.95,
+          mirrorSymmetry: false,
+          orientationYaw: 0,
+          orientationPitch: 0,
+          morphology: { ...DEFAULT_ORGAN_MORPHOLOGY },
+        });
+      }
+
+      this.environment.setStageEnvironment('cell_stage');
+      this.syncWorldStageScale(growthStage, false);
+      this.predatorManager.setStageMode('cell_stage');
+      this.predatorManager.setPlayerGrowthStage(growthStage);
+      this.introCinematicController?.setPermanentMonumentVisible(true);
+      this.player.setGrowthStage(growthStage);
+      this.player.applyMorphology(
+        this.stats.bodyShape,
+        this.stats.colorTheme,
+        false,
+        this.stats.spineSegments,
+        this.stats.spineLength,
+        this.stats.torsoRadii,
+        this.stats.spineNodes,
+        this.stats.paintConfig
+      );
+      this.syncCatalogAndOrganismState();
+      this.currentBiomeName = this.environment.getBiomeAt(
+        this.player.position.x,
+        this.player.position.z
+      ).name;
+      this.setEventMessage(
+        `DevTools: Salto instantáneo a Fase Celular · Etapa ${growthStage}/5`
+      );
+    }
+
+    this.stats.health = this.stats.maxHealth;
+    this.stats.energy = this.stats.maxEnergy;
+    this.stats.isStarving = false;
+    this.cameraController.resetImmediate(
+      this.player.position,
+      this.player.headingAngle
+    );
+    this.saveToLocalStorage();
+    this.emitUISnapshot();
+  }
+
+  public devAddAdn(amount: number): void {
+    this.stats.adn = Math.max(0, this.stats.adn + amount);
+    if (amount > 0) {
+      this.stats.totalAdnEarned += amount;
+    }
+    this.evaluateQuests(true);
+    this.saveToLocalStorage();
+    this.setEventMessage(
+      amount >= 0
+        ? `DevTools: +${amount} ADN inyectado (Total: ${this.stats.adn} ADN)`
+        : `DevTools: ${amount} ADN ajustado (Total: ${this.stats.adn} ADN)`
+    );
+    this.emitUISnapshot();
+  }
+
+  public devToggleGodMode(): boolean {
+    this.isGodModeActive = !this.isGodModeActive;
+    if (this.isGodModeActive) {
+      this.stats.health = this.stats.maxHealth;
+      this.stats.energy = this.stats.maxEnergy;
+      this.stats.isStarving = false;
+    }
+    this.setEventMessage(
+      this.isGodModeActive
+        ? 'DevTools · Modo Dios ACTIVADO (Invulnerabilidad + Energía Infinita)'
+        : 'DevTools · Modo Dios DESACTIVADO'
+    );
+    this.emitUISnapshot();
+    return this.isGodModeActive;
+  }
+
+  public devHealFull(): void {
+    if (this.status === 'gameover') {
+      this.status = 'playing';
+    }
+    this.recalculateVitalCaps();
+    this.stats.health = this.stats.maxHealth;
+    this.stats.energy = this.stats.maxEnergy;
+    this.stats.isStarving = false;
+    this.stats.damageFlashTime = 0;
+    this.setEventMessage('DevTools: Salud y Bioenergía restauradas al 100%');
+    this.emitUISnapshot();
+  }
+
+  public devTeleport(x: number, z: number, label?: string): void {
+    this.ensureActiveGameplayForDev();
+    this.player.position.x = x;
+    this.player.position.z = z;
+    this.player.currentSpeed = 0;
+    this.cameraController.resetImmediate(
+      this.player.position,
+      this.player.headingAngle
+    );
+    this.currentBiomeName =
+      this.stats.evolutionaryStage === 'creature_stage'
+        ? this.environment.isNearNest(x, z)
+          ? 'Nido de la Especie (Regeneración Activa)'
+          : 'Costa Terrestre Primigenia'
+        : this.environment.getBiomeAt(x, z).name;
+    this.setEventMessage(
+      `DevTools: Teletransporte a ${label ?? `(${x}, ${z})`}`
+    );
+    this.emitUISnapshot();
+  }
+
+  public devSetPlanetTheme(theme: PlanetTheme): void {
+    this.environment.applyPlanetPalette(theme);
+    this.setEventMessage(`DevTools: Bioma Planetario cambiado a "${theme}"`);
+    this.emitUISnapshot();
+  }
+
+  public devToggleFreezeAI(): boolean {
+    this.isAIFrozen = !this.isAIFrozen;
+    this.predatorManager.setAIFrozen(this.isAIFrozen);
+    this.setEventMessage(
+      this.isAIFrozen
+        ? 'DevTools: IA del Ecosistema CONGELADA (Depredadores en pausa)'
+        : 'DevTools: IA del Ecosistema REANUDADA'
+    );
+    this.emitUISnapshot();
+    return this.isAIFrozen;
+  }
+
+  public devUnlockAllAdaptations(): void {
+    for (const def of ADAPTATION_CATALOG) {
+      this.discoveredAdaptationIds.add(def.id);
+    }
+    for (const slot of this.preparedEvolutionCatalog) {
+      if (slot.installedStacks === 0) {
+        slot.discoveryState = 'discovered_unbought';
+      }
+    }
+    this.syncCatalogAndOrganismState();
+    this.saveToLocalStorage();
+    this.setEventMessage(
+      'DevTools: ¡Todas las piezas del catálogo (Celular y Criatura) desbloqueadas!'
+    );
+    this.emitUISnapshot();
+  }
+
+  public devOpenEditorImmediate(): void {
+    this.ensureActiveGameplayForDev();
+    this.matingCallTimer = 0;
+    this.status = 'editing';
+    this.setEditorSandboxIsolation(true);
+    this.cameraController.resetEditorOrbit();
+    this.player.hideMateCell();
+    this.player.setEditorMode(true);
+    this.inputController.resetInputs();
+    this.setEventMessage('DevTools: Taller Evolutivo 3D abierto directamente');
+    this.emitUISnapshot();
+  }
+
+  public devTriggerBrainCinematic(): void {
+    this.ensureActiveGameplayForDev();
+    this.stats.evolutionaryStage = 'cell_stage';
+    this.evolveToCreatureStage();
+  }
+
+  public devSpawnFoodClusterNearPlayer(): void {
+    this.ensureActiveGameplayForDev();
+    this.foodManager.spawnDevClusterNear(
+      this.player.position,
+      this.player.headingAngle
+    );
+    this.setEventMessage(
+      'DevTools: Racimo de nutrientes y esporas de ADN generado al frente'
+    );
+    this.emitUISnapshot();
+  }
+
+  public devClearAllEnemies(): void {
+    this.predatorManager.clearAllOrganisms();
+    this.nearestPredatorState = 'DEAMBULAR';
+    this.nearestPredatorDistance = 999;
+    this.setEventMessage('DevTools: Mapa vaciado de depredadores y criaturas');
+    this.emitUISnapshot();
+  }
+
+  public devForceSpawnSpeciesNearPlayer(species: SpeciesType): void {
+    this.ensureActiveGameplayForDev();
+    const spawnedName = this.predatorManager.forceSpawnSpeciesNearPlayer(
+      species,
+      this.player.position,
+      this.player.headingAngle
+    );
+    this.setEventMessage(
+      `DevTools: Especie "${spawnedName}" generada frente a tu organismo`
+    );
+    this.emitUISnapshot();
   }
 
   private startLoop(): void {
@@ -2954,6 +5279,111 @@ export class GameEngine {
           this.solarSystemView.camera
         );
       }
+      return;
+    }
+
+    // 3D Spore Brain Evolution Sequence ('brain_cinematic')
+    if (this.status === 'brain_cinematic') {
+      this.elapsedActiveTime += delta;
+      if (!this.brainCinematicState) {
+        this.completeBrainCinematic(false);
+        return;
+      }
+
+      this.brainCinematicState.elapsed += delta;
+      const p = Math.min(
+        1.0,
+        this.brainCinematicState.elapsed / this.brainCinematicState.duration
+      );
+      this.brainCinematicState.progress = p;
+
+      if (p < 0.25) {
+        const t1 = p / 0.25;
+        this.brainCinematicState.phase = 0;
+        this.brainCinematicState.brainVolumeCc = Math.round(
+          THREE.MathUtils.lerp(5, 35, t1)
+        );
+        this.brainCinematicState.synapticActivityHz = Math.round(
+          THREE.MathUtils.lerp(4, 14, t1)
+        );
+        this.brainCinematicState.phaseTitle =
+          'Fase I · Germinación Axonal y Polarización Craneal';
+        this.brainCinematicState.phaseSubtitle =
+          'El núcleo celular hiper-activa sus filamentos dendríticos y proyecta el tallo axonal hacia el polo anterior...';
+      } else if (p < 0.65) {
+        const t2 = (p - 0.25) / 0.4;
+        this.brainCinematicState.phase = 1;
+        this.brainCinematicState.brainVolumeCc = Math.round(
+          THREE.MathUtils.lerp(35, 180, t2)
+        );
+        this.brainCinematicState.synapticActivityHz = Math.round(
+          THREE.MathUtils.lerp(14, 29, t2)
+        );
+        this.brainCinematicState.phaseTitle =
+          'Fase II · Expansión de Hemisferios y Girificación Cortical';
+        this.brainCinematicState.phaseSubtitle =
+          'Los lóbulos cerebrales bilaterales se despliegan y profundizan sus circunvoluciones y surcos sinápticos...';
+      } else if (p < 0.85) {
+        const t3 = (p - 0.65) / 0.2;
+        this.brainCinematicState.phase = 2;
+        this.brainCinematicState.brainVolumeCc = Math.round(
+          THREE.MathUtils.lerp(180, 220, t3)
+        );
+        this.brainCinematicState.synapticActivityHz = Math.round(
+          THREE.MathUtils.lerp(29, 45, t3)
+        );
+        this.brainCinematicState.phaseTitle =
+          'Fase III · Sobrecarga Sináptica y Despertar de la Consciencia';
+        this.brainCinematicState.phaseSubtitle =
+          'La vesícula refractiva se disuelve e irradia impulsos motores hacia la columna vertebral del organismo...';
+      } else {
+        const t4 = (p - 0.85) / 0.15;
+        this.brainCinematicState.phase = 3;
+        this.brainCinematicState.brainVolumeCc = Math.round(
+          THREE.MathUtils.lerp(220, 240, t4)
+        );
+        this.brainCinematicState.synapticActivityHz = Math.round(
+          THREE.MathUtils.lerp(45, 38, t4)
+        );
+        this.brainCinematicState.phaseTitle =
+          'Fase IV · Asimilación Craneal e Integración Somática';
+        this.brainCinematicState.phaseSubtitle =
+          'El encéfalo desciende y se fusiona con el cráneo para tomar el control motor rumbo al Nido Costero Terrestre...';
+      }
+
+      this.brainCinematicState.flashOpacity =
+        p > 0.85
+          ? Math.pow(Math.sin(((p - 0.85) / 0.15) * Math.PI), 1.15) * 0.92
+          : 0;
+
+      this.player.updateBrainCinematic(p, this.elapsedActiveTime);
+      this.cameraController.updateBrainCinematic(
+        delta,
+        this.player,
+        p,
+        this.elapsedActiveTime
+      );
+      this.environment.update(
+        this.elapsedActiveTime,
+        delta,
+        this.player.position.x,
+        this.player.position.z
+      );
+
+      if (p >= 1.0) {
+        this.completeBrainCinematic(false);
+        this.renderer.render(
+          this.environment.scene,
+          this.cameraController.camera
+        );
+        return;
+      }
+
+      this.emitUISnapshot();
+      this.renderer.render(
+        this.environment.scene,
+        this.cameraController.camera
+      );
       return;
     }
 
@@ -3141,6 +5571,7 @@ export class GameEngine {
 
       // 1. Update Player Movement & Propulsion
       const canBoost =
+        this.isGodModeActive ||
         this.stats.energy >= GAME_CONFIG.PLAYER.MIN_ENERGY_FOR_BOOST;
 
       const totalTailPropulsion = flagellumStacks + whipFlagellaStacks + reactiveNozzleStacks;
@@ -3194,34 +5625,12 @@ export class GameEngine {
             (whipFlagellaStacks > 0 ? 0.05 : 0)
         ) * this.settings.rotationSensitivity;
 
+      // Keep the 3D swim-plane target position updated while holding left-click in mouse mode as the camera moves
       if (
         this.settings.steeringMode === 'mouse' &&
-        !this.isRightClickOrbiting &&
-        this.lastGameplayPointerPos.active &&
-        !this.inputController.state.left &&
-        !this.inputController.state.right
+        this.inputController.isLeftMouseDown
       ) {
-        if (
-          this.updateRaycasterFromClientCoords(
-            this.lastGameplayPointerPos.x,
-            this.lastGameplayPointerPos.y
-          )
-        ) {
-          const dx = this.planeHitPoint.x - this.player.position.x;
-          const dz = this.planeHitPoint.z - this.player.position.z;
-          if (dx * dx + dz * dz > 1.2 * 1.2) {
-            const targetAngle = Math.atan2(-dx, -dz);
-            let diff = targetAngle - this.player.headingAngle;
-            while (diff > Math.PI) diff -= Math.PI * 2;
-            while (diff < -Math.PI) diff += Math.PI * 2;
-            const maxTurnStep = 3.2 * turnMultiplier * delta;
-            this.player.headingAngle += THREE.MathUtils.clamp(
-              diff,
-              -maxTurnStep,
-              maxTurnStep
-            );
-          }
-        }
+        this.inputController.updateHeldPointerWorldTarget();
       }
 
       const nearbyPlayerObstacles = this.environment.getNearbyObstacles(
@@ -3236,7 +5645,8 @@ export class GameEngine {
         canBoost,
         speedMultiplier,
         turnMultiplier,
-        nearbyPlayerObstacles
+        nearbyPlayerObstacles,
+        this.settings.steeringMode
       );
       this.stats.isBoosting = moveResult.isBoosting;
       this.stats.speed = Math.abs(this.player.currentSpeed);
@@ -3557,7 +5967,11 @@ export class GameEngine {
           thermophilicDrainMultiplier *
           delta;
       }
-      if (rotaryDrillStacks > 0 && this.inputController.state.forward) {
+      if (
+        rotaryDrillStacks > 0 &&
+        (this.inputController.state.forward ||
+          (this.inputController.isLeftMouseDown && moveResult.isMoving))
+      ) {
         energyDrain += 1.5 * delta;
       }
       if (moveResult.isBoosting) {
@@ -3572,7 +5986,13 @@ export class GameEngine {
           delta;
       }
 
-      this.stats.energy = Math.max(0, this.stats.energy - energyDrain);
+      if (this.isGodModeActive) {
+        this.stats.energy = this.stats.maxEnergy;
+        this.stats.health = this.stats.maxHealth;
+        this.stats.isStarving = false;
+      } else {
+        this.stats.energy = Math.max(0, this.stats.energy - energyDrain);
+      }
 
       if (nearThermalVent) {
         const baseVentEnergyRate =
@@ -3604,7 +6024,7 @@ export class GameEngine {
       }
 
       // 3. Starvation Consequence
-      if (this.stats.energy <= 0) {
+      if (!this.isGodModeActive && this.stats.energy <= 0) {
         if (!this.stats.isStarving) {
           this.stats.isStarving = true;
           this.setEventMessage('Sin energía: sufriendo daño metabólico');
@@ -3953,6 +6373,7 @@ export class GameEngine {
       }
 
       if (
+        !this.isGodModeActive &&
         ecosystemResult.totalDamageDealt > 0 &&
         this.respawnInvulnerabilityTimer <= 0
       ) {
@@ -4137,6 +6558,12 @@ export class GameEngine {
       stats: {
         ...this.stats,
         torsoRadii: [...this.stats.torsoRadii] as [number, number, number],
+        bodySegments: (this.stats.bodySegments ?? createDefaultBodySegments()).map(
+          (s) => ({ ...s })
+        ),
+        creatureMorphology: {
+          ...(this.stats.creatureMorphology ?? DEFAULT_CREATURE_MORPHOLOGY),
+        },
         placedOrgans: this.stats.placedOrgans.map((o) => ({ ...o })),
       },
       activeFoodCount: this.foodManager.getActiveCount(),
@@ -4154,14 +6581,25 @@ export class GameEngine {
       unlockedBannerNotification: this.unlockedBannerNotification,
       evolutionSlots: this.preparedEvolutionCatalog.map((slot) => ({ ...slot })),
       selectedPlacedInstanceId: this.selectedPlacedInstanceId,
+      selectedBodySegmentId: this.selectedBodySegmentId,
+      selectedSphereIndex: this.selectedSphereIndex,
+      editorSelectionTarget: this.editorSelectionTarget,
+      canUndoEditor: this.editorHistoryStack.length > 0,
+      canRedoEditor: this.editorRedoStack.length > 0,
+      editorPreviewAction: this.editorPreviewAction,
       planetaryTransition: this.planetaryTransition
         ? { ...this.planetaryTransition }
         : undefined,
       introCinematic: this.introCinematicState
         ? { ...this.introCinematicState }
         : undefined,
+      brainCinematic: this.brainCinematicState
+        ? { ...this.brainCinematicState }
+        : undefined,
       autosaveNotificationVisible: this.autosaveBadgeTimer > 0,
       deathCauseDescription: this.deathCauseDescription,
+      isGodModeActive: this.isGodModeActive,
+      isAIFrozen: this.isAIFrozen,
     });
   }
 

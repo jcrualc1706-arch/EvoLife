@@ -1,13 +1,21 @@
 import {
+  BodySegmentConfig,
   CellBodyShape,
   CellColorTheme,
   CellularGrowthStage,
+  CreatureMorphologySliders,
+  CreaturePaintConfig,
+  DEFAULT_CREATURE_PAINT,
   DietType,
   EvolutionaryStage,
+  GenesisConfig,
   InnateTraitId,
   PlacedOrganInstance,
   PlanetSlotMetadata,
   PlanetTheme,
+  SpineVertebraNode,
+  createDefaultBodySegments,
+  createDefaultSpineNodes,
 } from './types';
 
 export interface PlanetCatalogDefinition {
@@ -99,6 +107,10 @@ export interface SlotSavePayload {
     spineSegments: 1 | 2 | 3;
     spineLength: number;
     torsoRadii: [number, number, number];
+    spineNodes?: SpineVertebraNode[];
+    bodySegments?: BodySegmentConfig[];
+    creatureMorphology?: CreatureMorphologySliders;
+    paintConfig?: CreaturePaintConfig;
     placedOrgans: PlacedOrganInstance[];
     evolutionaryStage: EvolutionaryStage;
     innateTrait: InnateTraitId;
@@ -260,6 +272,113 @@ export class SaveSystem {
     } catch {
       return null;
     }
+  }
+
+  public static createInitialSaveData(
+    slotId: number,
+    config: GenesisConfig
+  ): SlotSavePayload {
+    const safeSlot = Math.max(1, Math.min(6, Math.floor(slotId)));
+    const initialDiet: DietType = config.initialDiet ?? 'herbivore';
+    const mouthId =
+      initialDiet === 'carnivore'
+        ? 'mouth_jaw'
+        : initialDiet === 'omnivore'
+        ? 'mouth_proboscis'
+        : 'mouth_filter';
+    const innateTrait: InnateTraitId =
+      config.innateTrait ?? 'elastic_membrane';
+    const initialColor: CellColorTheme =
+      config.colorTheme ??
+      (innateTrait === 'abyssal_bioluminescence'
+        ? 'violet'
+        : initialDiet === 'carnivore'
+        ? 'crimson'
+        : initialDiet === 'omnivore'
+        ? 'cyan'
+        : 'emerald');
+
+    const canonicalInitialOrgans: PlacedOrganInstance[] = [
+      {
+        instanceId: `organ_init_${mouthId}`,
+        adaptationId: mouthId,
+        angle: Math.PI,
+        axialOffset: -1.0,
+        mirrorSymmetry: false,
+        orientationYaw: 0,
+        orientationPitch: 0,
+        morphology: { scaleOverall: 1.0, scaleWidth: 1.0, scaleHeight: 1.0 },
+      },
+      {
+        instanceId: 'organ_init_eyes',
+        adaptationId: 'eye_photoreceptor',
+        angle: Math.PI * 0.82,
+        axialOffset: -0.7,
+        mirrorSymmetry: true,
+        orientationYaw: 0,
+        orientationPitch: 0,
+        morphology: { scaleOverall: 1.0, scaleWidth: 1.0, scaleHeight: 1.0 },
+      },
+      {
+        instanceId: 'organ_init_flagellum',
+        adaptationId: 'simple_flagellum',
+        angle: 0.0,
+        axialOffset: 1.0,
+        mirrorSymmetry: false,
+        orientationYaw: 0,
+        orientationPitch: 0,
+        morphology: { scaleOverall: 1.0, scaleWidth: 1.0, scaleHeight: 1.0 },
+      },
+    ];
+
+    const initialInstalledAdaptations: Record<string, number> = {
+      [mouthId]: 1,
+      eye_photoreceptor: 1,
+      simple_flagellum: 1,
+    };
+
+    const initialDiscoveredAdaptations: string[] = [
+      mouthId,
+      'eye_photoreceptor',
+      'simple_flagellum',
+      'cilia_1',
+      'membrane_hardened',
+    ];
+
+    const payload: SlotSavePayload = {
+      stats: {
+        speciesName:
+          config.speciesName?.trim().slice(0, 28) || 'Organismo Primigenio',
+        bodyShape: config.bodyShape ?? 'fusiforme',
+        colorTheme: initialColor,
+        spineSegments: 1,
+        spineLength: 1.0,
+        torsoRadii: [1.0, 1.0, 1.0],
+        spineNodes: createDefaultSpineNodes(5, 1.0),
+        bodySegments: createDefaultBodySegments(),
+        paintConfig: { ...DEFAULT_CREATURE_PAINT },
+        placedOrgans: canonicalInitialOrgans,
+        evolutionaryStage: 'cell_stage',
+        innateTrait,
+        diet: initialDiet,
+        health: 100,
+        energy: 100,
+        adn: 0,
+        totalAdnEarned: 0,
+        growthStage: 1,
+        foodEaten: 0,
+        survivalTime: 0,
+      },
+      unlockedSlotIds: [mouthId, 'eye_photoreceptor', 'simple_flagellum'],
+      discoveredAdaptationIds: initialDiscoveredAdaptations,
+      installedAdaptations: initialInstalledAdaptations,
+      completedQuestStep: 0,
+      savedAt: Date.now(),
+      savedPosition: { x: 0, z: 0 },
+    };
+
+    SaveSystem.saveSlotPayload(safeSlot, payload);
+    return payload;
   }
 
   public static saveSlotPayload(

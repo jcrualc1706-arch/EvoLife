@@ -13,6 +13,7 @@ export class CameraController {
   // Editor workshop orbit state (only used when isEditing === true)
   private editorOrbitOffset = 0;
   private editorPitchAngle = 0.96; // Radians above horizontal plane (~55 deg)
+  private editorZoomMultiplier = 1.0;
   private shakeTimer = 0;
   private shakeIntensity = 0;
   private atmosphericAltitudeFactor = 0;
@@ -77,9 +78,18 @@ export class CameraController {
     );
   }
 
+  public zoomEditorCamera(deltaZoom: number): void {
+    this.editorZoomMultiplier = THREE.MathUtils.clamp(
+      this.editorZoomMultiplier + deltaZoom,
+      0.55,
+      1.85
+    );
+  }
+
   public resetEditorOrbit(): void {
     this.editorOrbitOffset = 0;
     this.editorPitchAngle = 0.96;
+    this.editorZoomMultiplier = 1.0;
   }
 
   public resetImmediate(
@@ -89,6 +99,7 @@ export class CameraController {
     this.currentZoomMultiplier = 1.0;
     this.editorOrbitOffset = 0;
     this.editorPitchAngle = 0.96;
+    this.editorZoomMultiplier = 1.0;
     this.shakeTimer = 0;
     this.atmosphericAltitudeFactor = 0;
 
@@ -187,6 +198,163 @@ export class CameraController {
     }
   }
 
+  /**
+   * Spore Brain Evolution Sequence 4-Phase Camera Choreography (5.5s):
+   * - Phases 1 & 2 [0.00 - 0.65]: Low-angle frontal dolly-in toward the cell's head (`fov` narrows smoothly from 52° to 36°).
+   * - Phase 2 [0.25 - 0.65]: Subtle 25° (~0.436 rad) orbital pan around the cerebral lobe as it unfolds.
+   * - Phase 3 [0.65 - 0.85]: High-frequency harmonic biological micro-shake (`0.15` intensity) conveying synaptic overload tension.
+   * - Phase 4 [0.85 - 1.00]: Elastic dolly pull-back (`fov` opens to 44°) revealing the full-body pose of the creature.
+   */
+  public updateBrainCinematic(
+    delta: number,
+    player: PlayerCell,
+    progress: number,
+    elapsedTime: number
+  ): void {
+    const p = THREE.MathUtils.clamp(progress, 0, 1);
+    const scale = player.currentScale;
+
+    // Phase 2 subtle 25° (0.4363 rad) orbital pan around the cranial axis
+    const orbitPhase2 = THREE.MathUtils.smoothstep(p, 0.25, 0.65);
+    const orbitReturnPhase4 = THREE.MathUtils.smoothstep(p, 0.85, 1.0);
+    const panAngleRad =
+      THREE.MathUtils.degToRad(25) * orbitPhase2 * (1.0 - orbitReturnPhase4 * 0.55);
+
+    const camAzimuth = player.headingAngle + panAngleRad;
+    const forwardX = -Math.sin(camAzimuth);
+    const forwardZ = -Math.cos(camAzimuth);
+    const rightX = Math.cos(camAzimuth);
+    const rightZ = -Math.sin(camAzimuth);
+
+    // Elastic backOut helper for Phase 4 dolly pull-back
+    const pPhase4 = THREE.MathUtils.clamp((p - 0.85) / 0.15, 0, 1);
+    const elasticPullback =
+      1 + 2.70158 * Math.pow(pPhase4 - 1, 3) + 1.70158 * Math.pow(pPhase4 - 1, 2);
+
+    // Dolly-in during Phases 1 & 2, hold close in Phase 3, elastic pull-back in Phase 4
+    const dollyInT = THREE.MathUtils.smoothstep(p, 0.0, 0.65);
+    const baseFrontDist = THREE.MathUtils.lerp(7.8, 3.85, dollyInT);
+    const frontDist =
+      (p < 0.85
+        ? baseFrontDist
+        : THREE.MathUtils.lerp(3.85, 6.85, elasticPullback)) * scale;
+
+    const baseSideOffset = THREE.MathUtils.lerp(1.65, 0.55, dollyInT);
+    const sideOffset =
+      (p < 0.85
+        ? baseSideOffset
+        : THREE.MathUtils.lerp(0.55, 1.45, pPhase4)) * scale;
+
+    // Low-angle contrapicado during Phases 1-3 looking up at the elevated cerebrum, then rising in Phase 4
+    const lowAngleHeight = THREE.MathUtils.lerp(2.85, 1.18, dollyInT);
+    const camHeight =
+      (p < 0.85
+        ? lowAngleHeight
+        : THREE.MathUtils.lerp(1.18, 2.75, elasticPullback)) * scale;
+
+    // Phase 3 [0.65 - 0.85]: High-frequency harmonic micro-shake (0.15 intensity)
+    let shakeX = 0;
+    let shakeY = 0;
+    let shakeZ = 0;
+    if (p >= 0.65 && p <= 0.85) {
+      const p3Norm = (p - 0.65) / 0.2;
+      const shakeEnvelope = Math.sin(p3Norm * Math.PI);
+      const amp = 0.15 * shakeEnvelope * scale;
+      shakeX =
+        (Math.sin(elapsedTime * 47.0) * 0.65 +
+          Math.cos(elapsedTime * 73.0) * 0.35) *
+        amp;
+      shakeY =
+        (Math.cos(elapsedTime * 53.0) * 0.65 +
+          Math.sin(elapsedTime * 89.0) * 0.35) *
+        amp;
+      shakeZ = Math.sin(elapsedTime * 61.0) * amp * 0.5;
+    }
+
+    _desiredCamPos.set(
+      player.position.x + forwardX * frontDist + rightX * sideOffset + shakeX,
+      player.position.y + camHeight + shakeY,
+      player.position.z + forwardZ * frontDist + rightZ * sideOffset + shakeZ
+    );
+
+    // Look target tracks the ascending/expanding cerebral lobe, then centers on the full-body creature in Phase 4
+    const headForwardX = -Math.sin(player.headingAngle);
+    const headForwardZ = -Math.cos(player.headingAngle);
+    const lookUpOffset =
+      (p < 0.25
+        ? THREE.MathUtils.lerp(0.35, 1.38, p / 0.25)
+        : p < 0.85
+        ? THREE.MathUtils.lerp(1.38, 1.52, (p - 0.25) / 0.6)
+        : THREE.MathUtils.lerp(1.52, 0.38, pPhase4)) * scale;
+
+    const cranForwardOffset =
+      THREE.MathUtils.lerp(0.46, 0.15, pPhase4) * scale;
+
+    _desiredLookTarget.set(
+      player.position.x + headForwardX * cranForwardOffset + shakeX * 0.35,
+      player.position.y + lookUpOffset + shakeY * 0.35,
+      player.position.z + headForwardZ * cranForwardOffset + shakeZ * 0.35
+    );
+
+    this.camera.position.x = THREE.MathUtils.damp(
+      this.camera.position.x,
+      _desiredCamPos.x,
+      6.0,
+      delta
+    );
+    this.camera.position.y = THREE.MathUtils.damp(
+      this.camera.position.y,
+      _desiredCamPos.y,
+      6.0,
+      delta
+    );
+    this.camera.position.z = THREE.MathUtils.damp(
+      this.camera.position.z,
+      _desiredCamPos.z,
+      6.0,
+      delta
+    );
+
+    this.currentLookTarget.x = THREE.MathUtils.damp(
+      this.currentLookTarget.x,
+      _desiredLookTarget.x,
+      7.5,
+      delta
+    );
+    this.currentLookTarget.y = THREE.MathUtils.damp(
+      this.currentLookTarget.y,
+      _desiredLookTarget.y,
+      7.5,
+      delta
+    );
+    this.currentLookTarget.z = THREE.MathUtils.damp(
+      this.currentLookTarget.z,
+      _desiredLookTarget.z,
+      7.5,
+      delta
+    );
+
+    this.camera.lookAt(this.currentLookTarget);
+
+    // Dynamic FOV: narrows smoothly from 52° to 36° across Phases 1-2, then opens to 44° in Phase 4
+    const targetFov =
+      p < 0.65
+        ? THREE.MathUtils.lerp(52, 36, dollyInT)
+        : p < 0.85
+        ? 36
+        : THREE.MathUtils.lerp(36, 44, elasticPullback);
+
+    if (Math.abs(this.camera.fov - targetFov) > 0.02) {
+      this.camera.fov = THREE.MathUtils.damp(
+        this.camera.fov,
+        targetFov,
+        6.5,
+        delta
+      );
+      this.camera.updateProjectionMatrix();
+    }
+  }
+
   public update(
     delta: number,
     player: PlayerCell,
@@ -196,7 +364,7 @@ export class CameraController {
     if (isEditing) {
       const scale = player.currentScale;
       const camAzimuth = player.headingAngle + this.editorOrbitOffset;
-      const orbitDistance = 11.4 * scale;
+      const orbitDistance = 11.4 * scale * this.editorZoomMultiplier;
       const horizontalDist = Math.cos(this.editorPitchAngle) * orbitDistance;
       const verticalHeight = Math.sin(this.editorPitchAngle) * orbitDistance;
 

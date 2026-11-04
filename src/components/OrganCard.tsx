@@ -72,6 +72,22 @@ const CATEGORY_META: Record<
     label: 'Apariencia',
     chipClass: 'border-teal-300/45 bg-teal-500/20 text-teal-100',
   },
+  brazos: {
+    label: 'Brazos',
+    chipClass: 'border-amber-300/45 bg-amber-500/20 text-amber-100',
+  },
+  piernas: {
+    label: 'Piernas',
+    chipClass: 'border-cyan-300/45 bg-cyan-500/20 text-cyan-100',
+  },
+  manos: {
+    label: 'Manos',
+    chipClass: 'border-emerald-300/45 bg-emerald-500/20 text-emerald-100',
+  },
+  pies: {
+    label: 'Pies',
+    chipClass: 'border-teal-300/45 bg-teal-500/20 text-teal-100',
+  },
 };
 
 const ORGAN_ICONS: Record<string, React.FC<{ className?: string }>> = {

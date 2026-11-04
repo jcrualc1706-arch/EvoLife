@@ -7,6 +7,7 @@ import {
   HeartHandshake,
   Pause,
   Sparkles,
+  Terminal,
   Zap,
 } from 'lucide-react';
 import { motion, useReducedMotion } from 'motion/react';
@@ -20,6 +21,7 @@ interface GameHUDProps {
   snapshot: GameUISnapshot;
   onTogglePause: () => void;
   onToggleEditor: () => void;
+  onToggleDevTools?: () => void;
   onEvolveToCreatureStage: () => void;
   onControlInput: (key: keyof InputState, active: boolean) => void;
 }
@@ -32,6 +34,7 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
     snapshot,
     onTogglePause,
     onToggleEditor,
+    onToggleDevTools,
     onEvolveToCreatureStage,
     onControlInput,
   }) => {
@@ -284,6 +287,25 @@ export const GameHUD: React.FC<GameHUDProps> = React.memo(
                   Esc
                 </kbd>
               </button>
+
+              {onToggleDevTools && (
+                <button
+                  type="button"
+                  title="Abrir Suite de Desarrollador (F1 o º)"
+                  onPointerEnter={() => audioManager.playButtonHover()}
+                  onClick={() => {
+                    audioManager.playButtonClick();
+                    onToggleDevTools();
+                  }}
+                  className="flex items-center gap-1.5 rounded-full border border-amber-300/45 bg-amber-950/55 hover:bg-amber-900/65 px-3 py-2.5 text-xs font-bold text-amber-100 shadow-[0_2px_10px_rgba(251,191,36,0.2)] backdrop-blur-xl whitespace-nowrap shrink-0 cursor-pointer hover:scale-[1.03] active:scale-95 transition-all duration-150"
+                >
+                  <Terminal className="h-3.5 w-3.5 text-amber-300" />
+                  <span className="hidden md:inline">DevTools</span>
+                  <kbd className="rounded-full bg-amber-950/80 border border-amber-300/35 px-1.5 py-0.5 font-mono text-[10px] text-amber-200">
+                    F1
+                  </kbd>
+                </button>
+              )}
             </div>
           </header>
 

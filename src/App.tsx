@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AnimatePresence } from 'motion/react';
+import { BrainTransitionModal } from './components/BrainTransitionModal';
 import { CreatureEditorModal } from './components/CreatureEditorModal';
 import { DeathModal } from './components/DeathModal';
+import { DevToolsModal } from './components/DevToolsModal';
 import { GameHUD } from './components/GameHUD';
 import { GenesisModal } from './components/GenesisModal';
 import { MainMenuModal } from './components/MainMenuModal';
@@ -12,14 +14,29 @@ import { GAME_CONFIG } from './game/config';
 import { GameEngine } from './game/GameEngine';
 import { SaveSystem } from './game/SaveSystem';
 import {
+  BodySegmentConfig,
+  BodySegmentId,
   CellBodyShape,
   CellColorTheme,
+  CellularGrowthStage,
+  CreatureMorphologySliders,
+  CreaturePaintConfig,
+  DEFAULT_CREATURE_MORPHOLOGY,
+  DEFAULT_CREATURE_PAINT,
+  DEFAULT_CREATURE_STATS,
   DEFAULT_GAME_SETTINGS,
+  EditorPreviewAction,
+  EditorSelectionTarget,
+  EvolutionaryStage,
   GameSettings,
   GameUISnapshot,
   GenesisConfig,
   InputState,
   PlacedOrganMorphology,
+  PlanetTheme,
+  SpeciesType,
+  createDefaultBodySegments,
+  createDefaultSpineNodes,
 } from './game/types';
 
 const INITIAL_SNAPSHOT: GameUISnapshot = {
@@ -37,6 +54,12 @@ const INITIAL_SNAPSHOT: GameUISnapshot = {
     spineSegments: 1,
     spineLength: 1.0,
     torsoRadii: [1.0, 1.0, 1.0],
+    spineNodes: createDefaultSpineNodes(5, 1.0),
+    bodySegments: createDefaultBodySegments(),
+    paintConfig: { ...DEFAULT_CREATURE_PAINT },
+    complexityScore: 15,
+    maxComplexity: 100,
+    symmetryEnabled: true,
     placedOrgans: [],
     evolutionaryStage: 'cell_stage',
     health: GAME_CONFIG.PLAYER.INITIAL_HEALTH,
@@ -47,7 +70,7 @@ const INITIAL_SNAPSHOT: GameUISnapshot = {
     totalAdnEarned: GAME_CONFIG.PLAYER.INITIAL_ADN,
     growthStage: 1,
     nextStageAdnThreshold: 50,
-    activeArenaRadius: 90,
+    activeArenaRadius: 110,
     diet: 'herbivore',
     innateTrait: 'elastic_membrane',
     foodEaten: 0,
@@ -65,6 +88,7 @@ const INITIAL_SNAPSHOT: GameUISnapshot = {
     electricLevel: 0,
     defensePercent: 0,
     visionLevel: 1,
+    creatureStats: { ...DEFAULT_CREATURE_STATS },
   },
   activeFoodCount: GAME_CONFIG.FOOD.TOTAL_COUNT,
   totalFoodCapacity: GAME_CONFIG.FOOD.TOTAL_COUNT,
@@ -82,6 +106,9 @@ const INITIAL_SNAPSHOT: GameUISnapshot = {
   unlockedBannerNotification: null,
   evolutionSlots: [],
   selectedPlacedInstanceId: null,
+  selectedBodySegmentId: 'pecho',
+  selectedSphereIndex: 2,
+  editorSelectionTarget: 'body',
 };
 
 export default function App() {
@@ -90,6 +117,7 @@ export default function App() {
   const [snapshot, setSnapshot] = useState<GameUISnapshot>(INITIAL_SNAPSHOT);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isGenesisOpen, setIsGenesisOpen] = useState(false);
+  const [isDevToolsOpen, setIsDevToolsOpen] = useState(false);
   const [pendingGenesisSlotId, setPendingGenesisSlotId] = useState<
     number | undefined
   >(undefined);
@@ -118,6 +146,13 @@ export default function App() {
   const handleSelectMenuSlot = useCallback((slotId: number | null) => {
     engineRef.current?.selectMenuPlanetSlot(slotId);
   }, []);
+
+  const handleSetMenuCameraMode = useCallback(
+    (mode: 'title_menu' | 'planet_select') => {
+      engineRef.current?.setMenuCameraMode(mode);
+    },
+    []
+  );
 
   const handlePlaySlot = useCallback((slotId: number) => {
     setIsGenesisOpen(false);
@@ -166,6 +201,11 @@ export default function App() {
     engineRef.current?.saveAndExitToMenu();
   }, []);
 
+  const handleExitToMenuWithoutSaving = useCallback(() => {
+    setIsSettingsOpen(false);
+    engineRef.current?.exitToMenuWithoutSaving();
+  }, []);
+
   const handleUpdateSettings = useCallback(
     (partialSettings: Partial<GameSettings>) => {
       engineRef.current?.updateSettings(partialSettings);
@@ -204,6 +244,48 @@ export default function App() {
   const handleSelectPlacedOrgan = useCallback((instanceId: string | null) => {
     engineRef.current?.selectPlacedOrgan(instanceId);
   }, []);
+
+  const handleSelectBodySegment = useCallback(
+    (segmentId: BodySegmentId | null) => {
+      engineRef.current?.selectBodySegment(segmentId);
+    },
+    []
+  );
+
+  const handleSelectBodySphere = useCallback(
+    (sphereIndex: number | null) => {
+      engineRef.current?.selectBodySphere(sphereIndex);
+    },
+    []
+  );
+
+  const handleAdjustBodySphereRadius = useCallback(
+    (sphereIndex: number, delta: number) => {
+      engineRef.current?.adjustBodySphereRadius(sphereIndex, delta);
+    },
+    []
+  );
+
+  const handleAdjustLimbThickness = useCallback(
+    (limbId: string, delta: number) => {
+      engineRef.current?.adjustLimbThickness(limbId, delta);
+    },
+    []
+  );
+
+  const handleSelectEditorTarget = useCallback(
+    (target: EditorSelectionTarget) => {
+      engineRef.current?.setEditorSelectionTarget(target);
+    },
+    []
+  );
+
+  const handleUpdateBodySegment = useCallback(
+    (segmentId: BodySegmentId, partial: Partial<BodySegmentConfig>) => {
+      engineRef.current?.updateBodySegment(segmentId, partial);
+    },
+    []
+  );
 
   const handleRemovePlacedOrgan = useCallback((instanceId: string) => {
     engineRef.current?.removePlacedOrganByInstanceId(instanceId);
@@ -257,8 +339,56 @@ export default function App() {
     []
   );
 
+  const handleSetVertebraCount = useCallback((count: number) => {
+    engineRef.current?.setVertebraCount(count);
+  }, []);
+
+  const handleApplySpinePosturePreset = useCallback(
+    (preset: 'quadruped' | 'biped_upright' | 'predator_arch' | 'serpentine') => {
+      engineRef.current?.applySpinePosturePreset(preset);
+    },
+    []
+  );
+
+  const handleUpdateCreatureMorphology = useCallback(
+    (partial: Partial<CreatureMorphologySliders>) => {
+      engineRef.current?.updateCreatureMorphology(partial);
+    },
+    []
+  );
+
+  const handleUpdatePaintConfig = useCallback(
+    (partial: Partial<CreaturePaintConfig>) => {
+      engineRef.current?.updatePaintConfig(partial);
+    },
+    []
+  );
+
+  const handleToggleSymmetry = useCallback(() => {
+    engineRef.current?.toggleEditorSymmetry();
+  }, []);
+
+  const handleUndoEditor = useCallback(() => {
+    engineRef.current?.undoEditorAction();
+  }, []);
+
+  const handleRedoEditor = useCallback(() => {
+    engineRef.current?.redoEditorAction();
+  }, []);
+
+  const handleSetEditorPreviewAction = useCallback(
+    (action: EditorPreviewAction) => {
+      engineRef.current?.setEditorPreviewAction(action);
+    },
+    []
+  );
+
   const handleEvolveToCreatureStage = useCallback(() => {
     engineRef.current?.evolveToCreatureStage();
+  }, []);
+
+  const handleSkipBrainCinematic = useCallback(() => {
+    engineRef.current?.skipBrainCinematic();
   }, []);
 
   const handleRotateEditorCamera = useCallback((deltaRadians: number) => {
@@ -289,13 +419,171 @@ export default function App() {
     []
   );
 
+  // DevTools Suite Callbacks
+  const handleDevJumpToStage = useCallback(
+    (stage: EvolutionaryStage, growthStage: CellularGrowthStage) => {
+      engineRef.current?.devJumpToStage(stage, growthStage);
+    },
+    []
+  );
+
+  const handleDevAddAdn = useCallback((amount: number) => {
+    engineRef.current?.devAddAdn(amount);
+  }, []);
+
+  const handleDevToggleGodMode = useCallback(() => {
+    engineRef.current?.devToggleGodMode();
+  }, []);
+
+  const handleDevHealFull = useCallback(() => {
+    engineRef.current?.devHealFull();
+  }, []);
+
+  const handleDevTeleport = useCallback(
+    (x: number, z: number, label: string) => {
+      engineRef.current?.devTeleport(x, z, label);
+    },
+    []
+  );
+
+  const handleDevSetPlanetTheme = useCallback((theme: PlanetTheme) => {
+    engineRef.current?.devSetPlanetTheme(theme);
+  }, []);
+
+  const handleDevToggleFreezeAI = useCallback(() => {
+    engineRef.current?.devToggleFreezeAI();
+  }, []);
+
+  const handleDevUnlockAllAdaptations = useCallback(() => {
+    engineRef.current?.devUnlockAllAdaptations();
+  }, []);
+
+  const handleDevOpenEditorImmediate = useCallback(() => {
+    engineRef.current?.devOpenEditorImmediate();
+  }, []);
+
+  const handleDevTriggerBrainCinematic = useCallback(() => {
+    engineRef.current?.devTriggerBrainCinematic();
+  }, []);
+
+  const handleDevSpawnFoodCluster = useCallback(() => {
+    engineRef.current?.devSpawnFoodClusterNearPlayer();
+  }, []);
+
+  const handleDevClearAllEnemies = useCallback(() => {
+    engineRef.current?.devClearAllEnemies();
+  }, []);
+
+  const handleDevForceSpawnSpecies = useCallback((species: SpeciesType) => {
+    engineRef.current?.devForceSpawnSpeciesNearPlayer(species);
+  }, []);
+
+  // Global Hotkey Listener for DevTools Suite (F1 or Backquote / º / \)
+  useEffect(() => {
+    const handleDevKeyDown = (e: KeyboardEvent) => {
+      if (e.repeat) return;
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.isContentEditable) &&
+        e.code !== 'F1' &&
+        e.key !== 'F1'
+      ) {
+        return;
+      }
+
+      if (
+        e.code === 'F1' ||
+        e.key === 'F1' ||
+        e.code === 'Backquote' ||
+        e.code === 'Backslash' ||
+        e.key === 'º' ||
+        e.key === 'ª' ||
+        e.key === '\\'
+      ) {
+        e.preventDefault();
+        setIsDevToolsOpen((prev) => !prev);
+      }
+    };
+
+    window.addEventListener('keydown', handleDevKeyDown);
+    return () => window.removeEventListener('keydown', handleDevKeyDown);
+  }, []);
+
+  // Centralized Escape Key Hierarchy (Layers 1-4):
+  // Layer 1 (SettingsModal) and Layer 2 (PauseModal) and Layer 3 (MainMenuModal) intercept Escape when active;
+  // this handler covers GenesisModal and Layer 4 (Active Gameplay -> Pause, 3D Editor -> Close Editor, Intro -> Skip)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code !== 'Escape' && e.key !== 'Escape') return;
+      if (e.repeat) return;
+
+      const activeEl = document.activeElement as HTMLElement | null;
+      if (
+        activeEl &&
+        (activeEl.tagName === 'INPUT' ||
+          activeEl.tagName === 'TEXTAREA' ||
+          activeEl.isContentEditable)
+      ) {
+        return;
+      }
+
+      // Layer 1: SettingsModal is open on top -> handled exclusively by SettingsModal
+      if (isSettingsOpen) {
+        return;
+      }
+
+      // Genesis Modal open over Main Menu -> close Genesis Modal
+      if (isGenesisOpen) {
+        e.preventDefault();
+        setIsGenesisOpen(false);
+        return;
+      }
+
+      // Layer 2 (Paused) and Layer 3 (Main Menu) are handled by PauseModal and MainMenuModal respectively
+      if (snapshot.status === 'paused' || snapshot.status === 'menu') {
+        return;
+      }
+
+      // Layer 4: Active Gameplay, 3D Editor, or Intro Cinematic
+      // Note: Escape NEVER closes the 3D Editor (only deselects a selected organ) and NEVER skips brain_cinematic
+      if (snapshot.status === 'editing') {
+        e.preventDefault();
+        if (snapshot.selectedPlacedInstanceId !== null) {
+          handleSelectPlacedOrgan(null);
+        }
+      } else if (snapshot.status === 'playing') {
+        e.preventDefault();
+        handleTogglePause();
+      } else if (snapshot.status === 'intro_cinematic') {
+        e.preventDefault();
+        handleSkipIntroCinematic();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [
+    isSettingsOpen,
+    isGenesisOpen,
+    snapshot.status,
+    snapshot.selectedPlacedInstanceId,
+    handleSelectPlacedOrgan,
+    handleTogglePause,
+    handleSkipIntroCinematic,
+  ]);
+
   const isMenu = snapshot.status === 'menu';
   const isIntroCinematic = snapshot.status === 'intro_cinematic';
+  const isBrainCinematic = snapshot.status === 'brain_cinematic';
   const isEditing = snapshot.status === 'editing';
   const isPaused = snapshot.status === 'paused';
   const planetaryTransition = snapshot.planetaryTransition;
   const isTransitioning = Boolean(planetaryTransition?.active);
   const introCinematic = snapshot.introCinematic;
+  const brainCinematic = snapshot.brainCinematic;
 
   const colorblindFilterStyle =
     snapshot.settings.colorblindMode === 'protanopia'
@@ -406,6 +694,14 @@ export default function App() {
         </div>
       )}
 
+      {/* 3D Brain Evolution Sequence Overlay (Cell -> Terrestrial Creature) */}
+      {isBrainCinematic && brainCinematic && (
+        <BrainTransitionModal
+          state={brainCinematic}
+          onSkip={handleSkipBrainCinematic}
+        />
+      )}
+
       {/* Atmospheric Cloud & Mist Veil during Planetary Immersion / Orbital Ascent */}
       {isTransitioning && planetaryTransition && (
         <div
@@ -440,6 +736,7 @@ export default function App() {
       {!isEditing &&
         !isMenu &&
         !isIntroCinematic &&
+        !isBrainCinematic &&
         !isFadingToIntro &&
         !isPaused &&
         !isTransitioning && (
@@ -450,6 +747,7 @@ export default function App() {
       {!isEditing &&
         !isMenu &&
         !isIntroCinematic &&
+        !isBrainCinematic &&
         !isFadingToIntro &&
         !isPaused &&
         !isTransitioning &&
@@ -468,6 +766,7 @@ export default function App() {
       {!isEditing &&
         !isMenu &&
         !isIntroCinematic &&
+        !isBrainCinematic &&
         !isFadingToIntro &&
         !isPaused &&
         !isTransitioning &&
@@ -480,17 +779,23 @@ export default function App() {
 
       {/* Exclusive Switching between MainMenuModal, CreatureEditorModal, and GameHUD */}
       <AnimatePresence mode="wait">
-        {isTransitioning || isIntroCinematic || isFadingToIntro ? null : isMenu ? (
+        {isTransitioning ||
+        isIntroCinematic ||
+        isBrainCinematic ||
+        isFadingToIntro ? null : isMenu ? (
           <MainMenuModal
             key="main-menu"
             planetSlots={snapshot.planetSlots}
             selectedSlotId={snapshot.selectedMenuSlotId}
             hoveredSlotId={snapshot.hoveredMenuSlotId}
+            isSettingsOpen={isSettingsOpen}
+            isGenesisOpen={isGenesisOpen}
             onSelectSlot={handleSelectMenuSlot}
             onPlaySlot={handlePlaySlot}
             onStartNewGameInSlot={handleStartNewGameInSlot}
             onDeleteSlot={handleDeleteSlot}
             onOpenSettings={() => setIsSettingsOpen(true)}
+            onSetMenuCameraMode={handleSetMenuCameraMode}
           />
         ) : isEditing ? (
           <CreatureEditorModal
@@ -499,10 +804,22 @@ export default function App() {
             slots={snapshot.evolutionSlots}
             readyForLandTransition={snapshot.readyForLandTransition}
             selectedPlacedInstanceId={snapshot.selectedPlacedInstanceId}
+            selectedBodySegmentId={snapshot.selectedBodySegmentId}
+            selectedSphereIndex={snapshot.selectedSphereIndex}
+            editorSelectionTarget={snapshot.editorSelectionTarget}
+            canUndo={snapshot.canUndoEditor}
+            canRedo={snapshot.canRedoEditor}
+            editorPreviewAction={snapshot.editorPreviewAction}
             onUnlockSlot={handleUnlockSlot}
             onRefundSlot={handleRefundSlot}
             onStartCatalogDrag={handleStartCatalogDrag}
             onSelectPlacedOrgan={handleSelectPlacedOrgan}
+            onSelectBodySegment={handleSelectBodySegment}
+            onSelectBodySphere={handleSelectBodySphere}
+            onAdjustBodySphereRadius={handleAdjustBodySphereRadius}
+            onAdjustLimbThickness={handleAdjustLimbThickness}
+            onSelectEditorTarget={handleSelectEditorTarget}
+            onUpdateBodySegment={handleUpdateBodySegment}
             onRemovePlacedOrgan={handleRemovePlacedOrgan}
             onUpdatePlacedOrganMorphology={handleUpdatePlacedOrganMorphology}
             onUpdatePlacedOrganOrientation={handleUpdatePlacedOrganOrientation}
@@ -513,6 +830,14 @@ export default function App() {
             onChangeSpineSegments={handleChangeSpineSegments}
             onSetSpineLength={handleSetSpineLength}
             onSetTorsoRadius={handleSetTorsoRadius}
+            onSetVertebraCount={handleSetVertebraCount}
+            onApplySpinePosturePreset={handleApplySpinePosturePreset}
+            onUpdateCreatureMorphology={handleUpdateCreatureMorphology}
+            onUpdatePaintConfig={handleUpdatePaintConfig}
+            onToggleSymmetry={handleToggleSymmetry}
+            onUndo={handleUndoEditor}
+            onRedo={handleRedoEditor}
+            onSetEditorPreviewAction={handleSetEditorPreviewAction}
             onEvolveToCreatureStage={handleEvolveToCreatureStage}
             onRotateEditorCamera={handleRotateEditorCamera}
             onClose={handleCloseEditor}
@@ -523,6 +848,7 @@ export default function App() {
             snapshot={snapshot}
             onTogglePause={handleTogglePause}
             onToggleEditor={handleToggleEditor}
+            onToggleDevTools={() => setIsDevToolsOpen((prev) => !prev)}
             onEvolveToCreatureStage={handleEvolveToCreatureStage}
             onControlInput={handleControlInput}
           />
@@ -533,10 +859,37 @@ export default function App() {
       {isPaused && (
         <PauseModal
           stats={snapshot.stats}
+          isSettingsOpen={isSettingsOpen}
           onResume={handleResume}
           onManualSave={handleManualSave}
           onOpenSettings={() => setIsSettingsOpen(true)}
+          onOpenDevTools={() => setIsDevToolsOpen(true)}
           onExitToMenu={handleSaveAndExitToMenu}
+          onExitWithoutSaving={handleExitToMenuWithoutSaving}
+        />
+      )}
+
+      {/* Floating Developer Suite / Debug Overlay (F1 or º/Backquote) */}
+      {isDevToolsOpen && (
+        <DevToolsModal
+          stats={snapshot.stats}
+          isGodModeActive={Boolean(snapshot.isGodModeActive)}
+          isAIFrozen={Boolean(snapshot.isAIFrozen)}
+          currentBiomeName={snapshot.currentBiomeName}
+          onClose={() => setIsDevToolsOpen(false)}
+          onJumpToStage={handleDevJumpToStage}
+          onAddAdn={handleDevAddAdn}
+          onToggleGodMode={handleDevToggleGodMode}
+          onHealFull={handleDevHealFull}
+          onTeleport={handleDevTeleport}
+          onSetPlanetTheme={handleDevSetPlanetTheme}
+          onToggleFreezeAI={handleDevToggleFreezeAI}
+          onUnlockAllAdaptations={handleDevUnlockAllAdaptations}
+          onOpenEditorImmediate={handleDevOpenEditorImmediate}
+          onTriggerBrainCinematic={handleDevTriggerBrainCinematic}
+          onSpawnFoodCluster={handleDevSpawnFoodCluster}
+          onClearAllEnemies={handleDevClearAllEnemies}
+          onForceSpawnSpecies={handleDevForceSpawnSpecies}
         />
       )}
 

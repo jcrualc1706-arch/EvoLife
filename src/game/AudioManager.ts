@@ -36,10 +36,15 @@ export class AudioManager {
   private currentMusicState: AdaptiveMusicState = 'none';
   private musicSchedulerId: number | null = null;
   private musicStepIndex = 0;
+  private peacefulBusGain: GainNode | null = null;
+  private combatBusGain: GainNode | null = null;
+  private combatTailUntilTime = 0;
   private oceanCurrentSource: AudioBufferSourceNode | null = null;
   private oceanCurrentGain: GainNode | null = null;
   private pinkNoiseBuffer: AudioBuffer | null = null;
   private whiteNoiseBuffer: AudioBuffer | null = null;
+  private brownNoiseBuffer: AudioBuffer | null = null;
+  private softClipCurve: Float32Array<ArrayBuffer> | null = null;
 
   // Active Cinematic Loops (for clean stop if user skips intro with [Space])
   private activeCinematicNodes: Array<{
@@ -59,6 +64,14 @@ export class AudioManager {
         this.ctx = new AudioCtx();
         this.sfxGain = this.ctx.createGain();
         this.musicGain = this.ctx.createGain();
+        this.peacefulBusGain = this.ctx.createGain();
+        this.combatBusGain = this.ctx.createGain();
+
+        this.peacefulBusGain.gain.value = 1.0;
+        this.combatBusGain.gain.value = 0.0001;
+
+        this.peacefulBusGain.connect(this.musicGain);
+        this.combatBusGain.connect(this.musicGain);
         this.sfxGain.connect(this.ctx.destination);
         this.musicGain.connect(this.ctx.destination);
         this.updateGainNodesImmediate();
@@ -83,7 +96,13 @@ export class AudioManager {
   private getMusicDestination(): AudioNode | null {
     const ctx = this.getContext();
     if (!ctx) return null;
-    return this.musicGain ?? ctx.destination;
+    return this.peacefulBusGain ?? this.musicGain ?? ctx.destination;
+  }
+
+  private getCombatMusicDestination(): AudioNode | null {
+    const ctx = this.getContext();
+    if (!ctx) return null;
+    return this.combatBusGain ?? this.musicGain ?? ctx.destination;
   }
 
   public unlock(): void {
@@ -127,6 +146,19 @@ export class AudioManager {
     return this.masterVolume * this.ambientVolume;
   }
 
+  private getSoftClipCurve(): Float32Array<ArrayBuffer> {
+    if (this.softClipCurve) return this.softClipCurve;
+    const samples = 1024;
+    const buffer = new ArrayBuffer(samples * 4);
+    const curve = new Float32Array(buffer);
+    for (let i = 0; i < samples; i++) {
+      const x = (i * 2) / samples - 1;
+      curve[i] = Math.tanh(x * 2.4);
+    }
+    this.softClipCurve = curve;
+    return curve;
+  }
+
   private getWhiteNoiseBuffer(ctx: AudioContext): AudioBuffer {
     if (this.whiteNoiseBuffer && this.whiteNoiseBuffer.sampleRate === ctx.sampleRate) {
       return this.whiteNoiseBuffer;
@@ -167,6 +199,24 @@ export class AudioManager {
       b6 = white * 0.115926;
     }
     this.pinkNoiseBuffer = buffer;
+    return buffer;
+  }
+
+  private getBrownNoiseBuffer(ctx: AudioContext): AudioBuffer {
+    if (this.brownNoiseBuffer && this.brownNoiseBuffer.sampleRate === ctx.sampleRate) {
+      return this.brownNoiseBuffer;
+    }
+    const length = ctx.sampleRate * 3;
+    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    let lastOut = 0.0;
+    for (let i = 0; i < length; i++) {
+      const white = Math.random() * 2 - 1;
+      data[i] = (lastOut + 0.025 * white) / 1.025;
+      lastOut = data[i];
+      data[i] *= 3.2;
+    }
+    this.brownNoiseBuffer = buffer;
     return buffer;
   }
 
@@ -904,6 +954,206 @@ export class AudioManager {
   }
 
   /**
+   * Spore Brain Evolution Sequence (5.5s 3-Layer Modular Web Audio Synthesis):
+   * - Layer 1 (Sub-Aquatic Mystic Drone): Low sine/triangle oscillator (55 Hz -> 110 Hz) filtered to build organic tension.
+   * - Layer 2 (Neural Synaptic Impulses): Short bursts of bandpass-filtered noise and stochastic micro-tones whose cadence accelerates with progress p.
+   * - Layer 3 (Final Absorption Resonance): Ascending perfect-fifth lowpass filter sweep with a sub-bass impact and warm harmonic decay upon cranial fusion.
+   */
+  public playBrainEvolutionSequence(): void {
+    const vol = this.getEffectiveSfxVolume();
+    if (vol <= 0.01) return;
+    const ctx = this.getContext();
+    const dest = this.getSfxDestination();
+    if (!ctx || !dest) return;
+
+    const t = ctx.currentTime;
+    const seqDuration = 5.5;
+
+    // =========================================================================
+    // LAYER 1: Sub-Aquatic Mystic Drone (55 Hz -> 110 Hz filtered sine/triangle)
+    // =========================================================================
+    const droneSub = ctx.createOscillator();
+    const droneHarm = ctx.createOscillator();
+    const droneFilter = ctx.createBiquadFilter();
+    const droneGain = ctx.createGain();
+
+    droneSub.type = 'sine';
+    droneSub.frequency.setValueAtTime(55.0, t);
+    droneSub.frequency.exponentialRampToValueAtTime(82.41, t + 3.6);
+    droneSub.frequency.exponentialRampToValueAtTime(110.0, t + 4.75);
+
+    droneHarm.type = 'triangle';
+    droneHarm.frequency.setValueAtTime(55.3, t);
+    droneHarm.frequency.exponentialRampToValueAtTime(110.6, t + 4.75);
+
+    droneFilter.type = 'lowpass';
+    droneFilter.Q.setValueAtTime(4.2, t);
+    droneFilter.frequency.setValueAtTime(140, t);
+    droneFilter.frequency.exponentialRampToValueAtTime(520, t + 3.6);
+    droneFilter.frequency.exponentialRampToValueAtTime(980, t + 4.65);
+    droneFilter.frequency.exponentialRampToValueAtTime(180, t + seqDuration);
+
+    droneGain.gain.setValueAtTime(0.0001, t);
+    droneGain.gain.linearRampToValueAtTime(0.24, t + 0.55);
+    droneGain.gain.linearRampToValueAtTime(0.32, t + 3.8);
+    droneGain.gain.exponentialRampToValueAtTime(0.0001, t + seqDuration);
+
+    droneSub.connect(droneFilter);
+    droneHarm.connect(droneFilter);
+    droneFilter.connect(droneGain);
+    droneGain.connect(dest);
+
+    droneSub.onended = () => {
+      droneSub.disconnect();
+      droneHarm.disconnect();
+      droneFilter.disconnect();
+      droneGain.disconnect();
+    };
+    droneSub.start(t);
+    droneHarm.start(t);
+    droneSub.stop(t + seqDuration + 0.05);
+    droneHarm.stop(t + seqDuration + 0.05);
+
+    // =========================================================================
+    // LAYER 2: Accelerating Neural Synapses (Bandpass Noise Bursts & Micro-Tones)
+    // =========================================================================
+    const pinkBuffer = this.getPinkNoiseBuffer(ctx);
+    const pentatonicScale = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.51, 1567.98];
+
+    let cursor = 0.08;
+    let pulseIdx = 0;
+    while (cursor < 4.62) {
+      const pNorm = cursor / 4.62;
+      const fireTime = t + cursor;
+
+      // 2A. Bandpass-filtered synaptic noise burst
+      const noiseSrc = ctx.createBufferSource();
+      noiseSrc.buffer = pinkBuffer;
+      const bpFilter = ctx.createBiquadFilter();
+      bpFilter.type = 'bandpass';
+      bpFilter.Q.setValueAtTime(6.5 + pNorm * 5.0, fireTime);
+      const centerFreq = 900 + pNorm * 2200 + ((pulseIdx * 317) % 600);
+      bpFilter.frequency.setValueAtTime(centerFreq, fireTime);
+      bpFilter.frequency.exponentialRampToValueAtTime(
+        centerFreq * 1.35,
+        fireTime + 0.065
+      );
+
+      const burstGain = ctx.createGain();
+      const burstPeak = 0.06 + pNorm * 0.08;
+      burstGain.gain.setValueAtTime(0.0001, fireTime);
+      burstGain.gain.linearRampToValueAtTime(burstPeak, fireTime + 0.008);
+      burstGain.gain.exponentialRampToValueAtTime(0.0001, fireTime + 0.075);
+
+      noiseSrc.connect(bpFilter);
+      bpFilter.connect(burstGain);
+      burstGain.connect(dest);
+      noiseSrc.onended = () => {
+        noiseSrc.disconnect();
+        bpFilter.disconnect();
+        burstGain.disconnect();
+      };
+      noiseSrc.start(fireTime, (pulseIdx * 0.13) % 1.8, 0.085);
+
+      // 2B. Bioluminescent stochastic micro-tone
+      const toneOsc = ctx.createOscillator();
+      const toneGain = ctx.createGain();
+      toneOsc.type = pulseIdx % 2 === 0 ? 'sine' : 'triangle';
+      const noteFreq =
+        pentatonicScale[(pulseIdx + Math.floor(pNorm * 4)) % pentatonicScale.length] *
+        (pNorm > 0.65 ? 1.5 : 1.0);
+      toneOsc.frequency.setValueAtTime(noteFreq, fireTime);
+      toneOsc.frequency.exponentialRampToValueAtTime(
+        noteFreq * 1.12,
+        fireTime + 0.09
+      );
+
+      const tonePeak = 0.045 + pNorm * 0.055;
+      toneGain.gain.setValueAtTime(0.0001, fireTime);
+      toneGain.gain.linearRampToValueAtTime(tonePeak, fireTime + 0.012);
+      toneGain.gain.exponentialRampToValueAtTime(0.0001, fireTime + 0.11);
+
+      toneOsc.connect(toneGain);
+      toneGain.connect(dest);
+      toneOsc.onended = () => {
+        toneOsc.disconnect();
+        toneGain.disconnect();
+      };
+      toneOsc.start(fireTime);
+      toneOsc.stop(fireTime + 0.12);
+
+      // Cadence accelerates progressively as p advances (from 0.36s down to 0.065s in Phase 3)
+      const stepDelta = Math.max(0.065, 0.36 * Math.pow(1.0 - pNorm * 0.82, 1.45));
+      cursor += stepDelta;
+      pulseIdx++;
+    }
+
+    // =========================================================================
+    // LAYER 3: Final Cranial Absorption Resonance (t + 4.65s -> t + 5.55s)
+    // Perfect-fifth harmonic sweep + sub-bass cranial impact + warm decay
+    // =========================================================================
+    const absorbTime = t + 4.65;
+
+    // 3A. Deep Sub-Bass Cranial Fusion Impact
+    const subImpactOsc = ctx.createOscillator();
+    const subImpactGain = ctx.createGain();
+    subImpactOsc.type = 'sine';
+    subImpactOsc.frequency.setValueAtTime(135.0, absorbTime);
+    subImpactOsc.frequency.exponentialRampToValueAtTime(42.0, absorbTime + 0.55);
+
+    subImpactGain.gain.setValueAtTime(0.0001, absorbTime);
+    subImpactGain.gain.linearRampToValueAtTime(0.38, absorbTime + 0.025);
+    subImpactGain.gain.exponentialRampToValueAtTime(0.0001, absorbTime + 0.85);
+
+    subImpactOsc.connect(subImpactGain);
+    subImpactGain.connect(dest);
+    subImpactOsc.onended = () => {
+      subImpactOsc.disconnect();
+      subImpactGain.disconnect();
+    };
+    subImpactOsc.start(absorbTime);
+    subImpactOsc.stop(absorbTime + 0.9);
+
+    // 3B. Ascending Perfect-Fifth Harmonic Chord with Lowpass Filter Sweep
+    const fifthChordFreqs = [110.0, 164.81, 220.0, 329.63, 440.0, 659.25];
+    fifthChordFreqs.forEach((baseF, idx) => {
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+
+      osc.type = idx < 2 ? 'sawtooth' : 'triangle';
+      // Sweep up a perfect fifth (1.5x ratio) during assimilation
+      osc.frequency.setValueAtTime(baseF, absorbTime - 0.15);
+      osc.frequency.exponentialRampToValueAtTime(
+        baseF * 1.5,
+        absorbTime + 0.22
+      );
+
+      filter.type = 'lowpass';
+      filter.Q.setValueAtTime(2.8, absorbTime - 0.15);
+      filter.frequency.setValueAtTime(320, absorbTime - 0.15);
+      filter.frequency.exponentialRampToValueAtTime(3800, absorbTime + 0.25);
+      filter.frequency.exponentialRampToValueAtTime(720, absorbTime + 1.15);
+
+      const amp = idx < 2 ? 0.1 : 0.075;
+      gain.gain.setValueAtTime(0.0001, absorbTime - 0.15);
+      gain.gain.linearRampToValueAtTime(amp, absorbTime + 0.12);
+      gain.gain.exponentialRampToValueAtTime(0.0001, absorbTime + 1.15);
+
+      osc.connect(filter);
+      filter.connect(gain);
+      gain.connect(dest);
+      osc.onended = () => {
+        osc.disconnect();
+        filter.disconnect();
+        gain.disconnect();
+      };
+      osc.start(absorbTime - 0.15);
+      osc.stop(absorbTime + 1.2);
+    });
+  }
+
+  /**
    * Descending cellular collapse when an organism dies.
    */
   public playCreatureDeath(): void {
@@ -1013,7 +1263,7 @@ export class AudioManager {
   // ============================================================================
 
   /**
-   * Phase 1 (0.5s -> 4.8s): Deep stellar hum and supersonic bolide whistle in space.
+   * Phase 1 (0.5s -> 4.8s): Deep gravitational sub-bass hum and Doppler stellar bolide approach in space.
    */
   public playSpaceBolideWhistle(): void {
     const vol = this.getEffectiveSfxVolume();
@@ -1023,32 +1273,64 @@ export class AudioManager {
     if (!ctx || !dest) return;
 
     const t = ctx.currentTime;
-    const subOsc = ctx.createOscillator();
-    const whistleOsc = ctx.createOscillator();
-    const gain = ctx.createGain();
+    const dur = 3.8;
 
-    subOsc.type = 'sine';
-    subOsc.frequency.setValueAtTime(58, t);
-    subOsc.frequency.linearRampToValueAtTime(84, t + 3.4);
+    // Layer 1: Detuned gravitational sub-bass drone
+    const subOsc1 = ctx.createOscillator();
+    const subOsc2 = ctx.createOscillator();
+    const subFilter = ctx.createBiquadFilter();
+    const subGain = ctx.createGain();
 
-    whistleOsc.type = 'sine';
-    whistleOsc.frequency.setValueAtTime(920, t);
-    whistleOsc.frequency.exponentialRampToValueAtTime(340, t + 3.4);
+    subOsc1.type = 'sine';
+    subOsc1.frequency.setValueAtTime(46, t);
+    subOsc1.frequency.exponentialRampToValueAtTime(74, t + dur);
 
-    gain.gain.setValueAtTime(0.001, t);
-    gain.gain.linearRampToValueAtTime(0.16, t + 0.5);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + 3.5);
+    subOsc2.type = 'triangle';
+    subOsc2.frequency.setValueAtTime(69, t);
+    subOsc2.frequency.exponentialRampToValueAtTime(111, t + dur);
+    subOsc2.detune.value = 6;
 
-    subOsc.connect(gain);
-    whistleOsc.connect(gain);
-    gain.connect(dest);
+    subFilter.type = 'lowpass';
+    subFilter.frequency.setValueAtTime(140, t);
+    subFilter.frequency.exponentialRampToValueAtTime(280, t + dur);
+
+    subGain.gain.setValueAtTime(0.0001, t);
+    subGain.gain.linearRampToValueAtTime(0.22, t + 0.7);
+    subGain.gain.setValueAtTime(0.22, t + dur - 0.5);
+    subGain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    subOsc1.connect(subFilter);
+    subOsc2.connect(subFilter);
+    subFilter.connect(subGain);
+    subGain.connect(dest);
+
+    // Layer 2: Filtered solar-wind Doppler rush
+    const windSrc = ctx.createBufferSource();
+    windSrc.buffer = this.getPinkNoiseBuffer(ctx);
+    windSrc.loop = true;
+
+    const windFilter = ctx.createBiquadFilter();
+    windFilter.type = 'bandpass';
+    windFilter.frequency.setValueAtTime(680, t);
+    windFilter.frequency.exponentialRampToValueAtTime(260, t + dur);
+    windFilter.Q.value = 3.8;
+
+    const windGain = ctx.createGain();
+    windGain.gain.setValueAtTime(0.0001, t);
+    windGain.gain.linearRampToValueAtTime(0.11, t + 0.8);
+    windGain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    windSrc.connect(windFilter);
+    windFilter.connect(windGain);
+    windGain.connect(dest);
 
     const record = {
-      gain,
+      gain: subGain,
       stop: () => {
         try {
-          subOsc.stop();
-          whistleOsc.stop();
+          subOsc1.stop();
+          subOsc2.stop();
+          windSrc.stop();
         } catch {
           // Ignore if already stopped
         }
@@ -1056,70 +1338,194 @@ export class AudioManager {
     };
     this.activeCinematicNodes.push(record);
 
-    subOsc.onended = () => {
-      subOsc.disconnect();
-      whistleOsc.disconnect();
-      gain.disconnect();
+    subOsc1.onended = () => {
+      subOsc1.disconnect();
+      subOsc2.disconnect();
+      subFilter.disconnect();
+      subGain.disconnect();
+      windSrc.disconnect();
+      windFilter.disconnect();
+      windGain.disconnect();
     };
 
-    subOsc.start(t);
-    whistleOsc.start(t);
-    subOsc.stop(t + 3.55);
-    whistleOsc.stop(t + 3.55);
+    subOsc1.start(t);
+    subOsc2.start(t);
+    windSrc.start(t);
+    subOsc1.stop(t + dur + 0.05);
+    subOsc2.stop(t + dur + 0.05);
+    windSrc.stop(t + dur + 0.05);
   }
 
   /**
-   * Phase 2 (4.8s -> 8.5s): Igneous atmospheric re-entry roar, plasma turbulence & sonic wind.
+   * Phase 2 (4.8s -> 8.5s): Multi-layered igneous atmospheric re-entry:
+   * 1. Plasma Roar & Supersonic Wind (Pink/Brown noise + Bandpass 120Hz->2200Hz + Fast LFO turbulence)
+   * 2. Sub-Bass Gravitational Thermal Drone (Detuned 55Hz triangle & 82Hz sawtooth, 8 cents detune)
+   * 3. Wake Friction Sparks & Ash Bursts (Highpass >4000Hz white noise crackles)
    */
-  public playMeteorAtmosphericEntry(heatRatio = 0.8): void {
+  public playMeteorAtmosphericEntry(duration = 3.5): void {
     const vol = this.getEffectiveSfxVolume();
     if (vol <= 0.01) return;
     const nowMs = performance.now();
-    if (nowMs - this.lastReentryPulseAt < 2800) return;
+    if (nowMs - this.lastReentryPulseAt < 2500) return;
     this.lastReentryPulseAt = nowMs;
 
     const ctx = this.getContext();
     const dest = this.getSfxDestination();
     if (!ctx || !dest) return;
 
+    // Safeguard if called with a normalized ratio (< 1.2) instead of seconds
+    const dur = duration < 1.2 ? 3.5 : duration;
     const t = ctx.currentTime;
-    const noiseSrc = ctx.createBufferSource();
-    noiseSrc.buffer = this.getPinkNoiseBuffer(ctx);
-    noiseSrc.loop = true;
 
-    const filter = ctx.createBiquadFilter();
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(220, t);
-    filter.frequency.exponentialRampToValueAtTime(
-      1400 + heatRatio * 600,
-      t + 2.4
-    );
-    filter.frequency.exponentialRampToValueAtTime(380, t + 3.6);
-    filter.Q.value = 2.8;
+    // ------------------------------------------------------------------------
+    // LAYER 1: Plasma Roar / Supersonic Wind (Pink + Brown Noise + Bandpass + Fast LFO)
+    // ------------------------------------------------------------------------
+    const pinkSrc = ctx.createBufferSource();
+    pinkSrc.buffer = this.getPinkNoiseBuffer(ctx);
+    pinkSrc.loop = true;
 
-    const rumbleOsc = ctx.createOscillator();
-    rumbleOsc.type = 'sawtooth';
-    rumbleOsc.frequency.setValueAtTime(52, t);
-    rumbleOsc.frequency.linearRampToValueAtTime(78, t + 2.5);
-    rumbleOsc.frequency.linearRampToValueAtTime(45, t + 3.6);
+    const brownSrc = ctx.createBufferSource();
+    brownSrc.buffer = this.getBrownNoiseBuffer(ctx);
+    brownSrc.loop = true;
 
-    const gain = ctx.createGain();
-    gain.gain.setValueAtTime(0.001, t);
-    gain.gain.linearRampToValueAtTime(0.28, t + 0.65);
-    gain.gain.setValueAtTime(0.28, t + 2.6);
-    gain.gain.exponentialRampToValueAtTime(0.0001, t + 3.65);
+    const plasmaFilter = ctx.createBiquadFilter();
+    plasmaFilter.type = 'bandpass';
+    plasmaFilter.frequency.setValueAtTime(120, t);
+    plasmaFilter.frequency.exponentialRampToValueAtTime(2200, t + dur * 0.82);
+    plasmaFilter.frequency.exponentialRampToValueAtTime(340, t + dur);
+    plasmaFilter.Q.value = 2.1;
 
-    noiseSrc.connect(filter);
-    rumbleOsc.connect(filter);
-    filter.connect(gain);
-    gain.connect(dest);
+    // Fast LFO modulating bandpass cutoff to simulate violent air compression & plasma buffeting
+    const turbLfo = ctx.createOscillator();
+    const turbLfoGain = ctx.createGain();
+    turbLfo.type = 'sine';
+    turbLfo.frequency.setValueAtTime(13, t);
+    turbLfo.frequency.linearRampToValueAtTime(22, t + dur * 0.85);
+    turbLfoGain.gain.setValueAtTime(75, t);
+    turbLfoGain.gain.linearRampToValueAtTime(360, t + dur * 0.8);
+
+    turbLfo.connect(turbLfoGain);
+    turbLfoGain.connect(plasmaFilter.frequency);
+
+    const plasmaGain = ctx.createGain();
+    plasmaGain.gain.setValueAtTime(0.0001, t);
+    plasmaGain.gain.linearRampToValueAtTime(0.32, t + 0.45);
+    plasmaGain.gain.setValueAtTime(0.34, t + dur * 0.78);
+    plasmaGain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    pinkSrc.connect(plasmaFilter);
+    brownSrc.connect(plasmaFilter);
+    plasmaFilter.connect(plasmaGain);
+    plasmaGain.connect(dest);
+
+    // ------------------------------------------------------------------------
+    // LAYER 2: Sub-Bass Gravitational Thermal Drone (55Hz Triangle + 82Hz Sawtooth, ±8 cents detune)
+    // ------------------------------------------------------------------------
+    const droneTri = ctx.createOscillator();
+    const droneSaw = ctx.createOscillator();
+    const droneFilter = ctx.createBiquadFilter();
+    const droneShaper = ctx.createWaveShaper();
+    const droneGain = ctx.createGain();
+
+    droneTri.type = 'triangle';
+    droneTri.frequency.setValueAtTime(55, t);
+    droneTri.frequency.linearRampToValueAtTime(72, t + dur * 0.8);
+    droneTri.frequency.linearRampToValueAtTime(48, t + dur);
+    droneTri.detune.setValueAtTime(-8, t);
+
+    droneSaw.type = 'sawtooth';
+    droneSaw.frequency.setValueAtTime(82, t);
+    droneSaw.frequency.linearRampToValueAtTime(108, t + dur * 0.8);
+    droneSaw.frequency.linearRampToValueAtTime(68, t + dur);
+    droneSaw.detune.setValueAtTime(8, t);
+
+    droneFilter.type = 'lowpass';
+    droneFilter.frequency.setValueAtTime(190, t);
+    droneFilter.frequency.exponentialRampToValueAtTime(480, t + dur * 0.8);
+    droneFilter.frequency.exponentialRampToValueAtTime(150, t + dur);
+    droneFilter.Q.value = 3.2;
+
+    droneShaper.curve = this.getSoftClipCurve();
+    droneShaper.oversample = '2x';
+
+    droneGain.gain.setValueAtTime(0.0001, t);
+    droneGain.gain.linearRampToValueAtTime(0.26, t + 0.5);
+    droneGain.gain.setValueAtTime(0.28, t + dur * 0.8);
+    droneGain.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+
+    droneTri.connect(droneFilter);
+    droneSaw.connect(droneFilter);
+    droneFilter.connect(droneShaper);
+    droneShaper.connect(droneGain);
+    droneGain.connect(dest);
+
+    // ------------------------------------------------------------------------
+    // LAYER 3: Wake Friction Sparks & Incandescent Debris (Random Highpass >4000Hz White Noise Bursts)
+    // ------------------------------------------------------------------------
+    const sparkSources: AudioBufferSourceNode[] = [];
+    const sparkCount = 16;
+    for (let i = 0; i < sparkCount; i++) {
+      const progress = i / sparkCount;
+      const jitter = (Math.random() - 0.5) * 0.12;
+      const sparkStart = Math.max(
+        t + 0.15,
+        Math.min(t + dur - 0.15, t + progress * dur + jitter)
+      );
+      const sparkDur = 0.028 + Math.random() * 0.045;
+
+      const sparkSrc = ctx.createBufferSource();
+      sparkSrc.buffer = this.getWhiteNoiseBuffer(ctx);
+
+      const hpFilter = ctx.createBiquadFilter();
+      hpFilter.type = 'highpass';
+      hpFilter.frequency.setValueAtTime(4000 + Math.random() * 1800, sparkStart);
+      hpFilter.Q.value = 4.5;
+
+      const sparkGain = ctx.createGain();
+      const peak = (0.08 + progress * 0.12) * (0.75 + Math.random() * 0.5);
+      sparkGain.gain.setValueAtTime(0.0001, sparkStart);
+      sparkGain.gain.linearRampToValueAtTime(peak, sparkStart + 0.004);
+      sparkGain.gain.exponentialRampToValueAtTime(0.0001, sparkStart + sparkDur);
+
+      const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+      sparkSrc.connect(hpFilter);
+      if (panner) {
+        panner.pan.setValueAtTime((Math.random() - 0.5) * 1.4, sparkStart);
+        hpFilter.connect(panner);
+        panner.connect(sparkGain);
+      } else {
+        hpFilter.connect(sparkGain);
+      }
+      sparkGain.connect(dest);
+
+      sparkSrc.onended = () => {
+        sparkSrc.disconnect();
+        hpFilter.disconnect();
+        panner?.disconnect();
+        sparkGain.disconnect();
+      };
+
+      sparkSrc.start(sparkStart, Math.random() * 1.2);
+      sparkSrc.stop(sparkStart + sparkDur + 0.01);
+      sparkSources.push(sparkSrc);
+    }
 
     const record = {
-      gain,
+      gain: plasmaGain,
       stop: () => {
         try {
-          noiseSrc.stop();
-          rumbleOsc.stop();
+          pinkSrc.stop();
+          brownSrc.stop();
+          turbLfo.stop();
+          droneTri.stop();
+          droneSaw.stop();
+          for (const s of sparkSources) {
+            try {
+              s.stop();
+            } catch {
+              // Ignore
+            }
+          }
         } catch {
           // Ignore
         }
@@ -1127,21 +1533,38 @@ export class AudioManager {
     };
     this.activeCinematicNodes.push(record);
 
-    noiseSrc.onended = () => {
-      noiseSrc.disconnect();
-      rumbleOsc.disconnect();
-      filter.disconnect();
-      gain.disconnect();
+    pinkSrc.onended = () => {
+      pinkSrc.disconnect();
+      brownSrc.disconnect();
+      turbLfo.disconnect();
+      turbLfoGain.disconnect();
+      plasmaFilter.disconnect();
+      plasmaGain.disconnect();
+      droneTri.disconnect();
+      droneSaw.disconnect();
+      droneFilter.disconnect();
+      droneShaper.disconnect();
+      droneGain.disconnect();
     };
 
-    noiseSrc.start(t);
-    rumbleOsc.start(t);
-    noiseSrc.stop(t + 3.7);
-    rumbleOsc.stop(t + 3.7);
+    pinkSrc.start(t);
+    brownSrc.start(t);
+    turbLfo.start(t);
+    droneTri.start(t);
+    droneSaw.start(t);
+
+    pinkSrc.stop(t + dur + 0.05);
+    brownSrc.stop(t + dur + 0.05);
+    turbLfo.stop(t + dur + 0.05);
+    droneTri.stop(t + dur + 0.05);
+    droneSaw.stop(t + dur + 0.05);
   }
 
   /**
-   * Phase 3 (8.5s): Massive ocean splash & underwater cavitation bubble column.
+   * Phase 3 (8.5s): Massive ocean impact:
+   * 1. Sub-Bass Shockwave Drop (140Hz -> 32Hz in 0.45s through soft-clipping WaveShaper distortion)
+   * 2. Hydraulic Explosion / Water Column (White/Brown noise lowpass snapping open and choking over 1.8s)
+   * 3. Cavitation & Ascending Micro-Bubbles (Harmonic bubble pops 320Hz - 640Hz)
    */
   public playOceanImpact(): void {
     const vol = this.getEffectiveSfxVolume();
@@ -1152,78 +1575,145 @@ export class AudioManager {
 
     const t = ctx.currentTime;
 
-    // 1. Deep hydrodynamic sub-bass impact thud
+    // ------------------------------------------------------------------------
+    // LAYER 1: Sub-Bass Shockwave Drop (140Hz -> 32Hz in 0.45s with Soft Saturation)
+    // ------------------------------------------------------------------------
     const subOsc = ctx.createOscillator();
+    const punchOsc = ctx.createOscillator();
+    const shaper = ctx.createWaveShaper();
+    const subFilter = ctx.createBiquadFilter();
     const subGain = ctx.createGain();
+
     subOsc.type = 'sine';
     subOsc.frequency.setValueAtTime(140, t);
-    subOsc.frequency.exponentialRampToValueAtTime(32, t + 0.65);
+    subOsc.frequency.exponentialRampToValueAtTime(32, t + 0.45);
+    subOsc.frequency.exponentialRampToValueAtTime(26, t + 0.85);
+
+    punchOsc.type = 'triangle';
+    punchOsc.frequency.setValueAtTime(95, t);
+    punchOsc.frequency.exponentialRampToValueAtTime(28, t + 0.45);
+
+    shaper.curve = this.getSoftClipCurve();
+    shaper.oversample = '2x';
+
+    subFilter.type = 'lowpass';
+    subFilter.frequency.setValueAtTime(260, t);
+    subFilter.frequency.exponentialRampToValueAtTime(75, t + 0.55);
 
     subGain.gain.setValueAtTime(0.001, t);
-    subGain.gain.linearRampToValueAtTime(0.38, t + 0.02);
-    subGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.7);
+    subGain.gain.linearRampToValueAtTime(0.46, t + 0.012);
+    subGain.gain.exponentialRampToValueAtTime(0.18, t + 0.45);
+    subGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.88);
 
-    subOsc.connect(subGain);
+    subOsc.connect(shaper);
+    punchOsc.connect(shaper);
+    shaper.connect(subFilter);
+    subFilter.connect(subGain);
     subGain.connect(dest);
+
     subOsc.onended = () => {
       subOsc.disconnect();
+      punchOsc.disconnect();
+      shaper.disconnect();
+      subFilter.disconnect();
       subGain.disconnect();
     };
     subOsc.start(t);
-    subOsc.stop(t + 0.72);
+    punchOsc.start(t);
+    subOsc.stop(t + 0.9);
+    punchOsc.stop(t + 0.5);
 
-    // 2. Filtered water splash & underwater cavitation stream
-    const splashNoise = ctx.createBufferSource();
-    splashNoise.buffer = this.getWhiteNoiseBuffer(ctx);
+    // ------------------------------------------------------------------------
+    // LAYER 2: Hydraulic Explosion & Water Column Immersion (1.8s Lowpass Envelope)
+    // ------------------------------------------------------------------------
+    const splashWhite = ctx.createBufferSource();
+    splashWhite.buffer = this.getWhiteNoiseBuffer(ctx);
+
+    const splashBrown = ctx.createBufferSource();
+    splashBrown.buffer = this.getBrownNoiseBuffer(ctx);
+
     const splashFilter = ctx.createBiquadFilter();
-    splashFilter.type = 'bandpass';
-    splashFilter.frequency.setValueAtTime(1100, t);
-    splashFilter.frequency.exponentialRampToValueAtTime(240, t + 1.6);
-    splashFilter.Q.value = 1.6;
+    splashFilter.type = 'lowpass';
+    splashFilter.frequency.setValueAtTime(280, t);
+    splashFilter.frequency.exponentialRampToValueAtTime(2400, t + 0.045);
+    splashFilter.frequency.exponentialRampToValueAtTime(420, t + 0.55);
+    splashFilter.frequency.exponentialRampToValueAtTime(140, t + 1.8);
+    splashFilter.Q.value = 2.4;
 
     const splashGain = ctx.createGain();
     splashGain.gain.setValueAtTime(0.001, t);
-    splashGain.gain.linearRampToValueAtTime(0.32, t + 0.03);
-    splashGain.gain.exponentialRampToValueAtTime(0.0001, t + 1.65);
+    splashGain.gain.linearRampToValueAtTime(0.38, t + 0.03);
+    splashGain.gain.exponentialRampToValueAtTime(0.0001, t + 1.8);
 
-    splashNoise.connect(splashFilter);
+    splashWhite.connect(splashFilter);
+    splashBrown.connect(splashFilter);
     splashFilter.connect(splashGain);
     splashGain.connect(dest);
-    splashNoise.onended = () => {
-      splashNoise.disconnect();
+
+    splashWhite.onended = () => {
+      splashWhite.disconnect();
+      splashBrown.disconnect();
       splashFilter.disconnect();
       splashGain.disconnect();
     };
-    splashNoise.start(t);
-    splashNoise.stop(t + 1.7);
+    splashWhite.start(t);
+    splashBrown.start(t);
+    splashWhite.stop(t + 1.85);
+    splashBrown.stop(t + 1.85);
 
-    // 3. Ascending underwater bubble pops
-    const bubbleFreqs = [320, 460, 580, 740, 890];
-    bubbleFreqs.forEach((bf, i) => {
+    // ------------------------------------------------------------------------
+    // LAYER 3: Cavitation & Ascending Micro-Bubbles (320Hz - 640Hz Harmonic Pops)
+    // ------------------------------------------------------------------------
+    const bubbleBaseFreqs = [
+      320, 360, 400, 440, 480, 512, 540, 576, 600, 620, 640, 480,
+    ];
+    bubbleBaseFreqs.forEach((bf, i) => {
+      const start = t + 0.14 + i * 0.125 + (Math.random() - 0.5) * 0.03;
+      const bDur = 0.065 + (i % 3) * 0.022;
+
       const bOsc = ctx.createOscillator();
+      const bFilter = ctx.createBiquadFilter();
       const bGain = ctx.createGain();
-      const start = t + 0.18 + i * 0.16;
+      const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+
       bOsc.type = 'sine';
-      bOsc.frequency.setValueAtTime(bf * 0.7, start);
-      bOsc.frequency.exponentialRampToValueAtTime(bf * 1.35, start + 0.09);
+      bOsc.frequency.setValueAtTime(bf * 0.78, start);
+      bOsc.frequency.exponentialRampToValueAtTime(bf * 1.42, start + bDur);
 
-      bGain.gain.setValueAtTime(0.001, start);
-      bGain.gain.linearRampToValueAtTime(0.12, start + 0.015);
-      bGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.11);
+      bFilter.type = 'bandpass';
+      bFilter.frequency.setValueAtTime(bf, start);
+      bFilter.Q.value = 3.5;
 
-      bOsc.connect(bGain);
+      const peak = 0.13 * (1 - i / (bubbleBaseFreqs.length * 1.35));
+      bGain.gain.setValueAtTime(0.0001, start);
+      bGain.gain.linearRampToValueAtTime(peak, start + 0.01);
+      bGain.gain.exponentialRampToValueAtTime(0.0001, start + bDur);
+
+      bOsc.connect(bFilter);
+      if (panner) {
+        panner.pan.setValueAtTime(Math.sin(i * 1.7) * 0.65, start);
+        bFilter.connect(panner);
+        panner.connect(bGain);
+      } else {
+        bFilter.connect(bGain);
+      }
       bGain.connect(dest);
+
       bOsc.onended = () => {
         bOsc.disconnect();
+        bFilter.disconnect();
+        panner?.disconnect();
         bGain.disconnect();
       };
       bOsc.start(start);
-      bOsc.stop(start + 0.12);
+      bOsc.stop(start + bDur + 0.01);
     });
   }
 
   /**
-   * Phase 4 (11.2s): Mineral basalt fracture & bioluminescent cell hatching chord on the seabed.
+   * Phase 4 (11.2s): Mineral Crystalline Fracture & Bioluminescent Panspermia Awakening Chord:
+   * 1. Crystalline Mineral Fracture (4 sharp metallic/mineral impulses in 1200Hz - 2800Hz + tectonic low snap)
+   * 2. Panspermia Awakening Chord (Suspended major triad with 1.2s soft attack & diffuse stereo reverb)
    */
   public playMeteorCrackOpen(): void {
     const vol = this.getEffectiveSfxVolume();
@@ -1234,48 +1724,218 @@ export class AudioManager {
 
     const t = ctx.currentTime;
 
-    // 1. Tectonic mineral crack snap
-    const crackOsc = ctx.createOscillator();
-    const crackGain = ctx.createGain();
-    crackOsc.type = 'sawtooth';
-    crackOsc.frequency.setValueAtTime(280, t);
-    crackOsc.frequency.exponentialRampToValueAtTime(52, t + 0.32);
+    // ------------------------------------------------------------------------
+    // LAYER 1: Tectonic Mineral & Crystalline Fracture (4 impulses 1200Hz - 2800Hz)
+    // ------------------------------------------------------------------------
+    const lowCrackOsc = ctx.createOscillator();
+    const lowCrackGain = ctx.createGain();
+    lowCrackOsc.type = 'sawtooth';
+    lowCrackOsc.frequency.setValueAtTime(240, t);
+    lowCrackOsc.frequency.exponentialRampToValueAtTime(42, t + 0.36);
 
-    crackGain.gain.setValueAtTime(0.001, t);
-    crackGain.gain.linearRampToValueAtTime(0.28, t + 0.01);
-    crackGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.34);
+    lowCrackGain.gain.setValueAtTime(0.001, t);
+    lowCrackGain.gain.linearRampToValueAtTime(0.3, t + 0.008);
+    lowCrackGain.gain.exponentialRampToValueAtTime(0.0001, t + 0.38);
 
-    crackOsc.connect(crackGain);
-    crackGain.connect(dest);
-    crackOsc.onended = () => {
-      crackOsc.disconnect();
-      crackGain.disconnect();
+    lowCrackOsc.connect(lowCrackGain);
+    lowCrackGain.connect(dest);
+    lowCrackOsc.onended = () => {
+      lowCrackOsc.disconnect();
+      lowCrackGain.disconnect();
     };
-    crackOsc.start(t);
-    crackOsc.stop(t + 0.35);
+    lowCrackOsc.start(t);
+    lowCrackOsc.stop(t + 0.4);
 
-    // 2. Bioluminescent genesis emergence arpeggio
-    const chord = [261.63, 329.63, 392.0, 523.25, 659.25, 783.99];
-    chord.forEach((freq, idx) => {
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      const start = t + 0.08 + idx * 0.075;
+    const crystalImpulses = [
+      { delay: 0.0, freq: 1280, modFreq: 1940, pan: -0.45 },
+      { delay: 0.068, freq: 1760, modFreq: 2480, pan: 0.48 },
+      { delay: 0.145, freq: 2240, modFreq: 1520, pan: -0.32 },
+      { delay: 0.235, freq: 2780, modFreq: 2110, pan: 0.38 },
+    ];
 
-      osc.type = 'triangle';
-      osc.frequency.setValueAtTime(freq, start);
+    crystalImpulses.forEach((imp) => {
+      const start = t + imp.delay;
+      const impDur = 0.14;
 
-      gain.gain.setValueAtTime(0.001, start);
-      gain.gain.linearRampToValueAtTime(0.15, start + 0.04);
-      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.75);
+      const carrier = ctx.createOscillator();
+      const harmonic = ctx.createOscillator();
+      const noiseBurst = ctx.createBufferSource();
+      noiseBurst.buffer = this.getWhiteNoiseBuffer(ctx);
 
-      osc.connect(gain);
-      gain.connect(dest);
-      osc.onended = () => {
-        osc.disconnect();
-        gain.disconnect();
+      const bpFilter = ctx.createBiquadFilter();
+      const impGain = ctx.createGain();
+      const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+
+      carrier.type = 'triangle';
+      carrier.frequency.setValueAtTime(imp.freq, start);
+      carrier.frequency.exponentialRampToValueAtTime(
+        imp.freq * 0.72,
+        start + impDur
+      );
+
+      harmonic.type = 'sine';
+      harmonic.frequency.setValueAtTime(imp.modFreq, start);
+      harmonic.frequency.exponentialRampToValueAtTime(
+        imp.modFreq * 0.85,
+        start + impDur
+      );
+
+      bpFilter.type = 'bandpass';
+      bpFilter.frequency.setValueAtTime(imp.freq, start);
+      bpFilter.Q.value = 7.5;
+
+      impGain.gain.setValueAtTime(0.0001, start);
+      impGain.gain.linearRampToValueAtTime(0.22, start + 0.004);
+      impGain.gain.exponentialRampToValueAtTime(0.0001, start + impDur);
+
+      carrier.connect(bpFilter);
+      harmonic.connect(bpFilter);
+      noiseBurst.connect(bpFilter);
+
+      if (panner) {
+        panner.pan.setValueAtTime(imp.pan, start);
+        bpFilter.connect(panner);
+        panner.connect(impGain);
+      } else {
+        bpFilter.connect(impGain);
+      }
+      impGain.connect(dest);
+
+      carrier.onended = () => {
+        carrier.disconnect();
+        harmonic.disconnect();
+        noiseBurst.disconnect();
+        bpFilter.disconnect();
+        panner?.disconnect();
+        impGain.disconnect();
       };
-      osc.start(start);
-      osc.stop(start + 0.78);
+
+      carrier.start(start);
+      harmonic.start(start);
+      noiseBurst.start(start, Math.random() * 0.5);
+      carrier.stop(start + impDur + 0.01);
+      harmonic.stop(start + impDur + 0.01);
+      noiseBurst.stop(start + 0.05);
+    });
+
+    // ------------------------------------------------------------------------
+    // LAYER 2: Panspermia Bioluminescent Awakening Chord (Suspended Major Triad, 1.2s Attack + Diffuse Reverb)
+    // ------------------------------------------------------------------------
+    const chordStart = t + 0.16;
+    const chordDuration = 3.1;
+    const attackTime = 1.2;
+
+    // Diffuse stereo delay reverb bus
+    const dryBus = ctx.createGain();
+    const delayL = ctx.createDelay(1.0);
+    const delayR = ctx.createDelay(1.0);
+    const fbGainL = ctx.createGain();
+    const fbGainR = ctx.createGain();
+    const reverbFilter = ctx.createBiquadFilter();
+    const wetGain = ctx.createGain();
+
+    delayL.delayTime.setValueAtTime(0.19, chordStart);
+    delayR.delayTime.setValueAtTime(0.27, chordStart);
+    fbGainL.gain.setValueAtTime(0.38, chordStart);
+    fbGainR.gain.setValueAtTime(0.36, chordStart);
+    reverbFilter.type = 'lowpass';
+    reverbFilter.frequency.setValueAtTime(1850, chordStart);
+    wetGain.gain.setValueAtTime(0.45, chordStart);
+
+    dryBus.connect(dest);
+    dryBus.connect(delayL);
+    dryBus.connect(delayR);
+
+    delayL.connect(fbGainL);
+    fbGainL.connect(reverbFilter);
+    reverbFilter.connect(delayR);
+
+    delayR.connect(fbGainR);
+    fbGainR.connect(delayL);
+
+    delayL.connect(wetGain);
+    delayR.connect(wetGain);
+    wetGain.connect(dest);
+
+    // Suspended major triad + luminous extensions: C4, F4, G4, E4, C5, D5, G5
+    const panspermiaVoices = [
+      { freq: 261.63, detune: -6, pan: -0.25, peak: 0.095 },
+      { freq: 349.23, detune: 5, pan: 0.25, peak: 0.08 },
+      { freq: 392.0, detune: -4, pan: -0.4, peak: 0.09 },
+      { freq: 329.63, detune: 6, pan: 0.35, peak: 0.085 },
+      { freq: 523.25, detune: -7, pan: -0.5, peak: 0.075 },
+      { freq: 587.33, detune: 7, pan: 0.5, peak: 0.068 },
+      { freq: 783.99, detune: 4, pan: 0.0, peak: 0.06 },
+    ];
+
+    panspermiaVoices.forEach((v, idx) => {
+      const noteStart = chordStart + idx * 0.045;
+      const oscSine = ctx.createOscillator();
+      const oscTri = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const voiceGain = ctx.createGain();
+      const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+
+      oscSine.type = 'sine';
+      oscSine.frequency.setValueAtTime(v.freq, noteStart);
+      oscSine.detune.setValueAtTime(v.detune, noteStart);
+
+      oscTri.type = 'triangle';
+      oscTri.frequency.setValueAtTime(v.freq, noteStart);
+      oscTri.detune.setValueAtTime(-v.detune, noteStart);
+
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(480, noteStart);
+      filter.frequency.exponentialRampToValueAtTime(
+        2200,
+        noteStart + attackTime
+      );
+      filter.frequency.exponentialRampToValueAtTime(
+        620,
+        noteStart + chordDuration
+      );
+
+      voiceGain.gain.setValueAtTime(0.0001, noteStart);
+      voiceGain.gain.linearRampToValueAtTime(v.peak, noteStart + attackTime);
+      voiceGain.gain.exponentialRampToValueAtTime(
+        0.0001,
+        noteStart + chordDuration
+      );
+
+      oscSine.connect(filter);
+      oscTri.connect(filter);
+      if (panner) {
+        panner.pan.setValueAtTime(v.pan, noteStart);
+        filter.connect(panner);
+        panner.connect(voiceGain);
+      } else {
+        filter.connect(voiceGain);
+      }
+      voiceGain.connect(dryBus);
+
+      oscSine.onended = () => {
+        oscSine.disconnect();
+        oscTri.disconnect();
+        filter.disconnect();
+        panner?.disconnect();
+        voiceGain.disconnect();
+        if (idx === panspermiaVoices.length - 1) {
+          window.setTimeout(() => {
+            dryBus.disconnect();
+            delayL.disconnect();
+            delayR.disconnect();
+            fbGainL.disconnect();
+            fbGainR.disconnect();
+            reverbFilter.disconnect();
+            wetGain.disconnect();
+          }, 900);
+        }
+      };
+
+      oscSine.start(noteStart);
+      oscTri.start(noteStart);
+      oscSine.stop(noteStart + chordDuration + 0.05);
+      oscTri.stop(noteStart + chordDuration + 0.05);
     });
   }
 
@@ -1294,12 +1954,18 @@ export class AudioManager {
   // ============================================================================
 
   /**
-   * Smoothly transitions the procedural background soundtrack to the target state.
+   * Smoothly transitions the procedural background soundtrack to the target state:
+   * - Entering 'combat': 0.35s click-free crossfade to the 140 BPM multi-layer pursuit theme.
+   * - Returning from 'combat' to 'ocean': 1.5s smooth crossfade back to the peaceful marine melody.
    */
   public transitionMusicTo(nextState: AdaptiveMusicState): void {
     if (this.currentMusicState === nextState) return;
+    const prevState = this.currentMusicState;
     this.currentMusicState = nextState;
-    this.musicStepIndex = 0;
+
+    if (nextState !== 'combat' && prevState !== 'combat') {
+      this.musicStepIndex = 0;
+    }
 
     if (nextState === 'none') {
       this.stopMusicScheduler();
@@ -1309,6 +1975,31 @@ export class AudioManager {
 
     const ctx = this.getContext();
     if (!ctx) return;
+
+    const now = ctx.currentTime;
+    if (this.peacefulBusGain && this.combatBusGain) {
+      const pGain = this.peacefulBusGain.gain;
+      const cGain = this.combatBusGain.gain;
+      pGain.cancelScheduledValues(now);
+      cGain.cancelScheduledValues(now);
+      pGain.setValueAtTime(Math.max(0.0001, pGain.value), now);
+      cGain.setValueAtTime(Math.max(0.0001, cGain.value), now);
+
+      if (nextState === 'combat') {
+        // Fast 0.35s adrenaline crossfade into combat pursuit
+        this.combatTailUntilTime = 0;
+        pGain.linearRampToValueAtTime(0.0001, now + 0.35);
+        cGain.linearRampToValueAtTime(1.0, now + 0.35);
+      } else if (prevState === 'combat') {
+        // Smooth 1.5s relief crossfade back to peaceful ocean/menu/editor music
+        this.combatTailUntilTime = now + 1.5;
+        cGain.linearRampToValueAtTime(0.0001, now + 1.5);
+        pGain.linearRampToValueAtTime(1.0, now + 1.5);
+      } else {
+        cGain.linearRampToValueAtTime(0.0001, now + 0.25);
+        pGain.linearRampToValueAtTime(1.0, now + 0.25);
+      }
+    }
 
     if (nextState === 'ocean') {
       this.ensureOceanCurrentDrone();
@@ -1372,10 +2063,13 @@ export class AudioManager {
 
   private startMusicScheduler(): void {
     if (typeof window === 'undefined' || this.musicSchedulerId !== null) return;
-    // 220ms tick (~136 BPM eighth-note grid) handles all 4 adaptive states cleanly
+    // 107ms tick = 140 BPM sixteenth-note (semicorchea) grid:
+    // 1 quarter note (negra) = 4 steps (~428.5ms)
+    // 1 eighth note (corchea) = 2 steps (~214.3ms)
+    // 1 sixteenth note (semicorchea) = 1 step (~107.1ms)
     this.musicSchedulerId = window.setInterval(() => {
       this.tickAdaptiveMusicStep();
-    }, 220);
+    }, 107);
   }
 
   private stopMusicScheduler(): void {
@@ -1390,16 +2084,32 @@ export class AudioManager {
     if (this.getEffectiveMusicVolume() <= 0.01) return;
     if (!this.ctx || this.ctx.state !== 'running') return;
 
-    const dest = this.getMusicDestination();
-    if (!dest) return;
+    const peacefulDest = this.getMusicDestination();
+    const combatDest = this.getCombatMusicDestination();
+    if (!peacefulDest || !combatDest) return;
 
-    const step = this.musicStepIndex++;
+    const step16 = this.musicStepIndex++;
     const t = this.ctx.currentTime;
+
+    // If in 'combat' OR within the 1.5s crossfade tail after escaping a predator, tick the 140 BPM combat layers
+    if (
+      this.currentMusicState === 'combat' ||
+      t < this.combatTailUntilTime
+    ) {
+      this.tickCombatMusicLayers(step16, t, combatDest);
+    }
+
+    if (this.currentMusicState === 'combat') {
+      return;
+    }
+
+    // For peaceful states ('menu', 'ocean', 'editor'), run on eighth-note subdivisions (every 2 sixteenth steps)
+    if (step16 % 2 !== 0) return;
+    const step = Math.floor(step16 / 2);
 
     switch (this.currentMusicState) {
       case 'menu': {
         // Canal A (Menú Principal / Sistema Solar): Acordes espaciales etéreos y lentos
-        // (ondas sine + filtro LowPass 400Hz + envolvente de ataque largo + LFO de paneo)
         if (step % 14 === 0) {
           const chordSets = [
             [130.81, 196.0, 246.94, 293.66], // Cmaj9 cosmic
@@ -1410,53 +2120,45 @@ export class AudioManager {
           const chord =
             chordSets[Math.floor(step / 14) % chordSets.length];
           chord.forEach((freq, idx) => {
-            this.scheduleEtherealPadNote(freq, t + idx * 0.18, 3.2, 0.042, dest);
+            this.scheduleEtherealPadNote(
+              freq,
+              t + idx * 0.18,
+              3.2,
+              0.042,
+              peacefulDest
+            );
           });
         }
         break;
       }
 
       case 'ocean': {
-        // Canal B (Océano Tranquilo / Exploración Celular): Melodía alegre, curiosa y burbujeante
-        // en escala pentatónica (C4, D4, E4, G4, A4, C5, D5, E5) con timbre de xilófono de agua / marimba suave
+        // Canal B (Océano Tranquilo / Exploración Celular): Melodía pentatónica submarina
         const pentatonic = [
           261.63, 293.66, 329.63, 392.0, 440.0, 523.25, 587.33, 659.25,
         ];
-        // Play a cheerful marimba droplet on most steps with organic rhythm
         if (step % 2 === 0 || step % 7 === 3) {
           const patternIdx =
             (step * 3 + Math.floor(step / 8)) % pentatonic.length;
           const noteFreq = pentatonic[patternIdx];
-          this.scheduleWaterMarimbaNote(noteFreq, t, 0.36, 0.065, dest);
+          this.scheduleWaterMarimbaNote(
+            noteFreq,
+            t,
+            0.36,
+            0.065,
+            peacefulDest
+          );
         }
-        // Soft warm bass root every 8 steps
         if (step % 8 === 0) {
           const bassRoots = [130.81, 146.83, 164.81, 196.0];
           const root = bassRoots[Math.floor(step / 8) % bassRoots.length];
-          this.scheduleWaterMarimbaNote(root, t, 0.95, 0.055, dest);
-        }
-        break;
-      }
-
-      case 'combat': {
-        // Canal C (Peligro / Persecución Activa): Pulso rítmico urgente a ~136 BPM
-        // con bajo sintetizado sawtooth filtrado y percusión sorda de tensión
-        const bassPattern = [65.41, 65.41, 73.42, 65.41, 82.41, 77.78, 65.41, 98.0];
-        const bassFreq = bassPattern[step % bassPattern.length];
-        this.scheduleCombatPulseNote(bassFreq, t, 0.19, 0.085, dest);
-
-        // Urgent high tension ostinato every 2 steps
-        if (step % 2 === 1) {
-          const tensionNotes = [261.63, 277.18, 311.13, 293.66];
-          const tf = tensionNotes[step % tensionNotes.length];
-          this.scheduleWaterMarimbaNote(tf, t, 0.16, 0.048, dest);
+          this.scheduleWaterMarimbaNote(root, t, 0.95, 0.055, peacefulDest);
         }
         break;
       }
 
       case 'editor': {
-        // Canal D (Taller Evolutivo 3D): Música minimalista, cálida y relajada de laboratorio/creación
-        // con acordes mayores suaves y notas cristalinas espaciadas
+        // Canal D (Taller Evolutivo 3D): Música minimalista y cálida de laboratorio
         if (step % 8 === 0) {
           const workshopChords = [
             [261.63, 329.63, 392.0], // C major
@@ -1467,17 +2169,257 @@ export class AudioManager {
           const chord =
             workshopChords[Math.floor(step / 8) % workshopChords.length];
           chord.forEach((f, idx) => {
-            this.scheduleEtherealPadNote(f, t + idx * 0.08, 1.8, 0.038, dest);
+            this.scheduleEtherealPadNote(
+              f,
+              t + idx * 0.08,
+              1.8,
+              0.038,
+              peacefulDest
+            );
           });
         }
         if (step % 4 === 2) {
           const bellNotes = [523.25, 659.25, 783.99, 880.0, 1046.5];
           const bf = bellNotes[(step / 2) % bellNotes.length];
-          this.scheduleWaterMarimbaNote(bf, t, 0.48, 0.042, dest);
+          this.scheduleWaterMarimbaNote(bf, t, 0.48, 0.042, peacefulDest);
         }
         break;
       }
     }
+  }
+
+  /**
+   * 140 BPM Multi-Layer Pursuit & Threat Soundtrack ('combat') inspired by Spore & Subnautica:
+   * - Layer 1: Underwater Heartbeat Kick (Quarter notes, dual muffled pulse 95Hz -> 40Hz with 110Hz lowpass)
+   * - Layer 2: Oppressive Acid Sawtooth Bassline (Eighth notes in C Harmonic Minor, resonant cutoff sweeping 250Hz -> 950Hz over 4 bars)
+   * - Layer 3: Bioluminescent Organic Percussion (Sixteenth-note mandible snaps & fin clicks in the abyss)
+   */
+  private tickCombatMusicLayers(
+    step16: number,
+    t: number,
+    dest: AudioNode
+  ): void {
+    // ------------------------------------------------------------------------
+    // LAYER 1: Underwater Heartbeat Kick (Every quarter note = 4 sixteenth steps at 140 BPM)
+    // Dual pulse: "Dum-dum... Dum-dum..."
+    // ------------------------------------------------------------------------
+    if (step16 % 4 === 0) {
+      // Primary systolic beat ("Dum-")
+      this.scheduleHeartbeatKick(95, 40, t, 0.16, 0.22, dest);
+      // Secondary diastolic beat ("-dum") 145ms later
+      const secondaryPeak = step16 % 8 === 0 ? 0.16 : 0.11;
+      this.scheduleHeartbeatKick(84, 38, t + 0.145, 0.14, secondaryPeak, dest);
+    }
+
+    // ------------------------------------------------------------------------
+    // LAYER 2: Acid Harmonic Minor Bassline (Every eighth note = 2 sixteenth steps)
+    // Filter cutoff sweeps from 250Hz to 950Hz across a 4-bar (64 sixteenth-step) cycle
+    // ------------------------------------------------------------------------
+    if (step16 % 2 === 0) {
+      const eigthIdx = Math.floor(step16 / 2);
+      // C Harmonic Minor arpeggio: C2, G2, Ab2, G2, C2, Eb2, F2, B2, C2, G2, Ab2, B2, C3, B2, Ab2, G2
+      const harmonicMinorArp = [
+        65.41, 98.0, 103.83, 98.0, 65.41, 77.78, 87.31, 123.47,
+        65.41, 98.0, 103.83, 123.47, 130.81, 123.47, 103.83, 98.0,
+      ];
+      const bassFreq = harmonicMinorArp[eigthIdx % harmonicMinorArp.length];
+
+      // 4-bar (64 sixteenth steps) filter cutoff sweep from 250 Hz to 950 Hz
+      const fourBarProgress = (step16 % 64) / 63;
+      const cutoffHz = 250 + fourBarProgress * 700;
+      const isAccent = eigthIdx % 4 === 0 || eigthIdx % 8 === 7;
+
+      this.scheduleAcidBassNote(
+        bassFreq,
+        cutoffHz,
+        t,
+        0.19,
+        isAccent ? 0.115 : 0.088,
+        isAccent,
+        dest
+      );
+    }
+
+    // ------------------------------------------------------------------------
+    // LAYER 3: Bioluminescent Organic Percussion (16th-note mandible clicks & fin snaps)
+    // ------------------------------------------------------------------------
+    const sixteenthInBar = step16 % 16;
+    const clickPattern = [
+      1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1, 0, 1, 1,
+    ];
+    if (clickPattern[sixteenthInBar]) {
+      const isSharpSnap = sixteenthInBar === 4 || sixteenthInBar === 12;
+      this.scheduleBioluminescentPercussion(
+        step16,
+        t,
+        isSharpSnap,
+        dest
+      );
+    }
+  }
+
+  private scheduleHeartbeatKick(
+    startFreq: number,
+    endFreq: number,
+    startTime: number,
+    duration: number,
+    peakGain: number,
+    dest: AudioNode
+  ): void {
+    if (!this.ctx) return;
+    const osc = this.ctx.createOscillator();
+    const filter = this.ctx.createBiquadFilter();
+    const shaper = this.ctx.createWaveShaper();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(startFreq, startTime);
+    osc.frequency.exponentialRampToValueAtTime(endFreq, startTime + duration);
+
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(110, startTime);
+    filter.Q.value = 1.8;
+
+    shaper.curve = this.getSoftClipCurve();
+
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.linearRampToValueAtTime(peakGain, startTime + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+    osc.connect(shaper);
+    shaper.connect(filter);
+    filter.connect(gain);
+    gain.connect(dest);
+
+    osc.onended = () => {
+      osc.disconnect();
+      shaper.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+
+    osc.start(startTime);
+    osc.stop(startTime + duration + 0.015);
+  }
+
+  private scheduleAcidBassNote(
+    freq: number,
+    cutoffHz: number,
+    startTime: number,
+    duration: number,
+    peakGain: number,
+    isAccent: boolean,
+    dest: AudioNode
+  ): void {
+    if (!this.ctx) return;
+    const sawOsc = this.ctx.createOscillator();
+    const subOsc = this.ctx.createOscillator();
+    const filter = this.ctx.createBiquadFilter();
+    const gain = this.ctx.createGain();
+
+    sawOsc.type = 'sawtooth';
+    sawOsc.frequency.setValueAtTime(freq, startTime);
+
+    subOsc.type = 'triangle';
+    subOsc.frequency.setValueAtTime(freq * 0.5, startTime);
+
+    filter.type = 'lowpass';
+    const peakCutoff = Math.min(2400, cutoffHz * (isAccent ? 1.45 : 1.15));
+    const endCutoff = Math.max(135, cutoffHz * 0.38);
+    filter.frequency.setValueAtTime(peakCutoff, startTime);
+    filter.frequency.exponentialRampToValueAtTime(
+      endCutoff,
+      startTime + duration
+    );
+    filter.Q.value = isAccent ? 6.8 : 5.2;
+
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.linearRampToValueAtTime(peakGain, startTime + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
+
+    sawOsc.connect(filter);
+    subOsc.connect(filter);
+    filter.connect(gain);
+    gain.connect(dest);
+
+    sawOsc.onended = () => {
+      sawOsc.disconnect();
+      subOsc.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+
+    sawOsc.start(startTime);
+    subOsc.start(startTime);
+    sawOsc.stop(startTime + duration + 0.015);
+    subOsc.stop(startTime + duration + 0.015);
+  }
+
+  private scheduleBioluminescentPercussion(
+    step16: number,
+    startTime: number,
+    isSharpSnap: boolean,
+    dest: AudioNode
+  ): void {
+    if (!this.ctx) return;
+    const dur = isSharpSnap ? 0.045 : 0.026;
+
+    // Chitinous / bioluminescent resonant click oscillator
+    const clickOsc = this.ctx.createOscillator();
+    const noiseSrc = this.ctx.createBufferSource();
+    noiseSrc.buffer = this.getWhiteNoiseBuffer(this.ctx);
+
+    const bpFilter = this.ctx.createBiquadFilter();
+    const gain = this.ctx.createGain();
+    const panner = this.ctx.createStereoPanner
+      ? this.ctx.createStereoPanner()
+      : null;
+
+    const basePitch = isSharpSnap
+      ? 1480
+      : 1950 + ((step16 * 137) % 900);
+
+    clickOsc.type = 'triangle';
+    clickOsc.frequency.setValueAtTime(basePitch, startTime);
+    clickOsc.frequency.exponentialRampToValueAtTime(
+      basePitch * 0.42,
+      startTime + dur
+    );
+
+    bpFilter.type = 'bandpass';
+    bpFilter.frequency.setValueAtTime(basePitch * 1.2, startTime);
+    bpFilter.Q.value = isSharpSnap ? 4.2 : 6.5;
+
+    const peak = isSharpSnap ? 0.055 : 0.032;
+    gain.gain.setValueAtTime(0.0001, startTime);
+    gain.gain.linearRampToValueAtTime(peak, startTime + 0.003);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + dur);
+
+    clickOsc.connect(bpFilter);
+    noiseSrc.connect(bpFilter);
+
+    if (panner) {
+      const panVal = Math.sin(step16 * 1.35) * 0.55;
+      panner.pan.setValueAtTime(panVal, startTime);
+      bpFilter.connect(panner);
+      panner.connect(gain);
+    } else {
+      bpFilter.connect(gain);
+    }
+    gain.connect(dest);
+
+    clickOsc.onended = () => {
+      clickOsc.disconnect();
+      noiseSrc.disconnect();
+      bpFilter.disconnect();
+      panner?.disconnect();
+      gain.disconnect();
+    };
+
+    clickOsc.start(startTime);
+    noiseSrc.start(startTime, (step16 % 16) * 0.08);
+    clickOsc.stop(startTime + dur + 0.008);
+    noiseSrc.stop(startTime + dur + 0.008);
   }
 
   private scheduleEtherealPadNote(
@@ -1560,44 +2502,7 @@ export class AudioManager {
     osc.start(startTime);
     osc.stop(startTime + duration + 0.02);
   }
-
-  private scheduleCombatPulseNote(
-    freq: number,
-    startTime: number,
-    duration: number,
-    peakGain: number,
-    dest: AudioNode
-  ): void {
-    if (!this.ctx) return;
-    const osc = this.ctx.createOscillator();
-    const filter = this.ctx.createBiquadFilter();
-    const gain = this.ctx.createGain();
-
-    osc.type = 'sawtooth';
-    osc.frequency.setValueAtTime(freq, startTime);
-
-    filter.type = 'lowpass';
-    filter.frequency.setValueAtTime(480, startTime);
-    filter.frequency.exponentialRampToValueAtTime(140, startTime + duration);
-    filter.Q.value = 3.5;
-
-    gain.gain.setValueAtTime(0.0001, startTime);
-    gain.gain.linearRampToValueAtTime(peakGain, startTime + 0.01);
-    gain.gain.exponentialRampToValueAtTime(0.0001, startTime + duration);
-
-    osc.connect(filter);
-    filter.connect(gain);
-    gain.connect(dest);
-
-    osc.onended = () => {
-      osc.disconnect();
-      filter.disconnect();
-      gain.disconnect();
-    };
-
-    osc.start(startTime);
-    osc.stop(startTime + duration + 0.02);
-  }
 }
 
 export const audioManager = new AudioManager();
+

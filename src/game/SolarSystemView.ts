@@ -46,19 +46,20 @@ export class SolarSystemView {
 
   private selectedSlotId: number | null = null;
   private hoveredSlotId: number | null = null;
+  private menuCameraMode: 'title_menu' | 'planet_select' = 'title_menu';
 
   // Orbital Camera State (General View)
   private orbitAzimuth = 0.55;
-  private orbitPolar = 1.02; // radians from +Y pole
-  private orbitDistance = 128;
+  private orbitPolar = 1.06; // radians from +Y pole
+  private orbitDistance = 158;
   private targetAzimuth = 0.55;
-  private targetPolar = 1.02;
-  private targetDistance = 128;
+  private targetPolar = 1.06;
+  private targetDistance = 158;
 
   // Smooth Camera Interpolation Vectors
-  private currentCameraPos = new THREE.Vector3(0, 68, 112);
+  private currentCameraPos = new THREE.Vector3(0, 82, 134);
   private currentLookAt = new THREE.Vector3(0, 0, 0);
-  private desiredCameraPos = new THREE.Vector3(0, 68, 112);
+  private desiredCameraPos = new THREE.Vector3(0, 82, 134);
   private desiredLookAt = new THREE.Vector3(0, 0, 0);
 
   // Pointer Drag Tracking
@@ -701,6 +702,26 @@ export class SolarSystemView {
     this.onSelectionChange(this.selectedSlotId, this.hoveredSlotId);
   }
 
+  public setMenuCameraMode(mode: 'title_menu' | 'planet_select'): void {
+    this.menuCameraMode = mode;
+    if (mode === 'planet_select') {
+      this.targetDistance = 104;
+      this.targetPolar = 0.96;
+    } else {
+      if (this.selectedSlotId !== null) {
+        this.selectedSlotId = null;
+        this.diveProgress = 0;
+        this.onSelectionChange(null, this.hoveredSlotId);
+      }
+      if (this.hoveredSlotId !== null) {
+        this.hoveredSlotId = null;
+        this.onSelectionChange(this.selectedSlotId, null);
+      }
+      this.targetDistance = 158;
+      this.targetPolar = 1.06;
+    }
+  }
+
   public getSelectedSlotId(): number | null {
     return this.selectedSlotId;
   }
@@ -713,7 +734,7 @@ export class SolarSystemView {
     e: PointerEvent,
     canvas: HTMLCanvasElement
   ): void {
-    if (this.diveProgress > 0.01) return;
+    if (this.diveProgress > 0.01 || this.menuCameraMode === 'title_menu') return;
     if (e.button === 0 || e.button === 2) {
       this.isDraggingOrbit = true;
       this.pointerDownPos = { x: e.clientX, y: e.clientY };
@@ -728,6 +749,10 @@ export class SolarSystemView {
     canvas: HTMLCanvasElement
   ): void {
     if (this.diveProgress > 0.01) return;
+    if (this.menuCameraMode === 'title_menu') {
+      canvas.style.cursor = 'default';
+      return;
+    }
     const rect = canvas.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       this.pointerNdc.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
@@ -772,6 +797,11 @@ export class SolarSystemView {
     canvas: HTMLCanvasElement
   ): void {
     if (this.diveProgress > 0.01) return;
+    if (this.menuCameraMode === 'title_menu') {
+      this.isDraggingOrbit = false;
+      canvas.style.cursor = 'default';
+      return;
+    }
     const wasDragging = this.isDraggingOrbit;
     this.isDraggingOrbit = false;
 
@@ -805,14 +835,25 @@ export class SolarSystemView {
   public handleWheel(e: WheelEvent): void {
     e.preventDefault();
     if (this.diveProgress > 0.01) return;
+
+    // NIVEL 1: En el menú de título inicial el zoom con la rueda está completamente deshabilitado
+    if (this.menuCameraMode === 'title_menu') {
+      return;
+    }
+
+    // NIVEL 3 -> NIVEL 2: Si hay un planeta enfocado, girar la rueda hacia atrás solo deselecciona el planeta
+    // y devuelve la cámara a la vista general del Sistema Solar sin regresar a title_menu
     if (this.selectedSlotId !== null) {
-      // If scrolling out markedly while focused on a planet, return to general solar system view
-      if (e.deltaY > 35) {
+      if (e.deltaY > 0) {
+        audioManager.playButtonClick();
         this.selectSlot(null);
+        this.targetDistance = Math.max(this.targetDistance, 118);
       }
       return;
     }
 
+    // NIVEL 2: En la vista general del Sistema Solar, hacer zoom suave dentro de límites orbitales
+    // sin cambiar nunca de pantalla a title_menu
     const zoomStep = e.deltaY * 0.085;
     this.targetDistance = THREE.MathUtils.clamp(
       this.targetDistance + zoomStep,
@@ -940,6 +981,11 @@ export class SolarSystemView {
       // Gentle cosmic auto-rotation when not dragging
       if (!this.isDraggingOrbit) {
         this.targetAzimuth += delta * 0.032;
+      }
+
+      if (this.menuCameraMode === 'title_menu') {
+        this.targetDistance = 158;
+        this.targetPolar = 1.06;
       }
 
       this.orbitAzimuth = THREE.MathUtils.damp(

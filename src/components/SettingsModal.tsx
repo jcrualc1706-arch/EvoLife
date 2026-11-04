@@ -1,14 +1,17 @@
-import React, { useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Accessibility,
+  AlertTriangle,
   Check,
   Gamepad2,
   Monitor,
   RotateCcw,
+  Save,
+  Trash2,
   Volume2,
   X,
 } from 'lucide-react';
-import { motion } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import { audioManager } from '../game/AudioManager';
 import {
   ColorblindModeSetting,
@@ -34,6 +37,62 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onClose,
 }) => {
   const [activeTab, setActiveTab] = useState<SettingsTabId>('graphics');
+  // Snapshot of the saved settings when SettingsModal was opened (or last explicitly saved)
+  const [savedBaseline, setSavedBaseline] = useState<GameSettings>(() => ({
+    ...settings,
+  }));
+  const [showUnsavedConfirm, setShowUnsavedConfirm] = useState(false);
+
+  const hasUnsavedSettingsChanges = useMemo(() => {
+    const keys = Object.keys(savedBaseline) as (keyof GameSettings)[];
+    return keys.some((key) => settings[key] !== savedBaseline[key]);
+  }, [settings, savedBaseline]);
+
+  const handleRequestClose = useCallback(() => {
+    audioManager.playButtonClick();
+    if (hasUnsavedSettingsChanges) {
+      setShowUnsavedConfirm(true);
+    } else {
+      onClose();
+    }
+  }, [hasUnsavedSettingsChanges, onClose]);
+
+  const handleSaveAndClose = useCallback(() => {
+    audioManager.playSaveConfirm();
+    setSavedBaseline({ ...settings });
+    setShowUnsavedConfirm(false);
+    onClose();
+  }, [settings, onClose]);
+
+  const handleDiscardAndClose = useCallback(() => {
+    audioManager.playButtonClick();
+    onUpdateSettings({ ...savedBaseline });
+    setShowUnsavedConfirm(false);
+    onClose();
+  }, [savedBaseline, onUpdateSettings, onClose]);
+
+  // Layer 1 (Top Priority) Escape Key Interception:
+  // While SettingsModal is open, Escape ONLY acts on SettingsModal and never unpauses the game behind it
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.code === 'Escape' || e.key === 'Escape') {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+
+        if (showUnsavedConfirm) {
+          audioManager.playButtonClick();
+          setShowUnsavedConfirm(false);
+          return;
+        }
+
+        handleRequestClose();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, [showUnsavedConfirm, handleRequestClose]);
 
   const tabs: {
     id: SettingsTabId;
@@ -84,24 +143,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         {/* Header */}
         <div className="flex items-center justify-between gap-4 pb-4 border-b border-cyan-300/20">
           <div>
-            <h2
-              id="settings-modal-title"
-              className="font-display text-xl sm:text-2xl font-extrabold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]"
-            >
-              Ajustes del Sistema Evolutivo
-            </h2>
+            <div className="flex items-center gap-2.5">
+              <h2
+                id="settings-modal-title"
+                className="font-display text-xl sm:text-2xl font-extrabold text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.4)]"
+              >
+                Ajustes del Sistema Evolutivo
+              </h2>
+              {hasUnsavedSettingsChanges && (
+                <span className="rounded-full border border-amber-300/50 bg-amber-500/20 px-2.5 py-0.5 text-[10px] font-extrabold tracking-wider text-amber-200 uppercase">
+                  Cambios sin guardar
+                </span>
+              )}
+            </div>
             <p className="text-xs text-cyan-200/80">
-              Configuración persistente en tiempo real
+              Configuración persistente en tiempo real · Pulsa Esc para volver
             </p>
           </div>
 
           <button
             type="button"
             onPointerEnter={() => audioManager.playButtonHover()}
-            onClick={() => {
-              audioManager.playButtonClick();
-              onClose();
-            }}
+            onClick={handleRequestClose}
             aria-label="Cerrar ajustes"
             className="flex h-10 w-10 items-center justify-center rounded-full border border-cyan-300/35 bg-cyan-500/15 hover:bg-cyan-500/30 text-cyan-100 cursor-pointer hover:scale-105 active:scale-95 transition-all"
           >
@@ -679,16 +742,78 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <button
             type="button"
             onPointerEnter={() => audioManager.playButtonHover()}
-            onClick={() => {
-              audioManager.playButtonClick();
-              onClose();
-            }}
+            onClick={handleSaveAndClose}
             className="w-full sm:w-auto flex items-center justify-center gap-2 rounded-full border border-amber-100/80 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 px-7 py-2.5 text-xs font-extrabold text-slate-950 shadow-[0_4px_14px_rgba(251,191,36,0.4),inset_0_1px_2px_rgba(255,255,255,0.75)] cursor-pointer hover:scale-[1.02] active:scale-95 transition-all"
           >
             <Check className="h-4 w-4" />
             <span>Guardar y Cerrar</span>
           </button>
         </div>
+
+        {/* Unsaved Settings Changes Confirmation Dialog */}
+        <AnimatePresence>
+          {showUnsavedConfirm && (
+            <motion.div
+              key="unsaved-settings-confirm"
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              className="absolute inset-0 z-20 flex items-center justify-center rounded-[36px] bg-[#020d16]/85 p-5 backdrop-blur-md"
+            >
+              <motion.div
+                initial={{ scale: 0.92, y: 10 }}
+                animate={{ scale: 1, y: 0 }}
+                exit={{ scale: 0.92, y: 10 }}
+                className="w-full max-w-md rounded-3xl border-2 border-amber-300/45 bg-gradient-to-b from-[#07293d] via-[#041826] to-[#020e18] p-6 text-center shadow-[0_20px_50px_rgba(0,0,0,0.85),0_0_32px_rgba(251,191,36,0.2)]"
+              >
+                <div className="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-full border border-amber-300/50 bg-amber-500/20 text-amber-300 shadow-[0_0_16px_rgba(251,191,36,0.3)]">
+                  <AlertTriangle className="h-6 w-6" />
+                </div>
+
+                <h3 className="font-display text-lg font-extrabold text-white">
+                  ¿Deseas guardar los cambios antes de salir?
+                </h3>
+                <p className="mt-1.5 text-xs leading-relaxed text-cyan-100/80">
+                  ¿Deseas aplicar y guardar los cambios de configuración antes de salir?
+                </p>
+
+                <div className="mt-5 flex flex-col gap-2.5">
+                  <button
+                    type="button"
+                    onPointerEnter={() => audioManager.playButtonHover()}
+                    onClick={handleSaveAndClose}
+                    className="flex w-full items-center justify-center gap-2 rounded-full border border-amber-100/80 bg-gradient-to-b from-amber-300 via-amber-400 to-amber-500 px-5 py-3 text-xs font-extrabold text-slate-950 shadow-[0_4px_16px_rgba(251,191,36,0.4)] hover:scale-[1.02] active:scale-95 transition-all cursor-pointer uppercase tracking-wider"
+                  >
+                    <Save className="h-4 w-4" />
+                    <span>Guardar Cambios</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onPointerEnter={() => audioManager.playButtonHover()}
+                    onClick={handleDiscardAndClose}
+                    className="flex w-full items-center justify-center gap-2 rounded-full border border-rose-400/45 bg-rose-950/65 hover:bg-rose-900/75 px-5 py-2.5 text-xs font-extrabold text-rose-100 hover:scale-[1.02] active:scale-95 transition-all cursor-pointer uppercase tracking-wider"
+                  >
+                    <Trash2 className="h-4 w-4 text-rose-300" />
+                    <span>Descartar</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onPointerEnter={() => audioManager.playButtonHover()}
+                    onClick={() => {
+                      audioManager.playButtonClick();
+                      setShowUnsavedConfirm(false);
+                    }}
+                    className="flex w-full items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-950/50 hover:bg-cyan-900/60 px-5 py-2 text-xs font-bold text-cyan-200 transition-all cursor-pointer"
+                  >
+                    Seguir Editando Ajustes
+                  </button>
+                </div>
+              </motion.div>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </motion.div>
     </div>
   );

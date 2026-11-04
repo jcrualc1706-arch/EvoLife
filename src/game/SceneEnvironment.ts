@@ -2,7 +2,107 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { GAME_CONFIG } from './config';
 import { SpatialHashGrid } from './SpatialHashGrid';
-import { BiomeType, CellularGrowthStage, EvolutionaryStage } from './types';
+import {
+  BiomeType,
+  CellularGrowthStage,
+  EvolutionaryStage,
+  PlanetTheme,
+} from './types';
+
+export interface PlanetPaletteConfig {
+  waterColor: number;
+  fogColor: number;
+  hemiSkyColor: number;
+  hemiGroundColor: number;
+  dirLightColor: number;
+  rimLightColor: number;
+  seabedDeepColor: number;
+  seabedRidgeColor: number;
+  floraStalkColor: number;
+  floraFrondColor: number;
+  floraEmissiveColor: number;
+}
+
+export const PLANET_THEME_PALETTES: Record<PlanetTheme, PlanetPaletteConfig> = {
+  oceanic: {
+    waterColor: 0x041929,
+    fogColor: 0x041929,
+    hemiSkyColor: 0x5eead4,
+    hemiGroundColor: 0x062033,
+    dirLightColor: 0xa5f3fc,
+    rimLightColor: 0x38bdf8,
+    seabedDeepColor: 0x041b2d,
+    seabedRidgeColor: 0x0c4a6e,
+    floraStalkColor: 0x0d9488,
+    floraFrondColor: 0x34d399,
+    floraEmissiveColor: 0x10b981,
+  },
+  crystalline: {
+    waterColor: 0x1a092b,
+    fogColor: 0x180829,
+    hemiSkyColor: 0xd8b4fe,
+    hemiGroundColor: 0x2e1065,
+    dirLightColor: 0xe9d5ff,
+    rimLightColor: 0xc084fc,
+    seabedDeepColor: 0x17042a,
+    seabedRidgeColor: 0x4c1d95,
+    floraStalkColor: 0x7c3aed,
+    floraFrondColor: 0xc084fc,
+    floraEmissiveColor: 0x9333ea,
+  },
+  volcanic: {
+    waterColor: 0x220708,
+    fogColor: 0x200607,
+    hemiSkyColor: 0xfca5a5,
+    hemiGroundColor: 0x450a0a,
+    dirLightColor: 0xfecaca,
+    rimLightColor: 0xf87171,
+    seabedDeepColor: 0x1c0506,
+    seabedRidgeColor: 0x7f1d1d,
+    floraStalkColor: 0x991b1b,
+    floraFrondColor: 0xf87171,
+    floraEmissiveColor: 0xef4444,
+  },
+  toxic: {
+    waterColor: 0x081f12,
+    fogColor: 0x071b10,
+    hemiSkyColor: 0xbbf7d0,
+    hemiGroundColor: 0x052e16,
+    dirLightColor: 0xdcfce7,
+    rimLightColor: 0x4ade80,
+    seabedDeepColor: 0x051a0e,
+    seabedRidgeColor: 0x14532d,
+    floraStalkColor: 0x15803d,
+    floraFrondColor: 0x86efac,
+    floraEmissiveColor: 0x22c55e,
+  },
+  desertic: {
+    waterColor: 0x241808,
+    fogColor: 0x211607,
+    hemiSkyColor: 0xfde68a,
+    hemiGroundColor: 0x451a03,
+    dirLightColor: 0xfef3c7,
+    rimLightColor: 0xfbbf24,
+    seabedDeepColor: 0x1f1406,
+    seabedRidgeColor: 0x78350f,
+    floraStalkColor: 0xb45309,
+    floraFrondColor: 0xfcd34d,
+    floraEmissiveColor: 0xf59e0b,
+  },
+  terrene: {
+    waterColor: 0x031c26,
+    fogColor: 0x031a23,
+    hemiSkyColor: 0x6ee7b7,
+    hemiGroundColor: 0x022c22,
+    dirLightColor: 0xccfbf1,
+    rimLightColor: 0x2dd4bf,
+    seabedDeepColor: 0x02161f,
+    seabedRidgeColor: 0x134e4a,
+    floraStalkColor: 0x047857,
+    floraFrondColor: 0x6ee7b7,
+    floraEmissiveColor: 0x10b981,
+  },
+};
 
 export interface EnvironmentObstacle {
   x: number;
@@ -14,6 +114,9 @@ export interface EnvironmentObstacle {
 
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
+const _baseColorA = new THREE.Color();
+const _baseColorB = new THREE.Color();
+const _baseColorC = new THREE.Color();
 
 export function getGroundHeightAt(x: number, z: number): number {
   const distSq = x * x + z * z;
@@ -57,12 +160,16 @@ const THERMAL_VENT_COORDS: readonly [number, number][] = [
   [-118, 14],
   [-145, -28],
   [-132, 68],
+  [-195, -55],
+  [-228, 32],
+  [-255, -82],
 ];
 
 export class SceneEnvironment {
   public readonly scene: THREE.Scene;
   private currentStage: EvolutionaryStage = 'cell_stage';
   private currentGrowthStage: CellularGrowthStage = 1;
+  private currentPlanetTheme: PlanetTheme = 'oceanic';
   private envTexture: THREE.Texture | null = null;
   private hemiLight!: THREE.HemisphereLight;
   private dirLight!: THREE.DirectionalLight;
@@ -79,10 +186,14 @@ export class SceneEnvironment {
   private seabedMat!: THREE.MeshStandardMaterial;
   private rocksInstanced!: THREE.InstancedMesh;
   private rockCapsInstanced!: THREE.InstancedMesh;
+  private rockBaseMat!: THREE.MeshStandardMaterial;
+  private rockCapMat!: THREE.MeshStandardMaterial;
   private kelpStalksInstanced!: THREE.InstancedMesh;
   private kelpBladesInstanced!: THREE.InstancedMesh;
   private chloroplastCoreInstanced!: THREE.InstancedMesh;
+  private chloroplastStalkMat!: THREE.MeshPhysicalMaterial;
   private chloroplastFrondMat!: THREE.MeshStandardMaterial;
+  private chloroplastCoreMat!: THREE.MeshBasicMaterial;
   private readonly chloroplastTreePositions: THREE.Vector3[] = [];
   private readonly chloroplastTreeBaseScales: {
     scaleXZ: number;
@@ -118,8 +229,10 @@ export class SceneEnvironment {
   // Spore-style Colossal Abyssal Background Silhouettes (Depth Plane Staging)
   private readonly abyssalSilhouettes: AbyssalSilhouette[] = [];
 
-  // 3D Spore Laboratory Petri Dish Sandbox & 3-Point Studio Lighting Rig
+  // 3D Spore Laboratory Petri Dish Sandbox & Coastal Sandy Nest Platform + 3-Point Studio Lighting Rig
   private sandboxGroup!: THREE.Group;
+  private sandboxPetriDishSubgroup!: THREE.Group;
+  private sandboxCoastalNestSubgroup!: THREE.Group;
   private sandboxPulseRingMat!: THREE.MeshBasicMaterial;
   private sandboxHexGridMesh!: THREE.Mesh;
   private sandboxKeyLight!: THREE.SpotLight;
@@ -251,7 +364,7 @@ export class SceneEnvironment {
     return { id: 'arrecife_abisal', name: 'Mesetas de Coral Eléctrico' };
   }
 
-  public getChloroplastTreePositions(maxRadius = 250): THREE.Vector3[] {
+  public getChloroplastTreePositions(maxRadius = 320): THREE.Vector3[] {
     const maxRSq = maxRadius * maxRadius;
     return this.chloroplastTreePositions.filter(
       (pos) => pos.x * pos.x + pos.z * pos.z <= maxRSq
@@ -290,15 +403,15 @@ export class SceneEnvironment {
     };
     this.stageFogFactor = fogFactors[stage] ?? 1.0;
 
-    // Update arena perimeter caustic ring to match active stage radius (90 -> 135 -> 180 -> 220 -> 250)
+    // Update arena perimeter caustic ring to match active stage radius (110 -> 165 -> 220 -> 275 -> 320)
     const stageRadii: Record<CellularGrowthStage, number> = {
-      1: 90,
-      2: 135,
-      3: 180,
-      4: 220,
-      5: 250,
+      1: 110,
+      2: 165,
+      3: 220,
+      4: 275,
+      5: 320,
     };
-    const activeRadius = stageRadii[stage] ?? 90;
+    const activeRadius = stageRadii[stage] ?? 110;
     if (this.causticRingMesh) {
       const ringScale = activeRadius / GAME_CONFIG.WORLD.ARENA_RADIUS;
       this.causticRingMesh.scale.set(ringScale, 1, ringScale);
@@ -310,6 +423,9 @@ export class SceneEnvironment {
   public setStageEnvironment(stage: EvolutionaryStage): void {
     this.currentStage = stage;
     const isLand = stage === 'creature_stage';
+    const cfg =
+      PLANET_THEME_PALETTES[this.currentPlanetTheme] ??
+      PLANET_THEME_PALETTES.oceanic;
 
     this.nestGroup.visible = isLand;
     this.causticRingMesh.visible = !isLand;
@@ -328,10 +444,177 @@ export class SceneEnvironment {
       this.fogExp2.density =
         GAME_CONFIG.WORLD.FOG_DENSITY * this.stageFogFactor;
       this.seabedMat.color.setHex(0xffffff);
-      this.hemiLight.groundColor.setHex(0x062033);
+      this.bgColor.setHex(cfg.waterColor);
+      this.fogExp2.color.setHex(cfg.fogColor);
+      this.hemiLight.color.setHex(cfg.hemiSkyColor);
+      this.hemiLight.groundColor.setHex(cfg.hemiGroundColor);
       this.hemiLight.intensity = 1.15;
-      this.rimLight.color.setHex(0x38bdf8);
+      this.dirLight.color.setHex(cfg.dirLightColor);
+      this.rimLight.color.setHex(cfg.rimLightColor);
       this.rimLight.intensity = 0.85;
+    }
+  }
+
+  /**
+   * Dynamically applies the selected planet's visual biome palette (water, fog, lighting,
+   * seabed terrain vertex colors, rocks, and chloroplast trees) while keeping all creatures untouched.
+   */
+  public applyPlanetPalette(theme: PlanetTheme): void {
+    this.currentPlanetTheme = theme;
+    const cfg =
+      PLANET_THEME_PALETTES[theme] ?? PLANET_THEME_PALETTES.oceanic;
+
+    if (this.currentStage !== 'creature_stage' && !this.isEditorSandboxActive) {
+      this.bgColor.setHex(cfg.waterColor);
+      this.fogExp2.color.setHex(cfg.fogColor);
+      this.hemiLight.color.setHex(cfg.hemiSkyColor);
+      this.hemiLight.groundColor.setHex(cfg.hemiGroundColor);
+      this.dirLight.color.setHex(cfg.dirLightColor);
+      this.rimLight.color.setHex(cfg.rimLightColor);
+    }
+
+    // 1. Update Seabed Vertex Colors to match the planet's deep/ridge/caustic palette
+    if (this.seabedMesh) {
+      const geo = this.seabedMesh.geometry;
+      const posAttr = geo.attributes.position as THREE.BufferAttribute;
+      const colorAttr = geo.attributes.color as THREE.BufferAttribute;
+      if (posAttr && colorAttr) {
+        _baseColorA.setHex(cfg.seabedDeepColor);
+        _baseColorB.setHex(cfg.seabedRidgeColor);
+        _baseColorC.setHex(cfg.floraStalkColor);
+        const thermalTint = new THREE.Color(0x7c2d12);
+        const reefTint = new THREE.Color(cfg.rimLightColor).multiplyScalar(0.38);
+        const fossilTint = new THREE.Color(0x3f3f46);
+
+        for (let i = 0; i < posAttr.count; i++) {
+          const vx = posAttr.getX(i);
+          const vy = posAttr.getY(i);
+          const vz = posAttr.getZ(i);
+
+          const heightNorm = THREE.MathUtils.clamp((vy + 8.5) / 10.5, 0, 1);
+          _color.copy(_baseColorA).lerp(_baseColorB, heightNorm);
+
+          const dist = Math.sqrt(vx * vx + vz * vz);
+          if (vz < -65) {
+            _color.lerp(fossilTint, 0.26);
+          } else if (dist >= 48 && vx < 0) {
+            _color.lerp(thermalTint, 0.24);
+          } else if (dist >= 48 && vx >= 0) {
+            _color.lerp(reefTint, 0.26);
+          }
+
+          const causticWave =
+            Math.sin(vx * 0.25) * Math.cos(vz * 0.25) * 0.5 + 0.5;
+          if (causticWave > 0.68 && vy < 1.0) {
+            _color.lerp(_baseColorC, (causticWave - 0.68) * 0.65);
+          }
+
+          colorAttr.setXYZ(i, _color.r, _color.g, _color.b);
+        }
+        colorAttr.needsUpdate = true;
+      }
+    }
+
+    // 2. Update Rocks & Rock Caps colors to harmonize with the planet's seabed
+    if (this.rockBaseMat && this.rockCapMat) {
+      this.rockBaseMat.color.setHex(0xffffff);
+      this.rockCapMat.color.setHex(0xffffff);
+    }
+    if (this.rocksInstanced && this.rockCapsInstanced) {
+      _baseColorA.setHex(cfg.seabedRidgeColor);
+      _baseColorB.setHex(cfg.floraStalkColor);
+      const count = this.rocksInstanced.count;
+      for (let i = 0; i < count; i++) {
+        const shade = 0.72 + (i % 5) * 0.08;
+        _color.copy(_baseColorA).multiplyScalar(shade * 1.15);
+        this.rocksInstanced.setColorAt(i, _color);
+
+        _color.copy(_baseColorB).multiplyScalar(shade * 0.95);
+        this.rockCapsInstanced.setColorAt(i, _color);
+      }
+      if (this.rocksInstanced.instanceColor) {
+        this.rocksInstanced.instanceColor.needsUpdate = true;
+      }
+      if (this.rockCapsInstanced.instanceColor) {
+        this.rockCapsInstanced.instanceColor.needsUpdate = true;
+      }
+    }
+
+    // 3. Update Chloroplast Trees (Trunks, Fronds, and Inner Cores) to match the planet's flora palette
+    if (this.chloroplastStalkMat) {
+      this.chloroplastStalkMat.color.setHex(cfg.floraStalkColor);
+      this.chloroplastStalkMat.emissive
+        .setHex(cfg.floraStalkColor)
+        .multiplyScalar(0.55);
+    }
+    if (this.chloroplastFrondMat) {
+      this.chloroplastFrondMat.color.setHex(cfg.floraFrondColor);
+      this.chloroplastFrondMat.emissive.setHex(cfg.floraEmissiveColor);
+    }
+    if (this.chloroplastCoreMat) {
+      this.chloroplastCoreMat.color
+        .setHex(cfg.floraFrondColor)
+        .lerp(new THREE.Color(0xffffff), 0.38);
+    }
+
+    if (
+      this.kelpStalksInstanced &&
+      this.kelpBladesInstanced &&
+      this.chloroplastCoreInstanced
+    ) {
+      const stalkHSL = { h: 0, s: 0, l: 0 };
+      const frondHSL = { h: 0, s: 0, l: 0 };
+      _baseColorA.setHex(cfg.floraStalkColor).getHSL(stalkHSL);
+      _baseColorB.setHex(cfg.floraFrondColor).getHSL(frondHSL);
+
+      for (let i = 0; i < this.kelpCount; i++) {
+        const hueShift = ((i % 5) - 2) * 0.015;
+        const lightShift = ((i % 3) - 1) * 0.04;
+
+        // Since material.color is already tinted with cfg.floraStalkColor / cfg.floraFrondColor,
+        // keep instance colors bright with subtle organic shade variation so vertex * material color stays vivid
+        const shade = 0.86 + (i % 4) * 0.06;
+        _color.setRGB(shade, shade, shade);
+        _color.offsetHSL(hueShift, 0, lightShift * 0.5);
+        this.kelpStalksInstanced.setColorAt(i, _color);
+        this.kelpBladesInstanced.setColorAt(i, _color);
+        this.chloroplastCoreInstanced.setColorAt(i, _color);
+      }
+      if (this.kelpStalksInstanced.instanceColor) {
+        this.kelpStalksInstanced.instanceColor.needsUpdate = true;
+      }
+      if (this.kelpBladesInstanced.instanceColor) {
+        this.kelpBladesInstanced.instanceColor.needsUpdate = true;
+      }
+      if (this.chloroplastCoreInstanced.instanceColor) {
+        this.chloroplastCoreInstanced.instanceColor.needsUpdate = true;
+      }
+    }
+
+    // 4. Update Arena Boundary Caustic Ring & Suspended Plankton Particles
+    if (this.causticRingMesh) {
+      const ringMat = this.causticRingMesh.material as THREE.MeshBasicMaterial;
+      ringMat.color.setHex(cfg.rimLightColor);
+    }
+    if (this.planktonPoints) {
+      const colorAttr = this.planktonPoints.geometry.getAttribute(
+        'color'
+      ) as THREE.BufferAttribute;
+      if (colorAttr) {
+        const baseHSL = { h: 0.5, s: 0.8, l: 0.7 };
+        _baseColorA.setHex(cfg.hemiSkyColor).getHSL(baseHSL);
+        for (let i = 0; i < this.planktonCount; i++) {
+          const h = (baseHSL.h + ((i % 7) - 3) * 0.02 + 1.0) % 1.0;
+          const l = THREE.MathUtils.clamp(
+            0.62 + (i % 5) * 0.06,
+            0.45,
+            0.92
+          );
+          _color.setHSL(h, Math.max(0.65, baseHSL.s), l);
+          colorAttr.setXYZ(i, _color.r, _color.g, _color.b);
+        }
+        colorAttr.needsUpdate = true;
+      }
     }
   }
 
@@ -402,8 +685,12 @@ export class SceneEnvironment {
     this.ventBubblesPoints.visible =
       showWorld && this.currentParticleQuality !== 'low';
 
-    // Toggle 3D Petri Dish Sandbox & 3-Point Studio Lighting Rig
+    // Toggle 3D Petri Dish / Coastal Nest Sandbox & 3-Point Studio Lighting Rig
     this.sandboxGroup.visible = active;
+    if (this.sandboxPetriDishSubgroup && this.sandboxCoastalNestSubgroup) {
+      this.sandboxPetriDishSubgroup.visible = active && !isLand;
+      this.sandboxCoastalNestSubgroup.visible = active && isLand;
+    }
     this.sandboxKeyLight.visible = active;
     this.sandboxFillLight.visible = active;
     this.sandboxRimLight.visible = active;
@@ -415,9 +702,9 @@ export class SceneEnvironment {
         : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
       const pz = playerPosition ? playerPosition.z : 0;
 
-      this.sandboxGroup.position.set(px, py - 1.25, pz);
-      this.sandboxKeyLight.position.set(px + 2.5, py + 18.0, pz + 3.5);
-      this.sandboxKeyLight.target.position.set(px, py, pz);
+      this.sandboxGroup.position.set(px, isLand ? 0 : py - 1.25, pz);
+      this.sandboxKeyLight.position.set(px + 2.5, (isLand ? 0 : py) + 18.0, pz + 3.5);
+      this.sandboxKeyLight.target.position.set(px, isLand ? 0 : py, pz);
       this.sandboxKeyLight.target.updateMatrixWorld();
 
       this.sandboxFillLight.position.set(px - 14.0, py + 9.0, pz + 12.0);
@@ -428,13 +715,32 @@ export class SceneEnvironment {
       this.sandboxRimLight.target.position.set(px, py, pz);
       this.sandboxRimLight.target.updateMatrixWorld();
 
-      this.dirLight.intensity = 0.65;
-      this.hemiLight.color.setHex(0x67e8f9);
-      this.hemiLight.groundColor.setHex(0x041e2e);
-      this.hemiLight.intensity = 1.25;
-      this.bgColor.setHex(0x02101b);
-      this.fogExp2.color.copy(this.bgColor);
-      this.fogExp2.density = 0.0022;
+      if (isLand) {
+        // Warm diurnal coastal sun ambiance for Terrestrial Creature Workshop
+        this.sandboxKeyLight.color.setHex(0xfef3c7);
+        this.sandboxKeyLight.intensity = 3.6;
+        this.sandboxFillLight.color.setHex(0x38bdf8);
+        this.sandboxRimLight.color.setHex(0xfde047);
+        this.dirLight.intensity = 1.15;
+        this.hemiLight.color.setHex(0xfef08a);
+        this.hemiLight.groundColor.setHex(0x78350f);
+        this.hemiLight.intensity = 1.45;
+        this.bgColor.setHex(0x0b293b);
+        this.fogExp2.color.copy(this.bgColor);
+        this.fogExp2.density = 0.0018;
+      } else {
+        this.sandboxKeyLight.color.setHex(0xf0fdfa);
+        this.sandboxKeyLight.intensity = 3.2;
+        this.sandboxFillLight.color.setHex(0x38bdf8);
+        this.sandboxRimLight.color.setHex(0x34d399);
+        this.dirLight.intensity = 0.65;
+        this.hemiLight.color.setHex(0x67e8f9);
+        this.hemiLight.groundColor.setHex(0x041e2e);
+        this.hemiLight.intensity = 1.25;
+        this.bgColor.setHex(0x02101b);
+        this.fogExp2.color.copy(this.bgColor);
+        this.fogExp2.density = 0.0022;
+      }
     } else {
       this.dirLight.intensity = 2.1;
       this.setStageEnvironment(this.currentStage);
@@ -478,8 +784,8 @@ export class SceneEnvironment {
   }
 
   private initSeabed(): void {
-    const size = 580;
-    const segments = 136;
+    const size = 740;
+    const segments = 160;
     const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
     geometry.rotateX(-Math.PI / 2);
 
@@ -546,19 +852,27 @@ export class SceneEnvironment {
     const capGeo = new THREE.IcosahedronGeometry(0.95, 1);
     capGeo.translate(0.35, 1.4, 0.2);
 
-    const baseMat = new THREE.MeshStandardMaterial({
-      color: 0x1e3a4c,
+    this.rockBaseMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
       roughness: 0.82,
       metalness: 0.12,
     });
-    const capMat = new THREE.MeshStandardMaterial({
-      color: 0x134e4a,
+    this.rockCapMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
       roughness: 0.55,
       metalness: 0.18,
     });
 
-    this.rocksInstanced = new THREE.InstancedMesh(baseGeo, baseMat, rockCount);
-    this.rockCapsInstanced = new THREE.InstancedMesh(capGeo, capMat, rockCount);
+    this.rocksInstanced = new THREE.InstancedMesh(
+      baseGeo,
+      this.rockBaseMat,
+      rockCount
+    );
+    this.rockCapsInstanced = new THREE.InstancedMesh(
+      capGeo,
+      this.rockCapMat,
+      rockCount
+    );
     this.rocksInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     this.rockCapsInstanced.instanceMatrix.setUsage(THREE.StaticDrawUsage);
     this.rocksInstanced.frustumCulled = true;
@@ -627,7 +941,7 @@ export class SceneEnvironment {
     this.scene.add(this.rockCapsInstanced);
 
     this.disposableGeometries.push(baseGeo, capGeo);
-    this.disposableMaterials.push(baseMat, capMat);
+    this.disposableMaterials.push(this.rockBaseMat, this.rockCapMat);
   }
 
   private initUnderwaterFlora(): void {
@@ -660,7 +974,7 @@ export class SceneEnvironment {
     coreGeo.scale(1.35, 0.45, 1.35);
     coreGeo.translate(0.35, 12.0, 0);
 
-    const stalkMat = new THREE.MeshPhysicalMaterial({
+    this.chloroplastStalkMat = new THREE.MeshPhysicalMaterial({
       color: 0x0d9488,
       emissive: 0x065f46,
       emissiveIntensity: 0.35,
@@ -684,7 +998,7 @@ export class SceneEnvironment {
       opacity: 0.88,
     });
 
-    const coreMat = new THREE.MeshBasicMaterial({
+    this.chloroplastCoreMat = new THREE.MeshBasicMaterial({
       color: 0xa7f3d0,
       transparent: true,
       opacity: 0.78,
@@ -692,7 +1006,7 @@ export class SceneEnvironment {
 
     this.kelpStalksInstanced = new THREE.InstancedMesh(
       stalkGeo,
-      stalkMat,
+      this.chloroplastStalkMat,
       this.kelpCount
     );
     this.kelpBladesInstanced = new THREE.InstancedMesh(
@@ -702,7 +1016,7 @@ export class SceneEnvironment {
     );
     this.chloroplastCoreInstanced = new THREE.InstancedMesh(
       coreGeo,
-      coreMat,
+      this.chloroplastCoreMat,
       this.kelpCount
     );
     this.kelpStalksInstanced.frustumCulled = true;
@@ -776,14 +1090,10 @@ export class SceneEnvironment {
       );
       this.treeObstacleRefList.push(treeObs);
 
-      const hueShift = (i % 5) * 0.025;
-      _color.setHSL(0.44 + hueShift, 0.78, 0.38 + (i % 3) * 0.05);
+      const shade = 0.86 + (i % 4) * 0.06;
+      _color.setRGB(shade, shade, shade);
       this.kelpStalksInstanced.setColorAt(i, _color);
-
-      _color.setHSL(0.46 + hueShift, 0.9, 0.56);
       this.kelpBladesInstanced.setColorAt(i, _color);
-
-      _color.setHSL(0.48 + hueShift, 0.95, 0.72);
       this.chloroplastCoreInstanced.setColorAt(i, _color);
     }
 
@@ -805,9 +1115,9 @@ export class SceneEnvironment {
 
     this.disposableGeometries.push(stalkGeo, bladeGeo, coreGeo);
     this.disposableMaterials.push(
-      stalkMat,
+      this.chloroplastStalkMat,
       this.chloroplastFrondMat,
-      coreMat
+      this.chloroplastCoreMat
     );
   }
 
@@ -906,7 +1216,7 @@ export class SceneEnvironment {
 
     for (let i = 0; i < coralCount; i++) {
       const angle = (i / coralCount) * Math.PI * 1.1 - Math.PI * 0.45;
-      const r = 42 + ((i * 29) % 180);
+      const r = 42 + ((i * 29) % (GAME_CONFIG.WORLD.ARENA_RADIUS - 65));
       const cx = Math.abs(Math.cos(angle) * r) + 24;
       const cz = Math.sin(angle) * r;
       const cy = getGroundHeightAt(cx, cz) - 0.2;
@@ -972,7 +1282,7 @@ export class SceneEnvironment {
 
     for (let i = 0; i < reefPropCount; i++) {
       const a = i * 2.39996 + 0.5;
-      const r = 20 + Math.sqrt(i / reefPropCount) * 195;
+      const r = 20 + Math.sqrt(i / reefPropCount) * (GAME_CONFIG.WORLD.ARENA_RADIUS - 30);
       const bx = Math.cos(a) * r;
       const bz = Math.sin(a) * r;
       const by = getGroundHeightAt(bx, bz) - 0.15;
@@ -1028,7 +1338,7 @@ export class SceneEnvironment {
 
     for (let i = 0; i < fossilCount; i++) {
       const a = (i / fossilCount) * Math.PI * 1.2 - Math.PI * 1.1;
-      const r = 48 + ((i * 31) % 175);
+      const r = 48 + ((i * 31) % (GAME_CONFIG.WORLD.ARENA_RADIUS - 70));
       const fx = Math.cos(a) * r;
       const fz = -Math.abs(Math.sin(a) * r) - 28;
       const fy = getGroundHeightAt(fx, fz) - 0.2;
@@ -1439,14 +1749,20 @@ export class SceneEnvironment {
   }
 
   /**
-   * Initializes the isolated 3D Spore Laboratory Petri Dish platform, concentric/hexagonal
-   * bioluminescent measurement rings, and a 3-point studio lighting rig for `status === 'editing'`.
+   * Initializes the isolated 3D Spore Laboratory Petri Dish platform (for Cell Stage)
+   * AND the Coastal Sandy Nest Platform (for Creature Stage) with a 3-point studio lighting rig.
    */
   private initEditorSandbox(): void {
     this.sandboxGroup = new THREE.Group();
     this.sandboxGroup.visible = false;
 
-    // 1. Dark Polished Laboratory Petri Dish Base Disk
+    this.sandboxPetriDishSubgroup = new THREE.Group();
+    this.sandboxCoastalNestSubgroup = new THREE.Group();
+    this.sandboxCoastalNestSubgroup.visible = false;
+    this.sandboxGroup.add(this.sandboxPetriDishSubgroup);
+    this.sandboxGroup.add(this.sandboxCoastalNestSubgroup);
+
+    // 1. Dark Polished Laboratory Petri Dish Base Disk (Cell Stage)
     const dishBaseGeo = new THREE.CylinderGeometry(14.5, 15.2, 0.28, 64);
     dishBaseGeo.translate(0, -0.14, 0);
     const dishBaseMat = new THREE.MeshStandardMaterial({
@@ -1458,7 +1774,7 @@ export class SceneEnvironment {
     });
     const dishBaseMesh = new THREE.Mesh(dishBaseGeo, dishBaseMat);
     dishBaseMesh.receiveShadow = true;
-    this.sandboxGroup.add(dishBaseMesh);
+    this.sandboxPetriDishSubgroup.add(dishBaseMesh);
 
     // 2. Outer Frosted Glass Petri Rim Bevel
     const dishRimGeo = new THREE.TorusGeometry(14.6, 0.26, 16, 72);
@@ -1474,7 +1790,7 @@ export class SceneEnvironment {
       opacity: 0.68,
     });
     const dishRimMesh = new THREE.Mesh(dishRimGeo, dishRimMat);
-    this.sandboxGroup.add(dishRimMesh);
+    this.sandboxPetriDishSubgroup.add(dishRimMesh);
 
     // 3. Concentric Bioluminescent Calibration Rings (with polygonOffset to prevent Z-fighting)
     const ringRadii: [number, number, number][] = [
@@ -1498,7 +1814,7 @@ export class SceneEnvironment {
       });
       const rMesh = new THREE.Mesh(rGeo, rMat);
       rMesh.position.y = 0.02;
-      this.sandboxGroup.add(rMesh);
+      this.sandboxPetriDishSubgroup.add(rMesh);
       this.disposableGeometries.push(rGeo);
       this.disposableMaterials.push(rMat);
     }
@@ -1519,6 +1835,80 @@ export class SceneEnvironment {
     this.sandboxHexGridMesh = new THREE.Mesh(hexGeo, this.sandboxPulseRingMat);
     this.sandboxHexGridMesh.position.y = 0.03;
     this.sandboxGroup.add(this.sandboxHexGridMesh);
+
+    // 4B. Coastal Sandy Nest Platform (Terrestrial Creature Workshop Stage)
+    const sandMoundGeo = new THREE.CylinderGeometry(13.8, 15.6, 0.42, 64);
+    sandMoundGeo.translate(0, -0.21, 0);
+    const sandMoundMat = new THREE.MeshStandardMaterial({
+      color: 0xd97706,
+      emissive: 0x78350f,
+      emissiveIntensity: 0.22,
+      roughness: 0.86,
+      metalness: 0.05,
+    });
+    const sandMoundMesh = new THREE.Mesh(sandMoundGeo, sandMoundMat);
+    sandMoundMesh.receiveShadow = true;
+    this.sandboxCoastalNestSubgroup.add(sandMoundMesh);
+
+    const innerSandGeo = new THREE.CylinderGeometry(9.6, 10.4, 0.12, 48);
+    innerSandGeo.translate(0, 0.02, 0);
+    const innerSandMat = new THREE.MeshStandardMaterial({
+      color: 0xfbbf24,
+      emissive: 0x92400e,
+      emissiveIntensity: 0.18,
+      roughness: 0.9,
+      metalness: 0.02,
+    });
+    const innerSandMesh = new THREE.Mesh(innerSandGeo, innerSandMat);
+    innerSandMesh.receiveShadow = true;
+    this.sandboxCoastalNestSubgroup.add(innerSandMesh);
+
+    const nestWovenRimGeo = new THREE.TorusGeometry(10.2, 0.55, 12, 48);
+    nestWovenRimGeo.rotateX(Math.PI / 2);
+    nestWovenRimGeo.translate(0, 0.22, 0);
+    const nestWovenRimMat = new THREE.MeshStandardMaterial({
+      color: 0x92400e,
+      roughness: 0.88,
+      metalness: 0.05,
+    });
+    const nestWovenRimMesh = new THREE.Mesh(nestWovenRimGeo, nestWovenRimMat);
+    this.sandboxCoastalNestSubgroup.add(nestWovenRimMesh);
+
+    const pebbleGeo = new THREE.DodecahedronGeometry(0.65, 1);
+    const pebbleMat = new THREE.MeshStandardMaterial({
+      color: 0x78716c,
+      roughness: 0.78,
+      metalness: 0.08,
+    });
+    const frondGeo = new THREE.ConeGeometry(0.55, 2.2, 6);
+    frondGeo.rotateX(Math.PI * 0.38);
+    const frondMat = new THREE.MeshStandardMaterial({
+      color: 0x4ade80,
+      emissive: 0x15803d,
+      emissiveIntensity: 0.3,
+      roughness: 0.55,
+    });
+
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      const r = 10.8 + (i % 2) * 0.65;
+      const pebble = new THREE.Mesh(pebbleGeo, pebbleMat);
+      pebble.position.set(Math.cos(a) * r, 0.28, Math.sin(a) * r);
+      pebble.scale.set(1.25, 0.75 + (i % 3) * 0.18, 1.1);
+      pebble.rotation.y = a;
+      this.sandboxCoastalNestSubgroup.add(pebble);
+
+      if (i % 2 === 0) {
+        const frond = new THREE.Mesh(frondGeo, frondMat);
+        frond.position.set(
+          Math.cos(a + 0.12) * 11.4,
+          0.42,
+          Math.sin(a + 0.12) * 11.4
+        );
+        frond.rotation.y = -a + Math.PI / 2;
+        this.sandboxCoastalNestSubgroup.add(frond);
+      }
+    }
 
     this.scene.add(this.sandboxGroup);
 
@@ -1545,11 +1935,25 @@ export class SceneEnvironment {
     this.scene.add(this.sandboxRimLight);
     this.scene.add(this.sandboxRimLight.target);
 
-    this.disposableGeometries.push(dishBaseGeo, dishRimGeo, hexGeo);
+    this.disposableGeometries.push(
+      dishBaseGeo,
+      dishRimGeo,
+      hexGeo,
+      sandMoundGeo,
+      innerSandGeo,
+      nestWovenRimGeo,
+      pebbleGeo,
+      frondGeo
+    );
     this.disposableMaterials.push(
       dishBaseMat,
       dishRimMat,
-      this.sandboxPulseRingMat
+      this.sandboxPulseRingMat,
+      sandMoundMat,
+      innerSandMat,
+      nestWovenRimMat,
+      pebbleMat,
+      frondMat
     );
   }
 
@@ -1559,34 +1963,46 @@ export class SceneEnvironment {
     playerX = 0,
     playerZ = 0
   ): void {
-    // When in 3D Editor Sandbox Mode, keep the clean Petri Dish studio ambiance and animate only the subtle reticle
+    // When in 3D Editor Sandbox Mode, keep the clean Petri Dish or Coastal Nest ambiance and animate only the subtle reticle
     if (this.isEditorSandboxActive) {
-      this.bgColor.r = THREE.MathUtils.damp(this.bgColor.r, 0.008, 6.0, delta);
-      this.bgColor.g = THREE.MathUtils.damp(this.bgColor.g, 0.063, 6.0, delta);
-      this.bgColor.b = THREE.MathUtils.damp(this.bgColor.b, 0.106, 6.0, delta);
+      const isLand = this.currentStage === 'creature_stage';
+      const targetR = isLand ? 0.045 : 0.008;
+      const targetG = isLand ? 0.16 : 0.063;
+      const targetB = isLand ? 0.23 : 0.106;
+      this.bgColor.r = THREE.MathUtils.damp(this.bgColor.r, targetR, 6.0, delta);
+      this.bgColor.g = THREE.MathUtils.damp(this.bgColor.g, targetG, 6.0, delta);
+      this.bgColor.b = THREE.MathUtils.damp(this.bgColor.b, targetB, 6.0, delta);
       this.fogExp2.color.copy(this.bgColor);
       this.fogExp2.density = THREE.MathUtils.damp(
         this.fogExp2.density,
-        0.0022,
+        isLand ? 0.0018 : 0.0022,
         6.0,
         delta
       );
 
+      this.sandboxPulseRingMat.color.setHex(isLand ? 0xfacc15 : 0x2dd4bf);
       this.sandboxPulseRingMat.opacity =
         0.28 + Math.sin(elapsedTime * 2.2) * 0.1;
       this.sandboxHexGridMesh.rotation.y = elapsedTime * 0.08;
       return;
     }
 
-    // 1. Smoothly interpolate Biome Fog & Lighting tint based on stage & player position
+    // 1. Smoothly interpolate Biome Fog & Lighting tint based on active Planet Palette, stage & player position
     const biome = this.getBiomeAt(playerX, playerZ);
-    let targetBgR = 0.016;
-    let targetBgG = 0.098;
-    let targetBgB = 0.161;
+    const planetCfg =
+      PLANET_THEME_PALETTES[this.currentPlanetTheme] ??
+      PLANET_THEME_PALETTES.oceanic;
 
-    let targetHemiR = 0.368;
-    let targetHemiG = 0.918;
-    let targetHemiB = 0.831;
+    _baseColorA.setHex(planetCfg.waterColor);
+    _baseColorB.setHex(planetCfg.hemiSkyColor);
+
+    let targetBgR = _baseColorA.r;
+    let targetBgG = _baseColorA.g;
+    let targetBgB = _baseColorA.b;
+
+    let targetHemiR = _baseColorB.r;
+    let targetHemiG = _baseColorB.g;
+    let targetHemiB = _baseColorB.b;
 
     if (this.currentStage === 'creature_stage') {
       targetBgR = 0.12;
@@ -1612,19 +2028,22 @@ export class SceneEnvironment {
         this.nestEggs[e].scale.set(0.85 * pulse, 1.28 * pulse, 0.85 * pulse);
       }
     } else if (biome.id === 'fosa_termal') {
-      targetBgR = 0.055;
-      targetBgG = 0.095;
-      targetBgB = 0.135;
-      targetHemiR = 0.98;
-      targetHemiG = 0.65;
-      targetHemiB = 0.32;
+      // Blend planet's base water & sky tint with a subtle thermal amber warmth
+      targetBgR = THREE.MathUtils.lerp(_baseColorA.r, 0.16, 0.22);
+      targetBgG = THREE.MathUtils.lerp(_baseColorA.g, 0.07, 0.22);
+      targetBgB = THREE.MathUtils.lerp(_baseColorA.b, 0.05, 0.22);
+      targetHemiR = THREE.MathUtils.lerp(_baseColorB.r, 0.98, 0.28);
+      targetHemiG = THREE.MathUtils.lerp(_baseColorB.g, 0.65, 0.28);
+      targetHemiB = THREE.MathUtils.lerp(_baseColorB.b, 0.32, 0.28);
     } else if (biome.id === 'arrecife_abisal') {
-      targetBgR = 0.024;
-      targetBgG = 0.055;
-      targetBgB = 0.185;
-      targetHemiR = 0.51;
-      targetHemiG = 0.55;
-      targetHemiB = 0.97;
+      // Slightly deeper abyssal shade of the current planet's water & rim palette
+      _baseColorC.setHex(planetCfg.rimLightColor);
+      targetBgR = _baseColorA.r * 0.85;
+      targetBgG = _baseColorA.g * 0.85;
+      targetBgB = _baseColorA.b * 0.92;
+      targetHemiR = THREE.MathUtils.lerp(_baseColorB.r, _baseColorC.r, 0.35);
+      targetHemiG = THREE.MathUtils.lerp(_baseColorB.g, _baseColorC.g, 0.35);
+      targetHemiB = THREE.MathUtils.lerp(_baseColorB.b, _baseColorC.b, 0.35);
     }
 
     this.bgColor.r = THREE.MathUtils.damp(this.bgColor.r, targetBgR, 2.2, delta);

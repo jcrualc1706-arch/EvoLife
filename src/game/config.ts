@@ -1,6 +1,6 @@
 export const GAME_CONFIG = {
   WORLD: {
-    ARENA_RADIUS: 240,
+    ARENA_RADIUS: 320,
     WATER_COLOR: 0x041929,
     FOG_COLOR: 0x041929,
     FOG_DENSITY: 0.0085,
@@ -38,7 +38,7 @@ export const GAME_CONFIG = {
     BOOST_FOV: 60,
   },
   FOOD: {
-    TOTAL_COUNT: 74,
+    TOTAL_COUNT: 105,
     RESPAWN_DELAY_SEC: 7.2,
     COLLISION_RADIUS: 1.2,
     ENERGY_RESTORE_SMALL: 16,
@@ -47,7 +47,7 @@ export const GAME_CONFIG = {
     ADN_REWARD_LARGE: 12,
   },
   PREDATOR: {
-    COUNT: 28,
+    COUNT: 48,
     WANDER_SPEED: 4.7,
     CHASE_SPEED: 9.2,
     DETECTION_RADIUS: 24.0,

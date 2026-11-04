@@ -15,6 +15,7 @@ export function computeStackedMultiplier(stacks: number): number {
 export const LEGACY_ADAPTATION_ID_MAP: Readonly<Record<string, string>> = {
   rostral_spines: 'chitin_spike',
   flagellum_2: 'simple_flagellum',
+  flagellum: 'simple_flagellum',
 };
 
 export function normalizeAdaptationId(id: string): string {
@@ -62,6 +63,8 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     ],
     modifiers: {
       grantsDiet: 'herbivore',
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
   {
@@ -79,10 +82,10 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     socketType: 'front',
     description:
       'Potentes pinzas quitinosas frontales que cambian tu dieta a Carnívora, permitiendo desgarrar carne y devorar células filtradoras.',
-    statSummary: 'Dieta Carnívora · Depreda Células · +15 Daño',
+    statSummary: 'Dieta Carnívora · Mordisco Nv.1 · Cantar Nv.1',
     pros: [
       'Dieta Carnívora: Digiere carne y caza Células Filtradoras',
-      '+15 Daño de mordida frontal en contacto directo',
+      '+15 Daño de mordida frontal (Mordisco Nv.1 y Cantar Nv.1 en tierra)',
     ],
     tradeoffs: [
       'Pierde capacidad de digerir algas (salvo con Boca Filtradora o Cloroplastos)',
@@ -91,6 +94,8 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     modifiers: {
       grantsDiet: 'carnivore',
       contactDamageBonus: 15,
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
   {
@@ -108,14 +113,16 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     socketType: 'front',
     description:
       'Tubo succionador retráctil que otorga Dieta Omnívora total (vegetal y carne), +25% de energía por alimento y drena +5 ADN en combate.',
-    statSummary: 'Dieta Omnívora · +25% Energía · Drena +5 ADN',
+    statSummary: 'Dieta Omnívora · Mordisco Nv.1 · Cantar Nv.1',
     pros: [
       'Dieta Omnívora total: Asimila tanto algas como carne',
-      '+25% Energía por nutriente y succiona +5 ADN al contacto con amenazas',
+      '+25% Energía por nutriente y otorga Mordisco Nv.1 y Cantar Nv.1 en tierra',
     ],
     tradeoffs: ['Menor daño de desgarro frontal que la Mandíbula Aserrada'],
     modifiers: {
       grantsDiet: 'omnivore',
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
   {
@@ -140,6 +147,8 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     tradeoffs: ['Optimizada para flora; no desgarra blindajes carnívoros'],
     modifiers: {
       grantsDiet: 'herbivore',
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
   {
@@ -165,6 +174,8 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     modifiers: {
       grantsDiet: 'omnivore',
       turnRateBonusPct: -0.1,
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
   {
@@ -173,7 +184,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Tenazas Calcificadas Pesadas',
     category: 'alimentacion',
     stage: 'cell_stage',
-    dnaCost: 30,
+    dnaCost: 25,
     discoverySource: 'predator_kill',
     discoveryHint: 'Extraído al abatir o repeler Megacélulas Acorazadas.',
     stackable: false,
@@ -191,6 +202,8 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
       grantsDiet: 'carnivore',
       contactDamageBonus: 18,
       speedBonusPct: -0.08,
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
   {
@@ -199,7 +212,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Cortina Filtradora Áurea',
     category: 'alimentacion',
     stage: 'cell_stage',
-    dnaCost: 26,
+    dnaCost: 24,
     discoverySource: 'fossil_fragment',
     discoveryHint: 'Examina nódulos fósiles en la Pradera Bioluminiscente.',
     stackable: false,
@@ -215,6 +228,8 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     tradeoffs: ['Especializado en filtración de flora en suspensión'],
     modifiers: {
       grantsDiet: 'herbivore',
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
   {
@@ -223,7 +238,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Estilete Capilar Carmesí',
     category: 'alimentacion',
     stage: 'cell_stage',
-    dnaCost: 35,
+    dnaCost: 25,
     discoverySource: 'predator_kill',
     discoveryHint: 'Derrota parásitos y cazadores veloces en el Arrecife Abisal.',
     stackable: false,
@@ -240,6 +255,8 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     modifiers: {
       grantsDiet: 'carnivore',
       contactDamageBonus: 15,
+      creatureBite: 1,
+      creatureSing: 1,
     },
   },
 
@@ -252,7 +269,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Púa Calcificada',
     category: 'ataque',
     stage: 'cell_stage',
-    dnaCost: 30,
+    dnaCost: 15,
     discoverySource: 'predator_kill',
     discoveryHint:
       'Extrae el Nódulo Genético de un depredador abatido o de un Fósil en el Arrecife Abisal.',
@@ -260,10 +277,10 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     maxStacks: 4,
     socketType: 'any',
     description:
-      'Púas calcificadas multi-anclaje. La 1.ª copia equipa espolones frontales de embestida; copias adicionales (2 a 4) cubren flancos y retaguardia hiriendo a quien te muerda.',
-    statSummary: 'Embestida (<3.6m) · Apilable (x4): Defensa Punzante',
+      'Púas calcificadas multi-anclaje. En fase celular repelen depredadores; en tierra otorgan Embestida Nv. 1 como alternativa económica.',
+    statSummary: 'Embestida Nv.1 · Defensa Punzante · Apilable (x4)',
     pros: [
-      '1 copia: Embestida frontal con Impulso (<3.6m) que repele depredadores',
+      'Embestida frontal (<3.6m) en mar y Embestida Nv.1 en Criatura Terrestre',
       '2 a 4 copias: Púas laterales/traseras que hieren y repelen al atacante (+8 ADN)',
     ],
     tradeoffs: [
@@ -273,6 +290,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
       contactDamageBonus: 18,
       speedBonusPct: -0.03,
       unlocksAbilityId: 'ram_dash',
+      creatureCharge: 1,
     },
   },
   {
@@ -281,7 +299,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Vesícula Tóxica',
     category: 'ataque',
     stage: 'cell_stage',
-    dnaCost: 35,
+    dnaCost: 20,
     discoverySource: 'scavenge_carcass',
     discoveryHint:
       'Aísla el Nódulo Genético cerca de restos celulares o en la Fosa Hidrotermal.',
@@ -289,16 +307,17 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     maxStacks: 3,
     socketType: 'rear',
     description:
-      'Vesícula posterior bioluminiscente que libera nubes tóxicas al pulsar Q, usar Impulso o detectar amenazas (<12m), ralentizándolas un 45%.',
-    statSummary: 'Nube Tóxica (Q / Auto) · -45% Vel. Enemiga · Apilable (x3)',
+      'Vesícula posterior bioluminiscente que libera nubes tóxicas en el océano y otorga Escupir Nv. 1 en el Estadio de Criatura.',
+    statSummary: 'Escupir Nv.1 · Nube Tóxica (Q / Auto) · -45% Vel. Enemiga',
     pros: [
-      'Libera nube citotóxica (Tecla Q o automática con amenaza <12m)',
+      'Libera nube citotóxica en agua y otorga Escupir Nv.1 en Criatura Terrestre',
       'Cada copia extra amplía un +35% el radio y duración de la nube',
     ],
     tradeoffs: ['+5% Gasto energético basal por síntesis continua de toxinas'],
     modifiers: {
       passiveDrainMultiplier: 1.05,
       unlocksAbilityId: 'poison_cloud',
+      creatureSpit: 1,
     },
   },
   {
@@ -307,7 +326,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Nodo Electrogénico',
     category: 'ataque',
     stage: 'cell_stage',
-    dnaCost: 50,
+    dnaCost: 25,
     discoverySource: 'predator_kill',
     discoveryHint:
       'Aísla el genoma de una Megacélula Acorazada o analiza un Fósil del Arrecife Abisal.',
@@ -315,15 +334,16 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     maxStacks: 1,
     socketType: 'lateral',
     description:
-      'Nodos bioeléctricos laterales que emiten un pulso de área de 9.5m al pulsar Q (12 Energía, 6s enfriamiento): aturde depredadores 3.2s y electrocuta presas.',
-    statSummary: 'Pulso 9.5m (Tecla Q) · Aturde 3.2s · Electrocuta',
+      'Nodos bioeléctricos laterales que emiten un pulso de área de 9.5m al pulsar Q y otorgan Fascinar Nv. 1 por destello bioeléctrico en tierra.',
+    statSummary: 'Fascinar Nv.1 · Pulso 9.5m (Tecla Q) · Aturde 3.2s',
     pros: [
-      'Descarga radial de 9.5m (Tecla Q) que deja ATURDIDOS a los depredadores 3.2s',
-      'Electrocuta Células Filtradoras al instante otorgando +12 ADN',
+      'Descarga radial de 9.5m (Tecla Q) que aturde depredadores 3.2s',
+      'Otorga Fascinar Nv.1 en el Estadio de Criatura Terrestre',
     ],
     tradeoffs: ['Consume 12 de Energía por descarga (6.0s de enfriamiento)'],
     modifiers: {
       unlocksAbilityId: 'electric_pulse',
+      creatureCharm: 1,
     },
   },
   {
@@ -873,7 +893,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Pigmento Óptico',
     category: 'sentidos',
     stage: 'cell_stage',
-    dnaCost: 10,
+    dnaCost: 5,
     discoverySource: 'initial',
     discoveryHint:
       'Órgano sensorial básico presente desde el nacimiento celular.',
@@ -881,17 +901,18 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     maxStacks: 1,
     socketType: 'front',
     description:
-      'Par de receptores ópticos frontales que permiten enfocar el entorno submarino. Si desinstalas todos los ojos, sufrirás ceguera parcial y visión túnel.',
-    statSummary: 'Visión Celular Nítida · Evita Ceguera Abisal',
+      'Par de receptores ópticos frontales que permiten enfocar el entorno submarino y otorgan Vista Nv. 1 en tierra.',
+    statSummary: 'Vista Nv.1 · Visión Celular Nítida · Evita Ceguera',
     pros: [
-      'Mantiene el campo visual despejado y sin viñeta de ceguera',
-      'Reembolsable (+10 ADN) si prefieres evolucionar Ojos Pedunculados',
+      'Mantiene el campo visual despejado y otorga Vista Nv.1 en Criatura Terrestre',
+      'Reembolsable (+5 ADN) si prefieres evolucionar Ojos Pedunculados',
     ],
     tradeoffs: [
       'Retirar todos los órganos oculares reduce tu zoom y oscurece la periferia',
     ],
     modifiers: {
       visionRadiusMultiplier: 1.0,
+      creatureSight: 1,
     },
   },
   {
@@ -900,7 +921,7 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     veiledName: 'Señal genética: Pedúnculo Óptico',
     category: 'sentidos',
     stage: 'cell_stage',
-    dnaCost: 25,
+    dnaCost: 15,
     discoverySource: 'fossil_fragment',
     discoveryHint:
       'Descubre un Fósil Abisal o derrota a un cazador Mandíbula Rápida.',
@@ -908,16 +929,17 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
     maxStacks: 1,
     socketType: 'front',
     description:
-      'Globos oculares bioluminiscentes elevados sobre pedúnculos móviles que amplían el zoom panorámico (+25%) y disipan un 30% la niebla abisal.',
-    statSummary: '+25% Campo Visual (Zoom-Out) · -30% Niebla Abisal',
+      'Globos oculares bioluminiscentes elevados sobre pedúnculos móviles que amplían el zoom panorámico (+25%), disipan niebla y otorgan Vista Nv. 1.',
+    statSummary: 'Vista Nv.1 · +25% Campo Visual · -30% Niebla Abisal',
     pros: [
-      'Amplía la altura de cámara (+25% radio de visión panorámica)',
+      'Amplía la altura de cámara (+25% radio de visión panorámica) y Vista Nv.1',
       'Reduce un 30% la densidad de la niebla submarina para ver amenazas lejos',
     ],
     tradeoffs: ['Sustituye la necesidad de la Mancha Ocular básica'],
     modifiers: {
       visionRadiusMultiplier: 1.25,
       fogClearMultiplier: 0.7,
+      creatureSight: 1,
     },
   },
   {
@@ -1175,4 +1197,698 @@ export const ADAPTATION_CATALOG: readonly CellAdaptationDefinition[] = [
       speedBonusPct: 0.15,
     },
   },
+
+  // ============================================================================
+  // 8. PIERNAS (5 Variantes de Locomoción Terrestre)
+  // ============================================================================
+  {
+    id: 'leg_insectoid',
+    name: 'Patas Quitinosas Segmentadas',
+    veiledName: 'Señal genética: Artejos Quitinosos',
+    category: 'piernas',
+    stage: 'creature_stage',
+    dnaCost: 25,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 3,
+    socketType: 'lateral',
+    description:
+      'Extremidades insectoides segmentadas tipo mantis/grillo, finas, ligeras y de zancada silenciosa y veloz sobre terreno costero.',
+    statSummary: 'Velocidad +2 · Sigilo +1',
+    pros: [
+      '+2 Velocidad Terrestre (zancada rápida multi-segmento)',
+      '+1 Sigilo al desplazarse sin hacer ruido',
+    ],
+    tradeoffs: ['Estructura quitinosa ligera con menor masa de impacto'],
+    modifiers: {
+      speedBonusPct: 0.18,
+      creatureSpeed: 2,
+      creatureSneak: 1,
+    },
+  },
+  {
+    id: 'leg_digitigrade',
+    name: 'Piernas Digitígradas Felinas',
+    veiledName: 'Señal genética: Fémur Elástico Digitígrado',
+    category: 'piernas',
+    stage: 'creature_stage',
+    dnaCost: 30,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Articulación canina/felina con tendón calcáneo elevado y musculatura estilizada para sprints explosivos y saltos ágiles.',
+    statSummary: 'Velocidad +3 · Salto +2',
+    pros: [
+      '+3 Velocidad Terrestre para caza y persecución ágil',
+      '+2 Salto gracias a la tracción elástica del tarso',
+    ],
+    tradeoffs: ['Consumo moderado de energía en sprints prolongados'],
+    modifiers: {
+      speedBonusPct: 0.26,
+      creatureSpeed: 3,
+      creatureJump: 2,
+    },
+  },
+  {
+    id: 'leg_plantigrade',
+    name: 'Piernas Plantígradas Robustas',
+    veiledName: 'Señal genética: Columna Plantígrada Úrsida',
+    category: 'piernas',
+    stage: 'creature_stage',
+    dnaCost: 28,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Piernas musculosas y estables estilo primate/úrsido que apoyan toda la planta, sosteniendo torsos pesados y ampliando la vitalidad.',
+    statSummary: 'Salto +1 · Vitalidad +15',
+    pros: [
+      '+15 Salud Máxima por soporte muscular robusto',
+      '+1 Salto y estabilidad superior frente a embestidas',
+    ],
+    tradeoffs: ['Menor velocidad punta que las patas unguladas o digitígradas'],
+    modifiers: {
+      maxHealthBonus: 15,
+      speedBonusPct: 0.12,
+      creatureSpeed: 1,
+      creatureJump: 1,
+    },
+  },
+  {
+    id: 'leg_ungulate',
+    name: 'Patas Unguladas de Pezuña',
+    veiledName: 'Señal genética: Metatarso Cursorio',
+    category: 'piernas',
+    stage: 'creature_stage',
+    dnaCost: 35,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Extremidades delgadas, largas y elásticas estilo ciervo/caballo diseñadas para galopar a máxima velocidad y cargar con ímpetu.',
+    statSummary: 'Velocidad +4 · Embestida +2',
+    pros: [
+      '+4 Velocidad Terrestre (máxima velocidad de galope)',
+      '+2 Embestida en cargas frontales a la carrera',
+    ],
+    tradeoffs: ['Menor sigilo sobre superficies rocosas'],
+    modifiers: {
+      speedBonusPct: 0.35,
+      contactDamageBonus: 12,
+      creatureSpeed: 4,
+      creatureCharge: 2,
+    },
+  },
+  {
+    id: 'leg_reptilian',
+    name: 'Patas Reptilianas Acorazadas',
+    veiledName: 'Señal genética: Fémur Escamoso Saurio',
+    category: 'piernas',
+    stage: 'creature_stage',
+    dnaCost: 32,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Extremidades escamosas, anchas y pesadas recubiertas de osteodermos que otorgan blindaje estructural, golpe sísmico y ritmo tribal.',
+    statSummary: 'Zarpazo +1 · Defensa +10% · Bailar +1',
+    pros: [
+      '+10% Defensa estructural gracias a las escamas dérmicas',
+      '+1 Zarpazo/Golpe y +1 Bailar por pisotón rítmico terrestre',
+    ],
+    tradeoffs: ['Paso pesado y corpulento'],
+    modifiers: {
+      damageReductionPct: 0.1,
+      contactDamageBonus: 10,
+      creatureStrike: 1,
+      creatureDance: 1,
+    },
+  },
+
+  // ============================================================================
+  // 9. BRAZOS (5 Variantes de Extremidades Superiores)
+  // ============================================================================
+  {
+    id: 'arm_slender',
+    name: 'Brazos Gráciles Ágiles',
+    veiledName: 'Señal genética: Húmero Articulado Ligero',
+    category: 'brazos',
+    stage: 'creature_stage',
+    dnaCost: 15,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Brazos flexibles y estilizados de bajo coste de ADN que permiten gesticular con elegancia y acoplar cualquier tipo de manos o garras.',
+    statSummary: 'Posar +1 · Bajo Coste ADN',
+    pros: [
+      '+1 Posar para exhibición e interacción social',
+      'Soporte anatómico ligero ideal para acoplar manos prensiles',
+    ],
+    tradeoffs: ['Fuerza bruta moderada sin garras acopladas'],
+    modifiers: {
+      creaturePose: 1,
+    },
+  },
+  {
+    id: 'arm_brawny',
+    name: 'Brazos Musculosos de Gorila',
+    veiledName: 'Señal genética: Bíceps Hipertrófico',
+    category: 'brazos',
+    stage: 'creature_stage',
+    dnaCost: 30,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Extremidades superiores macizas de gran envergadura muscular que incrementan la potencia de desgarro cuerpo a cuerpo y la vitalidad.',
+    statSummary: 'Zarpazo +2 · Salud +10',
+    pros: [
+      '+2 Zarpazo en combate cuerpo a cuerpo',
+      '+10 Salud Máxima por masa muscular torácica',
+    ],
+    tradeoffs: ['Mayor envergadura en el tren superior'],
+    modifiers: {
+      maxHealthBonus: 10,
+      contactDamageBonus: 16,
+      creatureStrike: 2,
+    },
+  },
+  {
+    id: 'arm_praying',
+    name: 'Brazos Raptores Tipo Mantis',
+    veiledName: 'Señal genética: Tibia Raptora Aserrada',
+    category: 'brazos',
+    stage: 'creature_stage',
+    dnaCost: 35,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Brazos plegables de emboscada armados con hileras de púas quitinosas en el antebrazo para atrapar y desgarrar presas al instante.',
+    statSummary: 'Zarpazo +3 · Embestida +1',
+    pros: [
+      '+3 Zarpazo letal con antebrazos espinosos articulados',
+      '+1 Embestida al abalanzarse sobre el objetivo',
+    ],
+    tradeoffs: ['Especializados en ataque agresivo'],
+    modifiers: {
+      contactDamageBonus: 24,
+      creatureStrike: 3,
+      creatureCharge: 1,
+    },
+  },
+  {
+    id: 'arm_patagium',
+    name: 'Brazos Alares con Membrana de Murciélago',
+    veiledName: 'Señal genética: Patagio Braquial Elástico',
+    category: 'brazos',
+    stage: 'creature_stage',
+    dnaCost: 40,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Brazos extendidos unidos al torso por una membrana alar translúcida (patagio) que permite planear largas distancias tras saltar.',
+    statSummary: 'Planeo +3 · Salto +1',
+    pros: [
+      '+3 Planeo para surcar corrientes de aire sobre la costa',
+      '+1 Salto con impulso aerodinámico adicional',
+    ],
+    tradeoffs: ['Membrana amplia visible a distancia'],
+    modifiers: {
+      speedBonusPct: 0.14,
+      creatureGlide: 3,
+      creatureJump: 1,
+    },
+  },
+  {
+    id: 'arm_armored',
+    name: 'Brazos Plaqueados Quitinosos',
+    veiledName: 'Señal genética: Brazalete Exoesquelético',
+    category: 'brazos',
+    stage: 'creature_stage',
+    dnaCost: 32,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Brazos recubiertos por placas quitinosas superpuestas que actúan como escudos laterales y golpean con contundencia.',
+    statSummary: 'Defensa +12% · Zarpazo +1',
+    pros: [
+      '+12% Defensa estructural al cubrir los flancos del torso',
+      '+1 Zarpazo contundente con placas calcificadas',
+    ],
+    tradeoffs: ['Ligeramente más pesados que los brazos gráciles'],
+    modifiers: {
+      damageReductionPct: 0.12,
+      contactDamageBonus: 10,
+      creatureStrike: 1,
+    },
+  },
+
+  // ============================================================================
+  // 10. MANOS / GRASPERS (3 Variantes Prensiles y de Combate)
+  // ============================================================================
+  {
+    id: 'hand_primate',
+    name: 'Manos Oponibles Prensiles',
+    veiledName: 'Señal genética: Pulgar Oponible Tribal',
+    category: 'manos',
+    stage: 'creature_stage',
+    dnaCost: 25,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Manos de cinco dedos con pulgar oponible que se encastran en los brazos: otorgan capacidad de agarre (hasGraspers) para recoger alimentos y empuñar herramientas tribales.',
+    statSummary: 'Agarre Activo · Posar +3 · Fascinar +1',
+    pros: [
+      'Agarre (Graspers): Permite sostener comida, rocas y herramientas tribales',
+      '+3 Posar y +1 Fascinar por expresividad gestual avanzada',
+    ],
+    tradeoffs: ['Orientadas a destreza, manipulación y comunicación social'],
+    modifiers: {
+      hasGraspers: true,
+      creaturePose: 3,
+      creatureCharm: 1,
+    },
+  },
+  {
+    id: 'hand_talons',
+    name: 'Garras Afiladas de Raptor',
+    veiledName: 'Señal genética: Falanges Unciformes',
+    category: 'manos',
+    stage: 'creature_stage',
+    dnaCost: 30,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Zarpas curvas queratinizadas de depredador que se ensamblan en los extremos de los brazos: combinan agarre de presas con un zarpazo devastador.',
+    statSummary: 'Agarre Activo · Zarpazo +3 · Mordisco +1',
+    pros: [
+      'Agarre (Graspers) +3 Zarpazo de desgarro crítico',
+      '+1 Mordisco al sujetar firmemente a la presa',
+    ],
+    tradeoffs: ['Menor sutileza social que las manos oponibles'],
+    modifiers: {
+      hasGraspers: true,
+      contactDamageBonus: 22,
+      creatureStrike: 3,
+      creatureBite: 1,
+    },
+  },
+  {
+    id: 'hand_insect_claw',
+    name: 'Pinzas Quitinosas de Cangrejo',
+    veiledName: 'Señal genética: Quela Calcificada',
+    category: 'manos',
+    stage: 'creature_stage',
+    dnaCost: 28,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Tenazas articuladas de quitina densa acopladas a las muñecas: permiten sujetar objetos con fuerza hidráulica, golpear y desviar ataques.',
+    statSummary: 'Agarre Activo · Zarpazo +2 · Defensa +5%',
+    pros: [
+      'Agarre (Graspers) con tenaza de presión hidráulica',
+      '+2 Zarpazo y +5% Defensa adicional frente a ataques frontales',
+    ],
+    tradeoffs: ['Pinza rígida de dos dedos oponibles'],
+    modifiers: {
+      hasGraspers: true,
+      contactDamageBonus: 15,
+      damageReductionPct: 0.05,
+      creatureStrike: 2,
+    },
+  },
+
+  // ============================================================================
+  // 11. PIES (3 Variantes de Tracción, Salto y Embestida)
+  // ============================================================================
+  {
+    id: 'foot_paw',
+    name: 'Zarpas con Almohadillas Suaves',
+    veiledName: 'Señal genética: Cojinete Plantar Silencioso',
+    category: 'pies',
+    stage: 'creature_stage',
+    dnaCost: 22,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Pies articulados con almohadillas elásticas que amortiguan cada pisada en los extremos de las piernas, maximizando el sigilo y la tracción.',
+    statSummary: 'Sigilo +3 · Velocidad +2',
+    pros: [
+      '+3 Sigilo para acercarse a presas o depredadores sin ser detectado',
+      '+2 Velocidad Terrestre por tracción plantar flexible',
+    ],
+    tradeoffs: ['Sin casco duro de embestida'],
+    modifiers: {
+      speedBonusPct: 0.16,
+      creatureSneak: 3,
+      creatureSpeed: 2,
+    },
+  },
+  {
+    id: 'foot_hoof',
+    name: 'Pezuñas Clíperas de Embestida',
+    veiledName: 'Señal genética: Casco Ungulado Córneo',
+    category: 'pies',
+    stage: 'creature_stage',
+    dnaCost: 28,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Pezuñas hendidas ultraduras que se encastran en los tobillos: multiplican la velocidad de carrera e impulsan cargas demoledoras.',
+    statSummary: 'Velocidad +3 · Embestida +3',
+    pros: [
+      '+3 Velocidad Terrestre sobre llanuras y costas',
+      '+3 Embestida para derribar rivales al cargar',
+    ],
+    tradeoffs: ['Pisada sonora sobre roca'],
+    modifiers: {
+      speedBonusPct: 0.24,
+      contactDamageBonus: 18,
+      creatureSpeed: 3,
+      creatureCharge: 3,
+    },
+  },
+  {
+    id: 'foot_webbed',
+    name: 'Pies Palmeados de Anfibio',
+    veiledName: 'Señal genética: Membrana Interdigital Costera',
+    category: 'pies',
+    stage: 'creature_stage',
+    dnaCost: 24,
+    discoverySource: 'initial',
+    discoveryHint: 'Disponible al evolucionar al Estadio de Criatura Terrestre.',
+    stackable: true,
+    maxStacks: 2,
+    socketType: 'lateral',
+    description:
+      'Pies anchos con membranas interdigitales bioluminiscentes que permiten danzar con agilidad, saltar con resorte y nadar velozmente en ríos y charcas.',
+    statSummary: 'Bailar +3 · Salto +2 · Nado en Ríos',
+    pros: [
+      '+3 Bailar para alianzas sociales y rituales tribales',
+      '+2 Salto elástico y propulsión anfibia en aguas costeras',
+    ],
+    tradeoffs: ['Especializados en agilidad anfibia y social'],
+    modifiers: {
+      speedBonusPct: 0.14,
+      creatureDance: 3,
+      creatureJump: 2,
+    },
+  },
 ];
+
+/**
+ * Strictly microbial adaptations that are retired/hidden when the organism transitions
+ * to the Terrestrial Creature Stage (`creature_stage`).
+ */
+export const CELL_ONLY_ADAPTATION_IDS: ReadonlySet<string> = new Set([
+  'simple_flagellum',
+  'cilia_waves',
+  'hydro_siphon',
+  'movement_ribbon_fin',
+  'movement_macro_cilia_skirt',
+  'movement_whip_flagella',
+  'movement_pneumatic_vesicle',
+  'movement_reactive_nozzle',
+  'chloroplast_1',
+  'neutralizer_vesicle',
+  'defense_mucus_gland',
+]);
+
+export function isCellOnlyAdaptation(rawId: string): boolean {
+  return CELL_ONLY_ADAPTATION_IDS.has(normalizeAdaptationId(rawId));
+}
+
+export function isLegAdaptation(rawId: string): boolean {
+  const id = normalizeAdaptationId(rawId);
+  return id.startsWith('leg_');
+}
+
+export function isArmAdaptation(rawId: string): boolean {
+  const id = normalizeAdaptationId(rawId);
+  return id.startsWith('arm_') || id === 'grasping_arms';
+}
+
+export function isHandAdaptation(rawId: string): boolean {
+  const id = normalizeAdaptationId(rawId);
+  return id.startsWith('hand_');
+}
+
+export function isFootAdaptation(rawId: string): boolean {
+  const id = normalizeAdaptationId(rawId);
+  return id.startsWith('foot_');
+}
+
+export function isMouthAdaptation(rawId: string): boolean {
+  const id = normalizeAdaptationId(rawId);
+  return id.startsWith('mouth_');
+}
+
+export function computeCreatureStats(
+  getStacks: (id: string) => number
+): import('./types').CreatureStats {
+  const hasAny = (ids: string[]) => ids.some((id) => getStacks(id) > 0);
+  const has = (id: string) => getStacks(id) > 0;
+
+  // Spore Non-Stacking Rule: each skill level is strictly the maximum level (Math.max)
+  // granted by the single best installed piece for that attribute (capped at 5).
+  // Installing multiple copies of the same mouth/limb/weapon NEVER sums their levels.
+
+  // Locomoción (0 - 5; base speed 1 when crawling without legs)
+  const rawSpeed = Math.max(
+    1,
+    has('leg_plantigrade') ? 1 : 0,
+    has('leg_insectoid') ? 2 : 0,
+    has('foot_paw') ? 2 : 0,
+    has('foot_webbed') ? 2 : 0,
+    has('leg_digitigrade') ? 3 : 0,
+    has('foot_hoof') ? 3 : 0,
+    has('leg_ungulate') ? 4 : 0
+  );
+
+  const rawJump = Math.max(
+    0,
+    has('leg_plantigrade') ? 1 : 0,
+    has('leg_insectoid') ? 1 : 0,
+    has('arm_patagium') ? 1 : 0,
+    has('leg_digitigrade') ? 2 : 0,
+    has('foot_webbed') ? 2 : 0,
+    has('wings_1') ? 2 : 0
+  );
+
+  const rawGlide = Math.max(
+    0,
+    has('arm_patagium') ? 3 : 0,
+    has('wings_1') ? 3 : 0
+  );
+
+  const rawSneak = Math.max(
+    0,
+    has('leg_insectoid') ? 1 : 0,
+    has('defense_camouflage_chromatophores') ? 2 : 0,
+    has('foot_paw') ? 3 : 0
+  );
+
+  // Combate (0 - 5)
+  // Cellular mouths grant Bite Lv.1 and Sing Lv.1 in the Early Creature Creator
+  const hasAnyCellularMouth = hasAny([
+    'mouth_filter',
+    'mouth_jaw',
+    'mouth_proboscis',
+    'mouth_radula',
+    'mouth_suction_cup',
+    'mouth_crusher_mandibles',
+    'mouth_filter_baleen',
+    'mouth_needle_proboscis',
+  ]);
+
+  const rawBite = Math.max(
+    0,
+    hasAnyCellularMouth ? 1 : 0,
+    has('hand_talons') ? 1 : 0
+  );
+
+  const rawCharge = Math.max(
+    0,
+    has('chitin_spike') ? 1 : 0,
+    has('arm_praying') ? 1 : 0,
+    has('leg_ungulate') ? 2 : 0,
+    has('weapon_rotary_drill') ? 2 : 0,
+    has('foot_hoof') ? 3 : 0
+  );
+
+  const rawStrike = Math.max(
+    0,
+    has('leg_reptilian') ? 1 : 0,
+    has('arm_armored') ? 1 : 0,
+    has('arm_brawny') ? 2 : 0,
+    has('grasping_arms') ? 2 : 0,
+    has('hand_insect_claw') ? 2 : 0,
+    has('weapon_tail_club') ? 2 : 0,
+    has('arm_praying') ? 3 : 0,
+    has('hand_talons') ? 3 : 0
+  );
+
+  const rawSpit = Math.max(
+    0,
+    has('poison_gland') ? 1 : 0,
+    has('weapon_caustic_acid_blister') ? 1 : 0,
+    has('acid_spit') ? 4 : 0
+  );
+
+  // Social / Tribal (0 - 5)
+  const rawSing = Math.max(
+    0,
+    hasAnyCellularMouth ? 1 : 0,
+    has('vocal_crest') ? 3 : 0
+  );
+
+  const rawDance = Math.max(
+    0,
+    has('leg_reptilian') ? 1 : 0,
+    has('leg_digitigrade') ? 1 : 0,
+    has('foot_webbed') ? 3 : 0
+  );
+
+  const rawPose = Math.max(
+    0,
+    has('arm_slender') ? 1 : 0,
+    has('wings_1') ? 1 : 0,
+    has('hand_primate') ? 3 : 0
+  );
+
+  const rawCharm = Math.max(
+    0,
+    has('electric_cell') ? 1 : 0,
+    has('hand_primate') ? 1 : 0,
+    has('sense_abyssal_biolum_probe') ? 1 : 0,
+    has('defense_camouflage_chromatophores') ? 1 : 0,
+    has('vocal_crest') ? 2 : 0,
+    has('weapon_flash_photophore') ? 2 : 0
+  );
+
+  const rawHealth = Math.max(
+    1,
+    has('leg_reptilian') ? 2 : 0,
+    has('arm_brawny') ? 2 : 0,
+    has('defense_chitin_shield_plate') ? 2 : 0,
+    has('leg_plantigrade') ? 3 : 0,
+    has('arm_armored') ? 3 : 0,
+    has('membrane_armor') ? 4 : 0,
+    has('defense_hydrothermal_carapace') ? 4 : 0
+  );
+
+  const rawSight = Math.max(
+    0,
+    has('eye_photoreceptor') ? 1 : 0,
+    has('eye_stalks') ? 1 : 0,
+    has('chemoreceptor') ? 1 : 0,
+    has('sense_antenna_chemoreceptor') ? 1 : 0,
+    has('sense_electro_sensor_pores') ? 1 : 0,
+    has('sense_stalk_compound_eye') ? 2 : 0,
+    has('sense_abyssal_biolum_probe') ? 2 : 0
+  );
+
+  const hasGraspers = hasAny([
+    'hand_primate',
+    'hand_talons',
+    'hand_insect_claw',
+    'grasping_arms',
+  ]);
+
+  const clampStat = (val: number, min = 0, max = 5) =>
+    Math.max(min, Math.min(max, val));
+
+  return {
+    speed: clampStat(rawSpeed, 1, 5),
+    jump: clampStat(rawJump, 0, 5),
+    glide: clampStat(rawGlide, 0, 5),
+    sneak: clampStat(rawSneak, 0, 5),
+    health: clampStat(rawHealth, 1, 5),
+    sight: clampStat(rawSight, 0, 5),
+    bite: clampStat(rawBite, 0, 5),
+    charge: clampStat(rawCharge, 0, 5),
+    strike: clampStat(rawStrike, 0, 5),
+    spit: clampStat(rawSpit, 0, 5),
+    sing: clampStat(rawSing, 0, 5),
+    dance: clampStat(rawDance, 0, 5),
+    pose: clampStat(rawPose, 0, 5),
+    charm: clampStat(rawCharm, 0, 5),
+    hasGraspers,
+  };
+}
+
+export const MAX_CREATURE_COMPLEXITY = 100;
+
+export function getOrganComplexityCost(
+  rawId: string,
+  mirrorSymmetry = true
+): number {
+  const id = normalizeAdaptationId(rawId);
+  const symMult = mirrorSymmetry ? 1.65 : 1.0;
+  if (isLegAdaptation(id) || isArmAdaptation(id)) {
+    return Math.round(7 * symMult);
+  }
+  if (isHandAdaptation(id) || isFootAdaptation(id)) {
+    return Math.round(4 * symMult);
+  }
+  if (id === 'wings_1') {
+    return Math.round(8 * symMult);
+  }
+  if (isMouthAdaptation(id)) {
+    return Math.round(5 * symMult);
+  }
+  return Math.round(3.5 * symMult);
+}
+
+export function computeCreatureComplexity(
+  spineNodeCount: number,
+  placedOrgans: readonly import('./types').PlacedOrganInstance[]
+): number {
+  const spineCost = Math.max(3, Math.min(9, spineNodeCount)) * 3;
+  let organsCost = 0;
+  for (const org of placedOrgans) {
+    organsCost += getOrganComplexityCost(org.adaptationId, org.mirrorSymmetry);
+  }
+  return Math.min(MAX_CREATURE_COMPLEXITY, spineCost + organsCost);
+}
+
+

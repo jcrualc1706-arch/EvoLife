@@ -4,9 +4,19 @@ import { normalizeAdaptationId } from './evolutionData';
 export interface OrganVisualInstance {
   group: THREE.Group;
   nozzleLocalPos?: THREE.Vector3;
+  distalSocketLocalPos?: THREE.Vector3;
+  distalSocketGroup?: THREE.Group;
   animate: (elapsedTime: number, speedRatio: number, isBoosting: boolean) => void;
   setHighlight: (mode: 'none' | 'selected' | 'preview_valid' | 'preview_invalid') => void;
   setColorOverride: (colorHex?: string) => void;
+  setCoatColors: (baseColorHex?: string, detailColorHex?: string) => void;
+  setLimbPose: (
+    upperJointAngle: number,
+    middleJointAngle: number,
+    boneLength: number
+  ) => void;
+  getLowestFootWorldY?: () => number;
+  getJointGizmoObjects: () => THREE.Object3D[];
   dispose: () => void;
 }
 
@@ -26,13 +36,17 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     mat: THREE.MeshStandardMaterial | THREE.MeshPhysicalMaterial;
     origColorHex: number;
     origEmissiveHex: number;
+    isDetailAccent: boolean;
   }> = [];
 
   const trackGeo = <T extends THREE.BufferGeometry>(g: T): T => {
     geometries.push(g);
     return g;
   };
-  const trackMat = <T extends THREE.Material>(m: T): T => {
+  const trackMat = <T extends THREE.Material>(
+    m: T,
+    forceDetailAccent?: boolean
+  ): T => {
     materials.push(m);
     if (
       m instanceof THREE.MeshStandardMaterial ||
@@ -46,10 +60,15 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
         cHex === 0x020617 ||
         cHex === 0x090d16;
       if (!isEyeScleraOrPupil) {
+        const isDetail =
+          forceDetailAccent !== undefined
+            ? forceDetailAccent
+            : tintableMaterials.length > 0;
         tintableMaterials.push({
           mat: m,
           origColorHex: cHex,
           origEmissiveHex: m.emissive.getHex(),
+          isDetailAccent: isDetail,
         });
       }
     }
@@ -58,6 +77,55 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
 
   let animateFn: (elapsedTime: number, speedRatio: number, isBoosting: boolean) => void = () => {};
   let nozzleLocalPos: THREE.Vector3 | undefined;
+  let distalSocketLocalPos: THREE.Vector3 | undefined;
+  let limbProximalPivot: THREE.Group | undefined;
+  let limbMiddlePivot: THREE.Group | undefined;
+  let limbDistalSocketGroup: THREE.Group | undefined;
+  let baseDistalSocketPos: THREE.Vector3 | undefined;
+  let savedUpperJointAngle = 0;
+  let savedMiddleJointAngle = 0;
+  let savedBoneLength = 1.0;
+  const jointGizmoGroups: THREE.Group[] = [];
+  const jointGizmoHitMeshes: THREE.Object3D[] = [];
+
+  const attachLimbJointRig = (
+    rootGroup: THREE.Group,
+    middleJointPos: THREE.Vector3,
+    distalSocketPos: THREE.Vector3
+  ) => {
+    const proxPivot = new THREE.Group();
+    const midPivot = new THREE.Group();
+    midPivot.position.copy(middleJointPos);
+
+    // Move children located beyond the middle joint into midPivot so bending the knee/elbow articulates the lower segment
+    const childrenToInspect = [...rootGroup.children];
+    for (const child of childrenToInspect) {
+      const distToDistal = child.position.distanceTo(distalSocketPos);
+      const distToOrigin = child.position.length();
+      if (distToDistal < distToOrigin && distToOrigin > 0.25) {
+        rootGroup.remove(child);
+        child.position.sub(middleJointPos);
+        midPivot.add(child);
+      } else {
+        rootGroup.remove(child);
+        proxPivot.add(child);
+      }
+    }
+
+    // Distal Socket Group (Ankle for legs / Wrist for arms) where Feet and Hands attach hierarchically
+    const socketGroup = new THREE.Group();
+    socketGroup.name = id.startsWith('leg_') ? 'ankleGroup' : 'wristGroup';
+    socketGroup.position.copy(distalSocketPos).sub(middleJointPos);
+    midPivot.add(socketGroup);
+
+    proxPivot.add(midPivot);
+    rootGroup.add(proxPivot);
+
+    limbProximalPivot = proxPivot;
+    limbMiddlePivot = midPivot;
+    limbDistalSocketGroup = socketGroup;
+    baseDistalSocketPos = distalSocketPos.clone();
+  };
 
   if (id === 'chitin_spike') {
     // 1. Espolón Quitinizado: Basal anchor ring + curved sharp chitin cone pointing outward (+Z)
@@ -343,7 +411,7 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       suctionMesh.position.z = 0.94 * pump;
       stingerMesh.position.z = 1.04 * pump;
     };
-  } else if (id === 'simple_flagellum' || id === 'flagellum_2') {
+  } else if (id === 'simple_flagellum' || id === 'flagellum_2' || id === 'flagellum') {
     // 6. Flagelo Simple: Segmented whip tail undulating with a continuous sine wave
     const rotorGeo = trackGeo(new THREE.TorusGeometry(0.16, 0.04, 8, 16));
     const tailMat = trackMat(
@@ -1802,6 +1870,825 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       probeArm.rotation.x = Math.sin(elapsedTime * 3.5) * 0.1;
       bulb.scale.setScalar(1.0 + Math.sin(elapsedTime * 7.0) * 0.12);
     };
+  } else if (id === 'leg_insectoid') {
+    // 44. Patas Quitinosas Segmentadas: 3-segment mantis/cricket chitinous leg with high knee joint
+    const chitinMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x10b981,
+        emissive: 0x065f46,
+        emissiveIntensity: 0.45,
+        roughness: 0.25,
+        metalness: 0.55,
+      })
+    );
+    const jointMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xa7f3d0,
+        emissive: 0x10b981,
+        emissiveIntensity: 0.7,
+        roughness: 0.35,
+      })
+    );
+
+    const legRoot = new THREE.Group();
+    const coxaMesh = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.16, 12, 12)),
+      jointMat
+    );
+    const femurGeo = trackGeo(new THREE.CylinderGeometry(0.06, 0.1, 0.78, 10));
+    const femurMesh = new THREE.Mesh(femurGeo, chitinMat);
+    femurMesh.position.set(0, 0.26, 0.32);
+    femurMesh.rotation.x = 0.88;
+
+    const kneeJoint = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.095, 10, 10)),
+      jointMat
+    );
+    kneeJoint.position.set(0, 0.48, 0.62);
+
+    const tibiaGeo = trackGeo(new THREE.CylinderGeometry(0.032, 0.065, 1.05, 10));
+    const tibiaMesh = new THREE.Mesh(tibiaGeo, chitinMat);
+    tibiaMesh.position.set(0, -0.02, 0.78);
+    tibiaMesh.rotation.x = -0.32;
+
+    const ankleJoint = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.075, 10, 10)),
+      jointMat
+    );
+    ankleJoint.position.set(0, -0.52, 0.92);
+
+    legRoot.add(coxaMesh, femurMesh, kneeJoint, tibiaMesh, ankleJoint);
+    group.add(legRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, -0.56, 0.94);
+
+    animateFn = (elapsedTime, speedRatio, isBoosting) => {
+      const freq = isBoosting ? 14.0 : 8.5;
+      const amp = Math.min(1.2, Math.max(0.18, speedRatio)) * 0.38;
+      legRoot.rotation.x = Math.sin(elapsedTime * freq) * amp;
+    };
+  } else if (id === 'leg_digitigrade') {
+    // 45. Piernas Digitígradas Felinas: Feline/canine muscular thigh, elevated hock/ankle, and agile shin
+    const muscleMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x0ea5e9,
+        emissive: 0x0369a1,
+        emissiveIntensity: 0.42,
+        roughness: 0.42,
+        metalness: 0.18,
+      })
+    );
+    const tendonMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x7dd3fc,
+        emissive: 0x0284c7,
+        emissiveIntensity: 0.65,
+        roughness: 0.25,
+      })
+    );
+
+    const legRoot = new THREE.Group();
+    const hipMesh = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.22, 14, 14)),
+      muscleMat
+    );
+    hipMesh.scale.set(0.95, 1.15, 1.2);
+
+    const thighGeo = trackGeo(new THREE.CapsuleGeometry(0.15, 0.48, 8, 12));
+    const thighMesh = new THREE.Mesh(thighGeo, muscleMat);
+    thighMesh.position.set(0, -0.18, 0.28);
+    thighMesh.rotation.x = 0.65;
+
+    const kneeMesh = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.13, 12, 12)),
+      tendonMat
+    );
+    kneeMesh.position.set(0, -0.36, 0.52);
+
+    const shinGeo = trackGeo(new THREE.CapsuleGeometry(0.095, 0.46, 8, 12));
+    const shinMesh = new THREE.Mesh(shinGeo, muscleMat);
+    shinMesh.position.set(0, -0.58, 0.36);
+    shinMesh.rotation.x = -0.55;
+
+    const hockMesh = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.1, 10, 10)),
+      tendonMat
+    );
+    hockMesh.position.set(0, -0.78, 0.2);
+
+    const metatarsalGeo = trackGeo(
+      new THREE.CylinderGeometry(0.065, 0.08, 0.38, 10)
+    );
+    const metatarsalMesh = new THREE.Mesh(metatarsalGeo, tendonMat);
+    metatarsalMesh.position.set(0, -0.92, 0.38);
+    metatarsalMesh.rotation.x = 0.68;
+
+    legRoot.add(
+      hipMesh,
+      thighMesh,
+      kneeMesh,
+      shinMesh,
+      hockMesh,
+      metatarsalMesh
+    );
+    group.add(legRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, -1.04, 0.52);
+
+    animateFn = (elapsedTime, speedRatio, isBoosting) => {
+      const freq = isBoosting ? 12.5 : 7.5;
+      const amp = Math.min(1.2, Math.max(0.15, speedRatio)) * 0.42;
+      legRoot.rotation.x = Math.sin(elapsedTime * freq) * amp;
+    };
+  } else if (id === 'leg_plantigrade') {
+    // 46. Piernas Plantígradas Robustas: Heavy ursine/primate muscular leg column
+    const heavyMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x14b8a6,
+        emissive: 0x0f766e,
+        emissiveIntensity: 0.38,
+        roughness: 0.55,
+        metalness: 0.15,
+      })
+    );
+    const kneeCapMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x99f6e4,
+        emissive: 0x0d9488,
+        emissiveIntensity: 0.55,
+        roughness: 0.3,
+      })
+    );
+
+    const legRoot = new THREE.Group();
+    const thighGeo = trackGeo(new THREE.CapsuleGeometry(0.2, 0.48, 8, 14));
+    const thighMesh = new THREE.Mesh(thighGeo, heavyMat);
+    thighMesh.position.set(0, -0.24, 0.26);
+    thighMesh.rotation.x = 0.42;
+
+    const kneeCap = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.17, 12, 12)),
+      kneeCapMat
+    );
+    kneeCap.position.set(0, -0.48, 0.44);
+
+    const calfGeo = trackGeo(new THREE.CapsuleGeometry(0.16, 0.46, 8, 14));
+    const calfMesh = new THREE.Mesh(calfGeo, heavyMat);
+    calfMesh.position.set(0, -0.78, 0.42);
+    calfMesh.rotation.x = -0.12;
+
+    legRoot.add(thighMesh, kneeCap, calfMesh);
+    group.add(legRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, -1.06, 0.44);
+
+    animateFn = (elapsedTime, speedRatio, isBoosting) => {
+      const freq = isBoosting ? 10.5 : 6.5;
+      const amp = Math.min(1.2, Math.max(0.15, speedRatio)) * 0.34;
+      legRoot.rotation.x = Math.sin(elapsedTime * freq) * amp;
+    };
+  } else if (id === 'leg_ungulate') {
+    // 47. Patas Unguladas de Pezuña: High-speed slender elastic cursorial deer/equine leg
+    const cursorialMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xf59e0b,
+        emissive: 0xb45309,
+        emissiveIntensity: 0.45,
+        roughness: 0.35,
+        metalness: 0.3,
+      })
+    );
+    const boneJointMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfde68a,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.65,
+        roughness: 0.22,
+      })
+    );
+
+    const legRoot = new THREE.Group();
+    const haunchGeo = trackGeo(new THREE.SphereGeometry(0.21, 14, 14));
+    haunchGeo.scale(0.85, 1.25, 1.3);
+    const haunchMesh = new THREE.Mesh(haunchGeo, cursorialMat);
+    haunchMesh.position.set(0, -0.05, 0.16);
+
+    const upperLegGeo = trackGeo(
+      new THREE.CylinderGeometry(0.085, 0.14, 0.56, 10)
+    );
+    const upperLeg = new THREE.Mesh(upperLegGeo, cursorialMat);
+    upperLeg.position.set(0, -0.32, 0.34);
+    upperLeg.rotation.x = 0.52;
+
+    const hockJoint = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.1, 10, 10)),
+      boneJointMat
+    );
+    hockJoint.position.set(0, -0.58, 0.48);
+
+    const cannonBoneGeo = trackGeo(
+      new THREE.CylinderGeometry(0.048, 0.072, 0.64, 10)
+    );
+    const cannonBone = new THREE.Mesh(cannonBoneGeo, boneJointMat);
+    cannonBone.position.set(0, -0.88, 0.42);
+    cannonBone.rotation.x = -0.18;
+
+    legRoot.add(haunchMesh, upperLeg, hockJoint, cannonBone);
+    group.add(legRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, -1.16, 0.38);
+
+    animateFn = (elapsedTime, speedRatio, isBoosting) => {
+      const freq = isBoosting ? 14.5 : 8.8;
+      const amp = Math.min(1.25, Math.max(0.18, speedRatio)) * 0.46;
+      legRoot.rotation.x = Math.sin(elapsedTime * freq) * amp;
+    };
+  } else if (id === 'leg_reptilian') {
+    // 48. Patas Reptilianas Acorazadas: Wide splayed scaly saurian leg with osteoderm armor plates
+    const scaleMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x059669,
+        emissive: 0x064e3b,
+        emissiveIntensity: 0.42,
+        roughness: 0.48,
+        metalness: 0.25,
+      })
+    );
+    const osteodermMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xa7f3d0,
+        emissive: 0x10b981,
+        emissiveIntensity: 0.75,
+        roughness: 0.2,
+        metalness: 0.55,
+      })
+    );
+
+    const legRoot = new THREE.Group();
+    const thighGeo = trackGeo(new THREE.CapsuleGeometry(0.19, 0.44, 8, 12));
+    const thighMesh = new THREE.Mesh(thighGeo, scaleMat);
+    thighMesh.position.set(0, -0.16, 0.32);
+    thighMesh.rotation.x = 0.72;
+
+    const shinGeo = trackGeo(new THREE.CapsuleGeometry(0.15, 0.44, 8, 12));
+    const shinMesh = new THREE.Mesh(shinGeo, scaleMat);
+    shinMesh.position.set(0, -0.62, 0.56);
+    shinMesh.rotation.x = 0.14;
+
+    // Dorsal osteoderm scutes along thigh & shin
+    const scuteGeo = trackGeo(new THREE.ConeGeometry(0.085, 0.22, 6));
+    for (let s = 0; s < 3; s++) {
+      const scute = new THREE.Mesh(scuteGeo, osteodermMat);
+      scute.position.set(0, -0.12 - s * 0.24, 0.44 + s * 0.12);
+      scute.rotation.x = 0.85;
+      legRoot.add(scute);
+    }
+
+    legRoot.add(thighMesh, shinMesh);
+    group.add(legRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, -0.96, 0.62);
+
+    animateFn = (elapsedTime, speedRatio, isBoosting) => {
+      const freq = isBoosting ? 10.0 : 6.2;
+      const amp = Math.min(1.2, Math.max(0.15, speedRatio)) * 0.35;
+      legRoot.rotation.x = Math.sin(elapsedTime * freq) * amp;
+    };
+  } else if (id === 'arm_slender') {
+    // 49. Brazos Gráciles Ágiles: Flexible slender articulated arm with wrist socket
+    const armMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        emissive: 0x0284c7,
+        emissiveIntensity: 0.45,
+        roughness: 0.35,
+      })
+    );
+    const jointMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xbae6fd,
+        emissive: 0x38bdf8,
+        emissiveIntensity: 0.7,
+        roughness: 0.25,
+      })
+    );
+
+    const armRoot = new THREE.Group();
+    const shoulder = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.14, 12, 12)),
+      jointMat
+    );
+    const humerusGeo = trackGeo(new THREE.CapsuleGeometry(0.075, 0.42, 8, 10));
+    humerusGeo.rotateX(Math.PI / 2);
+    const humerus = new THREE.Mesh(humerusGeo, armMat);
+    humerus.position.set(0, 0.02, 0.26);
+
+    const elbow = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.095, 10, 10)),
+      jointMat
+    );
+    elbow.position.set(0, 0.02, 0.5);
+
+    const forearmGeo = trackGeo(new THREE.CapsuleGeometry(0.065, 0.42, 8, 10));
+    forearmGeo.rotateX(Math.PI / 2);
+    const forearm = new THREE.Mesh(forearmGeo, armMat);
+    forearm.position.set(0.08, 0.04, 0.74);
+    forearm.rotation.y = 0.25;
+
+    armRoot.add(shoulder, humerus, elbow, forearm);
+    group.add(armRoot);
+    distalSocketLocalPos = new THREE.Vector3(0.14, 0.05, 0.98);
+
+    animateFn = (elapsedTime) => {
+      armRoot.rotation.y = Math.sin(elapsedTime * 3.2) * 0.1;
+      armRoot.rotation.x = Math.cos(elapsedTime * 2.5) * 0.06;
+    };
+  } else if (id === 'arm_brawny') {
+    // 50. Brazos Musculosos de Gorila: Massive deltoid, hypertrophic bicep and heavy forearm
+    const brawnMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xe11d48,
+        emissive: 0x881337,
+        emissiveIntensity: 0.42,
+        roughness: 0.45,
+        metalness: 0.15,
+      })
+    );
+    const veinMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfda4af,
+        emissive: 0xf43f5e,
+        emissiveIntensity: 0.75,
+        roughness: 0.28,
+      })
+    );
+
+    const armRoot = new THREE.Group();
+    const deltoid = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.24, 14, 14)),
+      brawnMat
+    );
+    deltoid.scale.set(1.1, 1.15, 1.25);
+    deltoid.position.set(0, 0.06, 0.12);
+
+    const bicepGeo = trackGeo(new THREE.CapsuleGeometry(0.15, 0.38, 8, 12));
+    bicepGeo.rotateX(Math.PI / 2);
+    const bicep = new THREE.Mesh(bicepGeo, brawnMat);
+    bicep.position.set(0, 0.04, 0.38);
+
+    const elbow = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.14, 12, 12)),
+      veinMat
+    );
+    elbow.position.set(0, 0.02, 0.62);
+
+    const forearmGeo = trackGeo(new THREE.CapsuleGeometry(0.16, 0.44, 8, 12));
+    forearmGeo.rotateX(Math.PI / 2);
+    const forearm = new THREE.Mesh(forearmGeo, brawnMat);
+    forearm.position.set(0.06, -0.02, 0.88);
+    forearm.rotation.y = 0.22;
+
+    armRoot.add(deltoid, bicep, elbow, forearm);
+    group.add(armRoot);
+    distalSocketLocalPos = new THREE.Vector3(0.12, -0.04, 1.16);
+
+    animateFn = (elapsedTime, _speedRatio, isBoosting) => {
+      const flex = isBoosting ? 0.24 : 0.08;
+      armRoot.rotation.y = Math.sin(elapsedTime * 4.5) * flex;
+    };
+  } else if (id === 'arm_praying') {
+    // 51. Brazos Raptores Tipo Mantis: Folding raptorial arm with serrated forearm spines
+    const mantisMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x84cc16,
+        emissive: 0x3f6212,
+        emissiveIntensity: 0.5,
+        roughness: 0.24,
+        metalness: 0.45,
+      })
+    );
+    const spineMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfef08a,
+        emissive: 0xca8a04,
+        emissiveIntensity: 0.85,
+        roughness: 0.18,
+        metalness: 0.65,
+      })
+    );
+
+    const armRoot = new THREE.Group();
+    const coxa = new THREE.Mesh(
+      trackGeo(new THREE.CylinderGeometry(0.07, 0.095, 0.46, 10)),
+      mantisMat
+    );
+    coxa.rotation.x = Math.PI / 2;
+    coxa.position.set(0, 0.08, 0.24);
+
+    const femur = new THREE.Mesh(
+      trackGeo(new THREE.CapsuleGeometry(0.095, 0.48, 8, 10)),
+      mantisMat
+    );
+    femur.rotation.x = Math.PI / 2 - 0.35;
+    femur.position.set(0, 0.18, 0.64);
+
+    // Forearm serrated spines
+    const barbGeo = trackGeo(new THREE.ConeGeometry(0.04, 0.22, 6));
+    for (let b = 0; b < 4; b++) {
+      const barb = new THREE.Mesh(barbGeo, spineMat);
+      barb.position.set(0, 0.04, 0.46 + b * 0.11);
+      barb.rotation.x = Math.PI * 0.85;
+      armRoot.add(barb);
+    }
+
+    const sickleTip = new THREE.Mesh(
+      trackGeo(new THREE.ConeGeometry(0.065, 0.38, 8)),
+      spineMat
+    );
+    sickleTip.position.set(0, 0.08, 1.02);
+    sickleTip.rotation.x = Math.PI * 0.72;
+
+    armRoot.add(coxa, femur, sickleTip);
+    group.add(armRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, 0.14, 0.96);
+
+    animateFn = (elapsedTime, _speedRatio, isBoosting) => {
+      const strike = Math.sin(elapsedTime * (isBoosting ? 12.0 : 5.0)) * 0.18;
+      armRoot.rotation.x = strike;
+    };
+  } else if (id === 'arm_patagium') {
+    // 52. Brazos Alares con Membrana de Murciélago: Extended wing-arm with translucent patagium membrane
+    const boneMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xa855f7,
+        emissive: 0x6b21a8,
+        emissiveIntensity: 0.5,
+        roughness: 0.3,
+      })
+    );
+    const wingMembraneMat = trackMat(
+      new THREE.MeshPhysicalMaterial({
+        color: 0xd8b4fe,
+        emissive: 0x9333ea,
+        emissiveIntensity: 0.65,
+        roughness: 0.2,
+        transmission: 0.55,
+        transparent: true,
+        opacity: 0.82,
+        side: THREE.DoubleSide,
+      })
+    );
+
+    const wingRoot = new THREE.Group();
+    const spar1Geo = trackGeo(new THREE.CylinderGeometry(0.045, 0.075, 0.62, 10));
+    spar1Geo.rotateX(Math.PI / 2);
+    const spar1 = new THREE.Mesh(spar1Geo, boneMat);
+    spar1.position.set(0, 0.08, 0.31);
+
+    const spar2Geo = trackGeo(new THREE.CylinderGeometry(0.03, 0.05, 0.68, 10));
+    spar2Geo.rotateX(Math.PI / 2);
+    const spar2 = new THREE.Mesh(spar2Geo, boneMat);
+    spar2.position.set(0, 0.12, 0.92);
+    spar2.rotation.x = -0.12;
+
+    // Patagium Wing Membrane Triangle/Fan
+    const patagiumShape = new THREE.Shape();
+    patagiumShape.moveTo(0, 0);
+    patagiumShape.lineTo(1.22, 0.12);
+    patagiumShape.quadraticCurveTo(0.85, -0.45, 0.52, -0.58);
+    patagiumShape.quadraticCurveTo(0.25, -0.42, 0, -0.35);
+    patagiumShape.closePath();
+
+    const patagiumGeo = trackGeo(new THREE.ShapeGeometry(patagiumShape));
+    patagiumGeo.rotateY(-Math.PI / 2);
+    const patagiumMesh = new THREE.Mesh(patagiumGeo, wingMembraneMat);
+    patagiumMesh.position.set(0, 0.08, 0.05);
+
+    wingRoot.add(spar1, spar2, patagiumMesh);
+    group.add(wingRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, 0.14, 1.24);
+
+    animateFn = (elapsedTime, speedRatio, isBoosting) => {
+      const flapFreq = isBoosting ? 11.0 : 4.8 + speedRatio * 3.0;
+      wingRoot.rotation.z = Math.sin(elapsedTime * flapFreq) * 0.28;
+    };
+  } else if (id === 'arm_armored') {
+    // 53. Brazos Plaqueados Quitinosos: Chitin-plated gauntlet arm with overlapping defensive shields
+    const armorMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xf59e0b,
+        emissive: 0x92400e,
+        emissiveIntensity: 0.45,
+        roughness: 0.25,
+        metalness: 0.68,
+      })
+    );
+    const trimMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfef08a,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.8,
+        roughness: 0.18,
+        metalness: 0.75,
+      })
+    );
+
+    const armRoot = new THREE.Group();
+    const pauldronGeo = trackGeo(
+      new THREE.SphereGeometry(0.24, 14, 12, 0, Math.PI * 2, 0, Math.PI * 0.6)
+    );
+    const pauldron = new THREE.Mesh(pauldronGeo, armorMat);
+    pauldron.position.set(0, 0.08, 0.18);
+    pauldron.rotation.x = Math.PI * 0.35;
+
+    const vambraceGeo = trackGeo(
+      new THREE.CylinderGeometry(0.14, 0.18, 0.56, 8)
+    );
+    vambraceGeo.rotateX(Math.PI / 2);
+    const vambrace = new THREE.Mesh(vambraceGeo, armorMat);
+    vambrace.position.set(0, 0, 0.62);
+
+    // Overlapping dorsal shield plates on forearm
+    const plateGeo = trackGeo(new THREE.BoxGeometry(0.28, 0.06, 0.22));
+    for (let p = 0; p < 3; p++) {
+      const plate = new THREE.Mesh(plateGeo, trimMat);
+      plate.position.set(0, 0.14, 0.44 + p * 0.18);
+      plate.rotation.x = -0.18;
+      armRoot.add(plate);
+    }
+
+    armRoot.add(pauldron, vambrace);
+    group.add(armRoot);
+    distalSocketLocalPos = new THREE.Vector3(0, 0, 0.94);
+
+    animateFn = (elapsedTime) => {
+      armRoot.rotation.y = Math.sin(elapsedTime * 3.0) * 0.08;
+    };
+  } else if (id === 'hand_primate') {
+    // 54. Manos Oponibles Prensiles: Palm + 4 articulated fingers + opposable thumb
+    const handMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x38bdf8,
+        emissive: 0x0369a1,
+        emissiveIntensity: 0.45,
+        roughness: 0.35,
+      })
+    );
+    const tipMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xe0f2fe,
+        emissive: 0x38bdf8,
+        emissiveIntensity: 0.85,
+        roughness: 0.2,
+      })
+    );
+
+    const handRoot = new THREE.Group();
+    const palmGeo = trackGeo(new THREE.BoxGeometry(0.24, 0.09, 0.24));
+    const palmMesh = new THREE.Mesh(palmGeo, handMat);
+    palmMesh.position.set(0, 0, 0.12);
+    handRoot.add(palmMesh);
+
+    const fingerGeo = trackGeo(new THREE.CapsuleGeometry(0.026, 0.16, 6, 8));
+    fingerGeo.rotateX(Math.PI / 2);
+    const fingers: THREE.Mesh[] = [];
+    for (let f = -1.5; f <= 1.5; f += 1.0) {
+      const finger = new THREE.Mesh(fingerGeo, tipMat);
+      finger.position.set(f * 0.065, 0, 0.31);
+      finger.rotation.y = f * 0.08;
+      handRoot.add(finger);
+      fingers.push(finger);
+    }
+
+    // Opposable thumb
+    const thumb = new THREE.Mesh(fingerGeo, tipMat);
+    thumb.position.set(-0.16, -0.02, 0.18);
+    thumb.rotation.y = -0.68;
+    handRoot.add(thumb);
+    group.add(handRoot);
+
+    animateFn = (elapsedTime) => {
+      const curl = Math.sin(elapsedTime * 4.2) * 0.16;
+      for (const fg of fingers) {
+        fg.rotation.x = 0.2 + curl;
+      }
+      thumb.rotation.z = curl * 0.8;
+    };
+  } else if (id === 'hand_talons') {
+    // 55. Garras Afiladas de Raptor: Muscular raptor wrist with 3 wickedly curved keratin talons
+    const wristMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xe11d48,
+        emissive: 0x881337,
+        emissiveIntensity: 0.45,
+        roughness: 0.38,
+      })
+    );
+    const talonMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfef08a,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.8,
+        roughness: 0.15,
+        metalness: 0.72,
+      })
+    );
+
+    const talonRoot = new THREE.Group();
+    const carpus = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.15, 12, 12)),
+      wristMat
+    );
+    carpus.scale.set(1.2, 0.75, 1.1);
+    carpus.position.set(0, 0, 0.1);
+    talonRoot.add(carpus);
+
+    const clawGeo = trackGeo(new THREE.ConeGeometry(0.048, 0.42, 8));
+    clawGeo.rotateX(Math.PI * 0.62);
+    for (const side of [-1, 0, 1]) {
+      const claw = new THREE.Mesh(clawGeo, talonMat);
+      claw.position.set(side * 0.1, -0.04, 0.34);
+      claw.rotation.y = side * 0.22;
+      talonRoot.add(claw);
+    }
+    group.add(talonRoot);
+
+    animateFn = (elapsedTime, _speedRatio, isBoosting) => {
+      const slash = Math.sin(elapsedTime * (isBoosting ? 14.0 : 5.5)) * 0.24;
+      talonRoot.rotation.x = slash;
+    };
+  } else if (id === 'hand_insect_claw') {
+    // 56. Pinzas Quitinosas de Cangrejo: Heavy articulated crustacean chela pincer
+    const shellMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xf97316,
+        emissive: 0x9a3412,
+        emissiveIntensity: 0.48,
+        roughness: 0.24,
+        metalness: 0.58,
+      })
+    );
+    const toothMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfef3c7,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.75,
+        roughness: 0.2,
+      })
+    );
+
+    const chelaGroup = new THREE.Group();
+    const basePalm = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.18, 14, 14)),
+      shellMat
+    );
+    basePalm.scale.set(1.15, 0.82, 1.35);
+    basePalm.position.set(0, 0, 0.16);
+    chelaGroup.add(basePalm);
+
+    const jawGeo = trackGeo(new THREE.ConeGeometry(0.085, 0.44, 10));
+    jawGeo.rotateX(Math.PI / 2);
+    jawGeo.translate(0, 0, 0.22);
+
+    const leftPincer = new THREE.Mesh(jawGeo, toothMat);
+    leftPincer.position.set(-0.08, 0, 0.26);
+    const rightPincer = new THREE.Mesh(jawGeo, shellMat);
+    rightPincer.position.set(0.08, 0, 0.26);
+
+    chelaGroup.add(leftPincer, rightPincer);
+    group.add(chelaGroup);
+
+    animateFn = (elapsedTime) => {
+      const pinch = Math.abs(Math.sin(elapsedTime * 5.2)) * 0.28;
+      leftPincer.rotation.y = -0.12 + pinch;
+      rightPincer.rotation.y = 0.12 - pinch;
+    };
+  } else if (id === 'foot_paw') {
+    // 57. Zarpas con Almohadillas Suaves: Cushioned feline/lupine paw with soft stealth pads & 4 toes
+    const pawMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x0ea5e9,
+        emissive: 0x0369a1,
+        emissiveIntensity: 0.42,
+        roughness: 0.45,
+      })
+    );
+    const padMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x67e8f9,
+        emissive: 0x06b6d4,
+        emissiveIntensity: 0.75,
+        roughness: 0.3,
+      })
+    );
+
+    const pawGroup = new THREE.Group();
+    const mainPad = new THREE.Mesh(
+      trackGeo(new THREE.SphereGeometry(0.18, 14, 12)),
+      pawMat
+    );
+    mainPad.scale.set(1.15, 0.52, 1.35);
+    mainPad.position.set(0, 0, 0.14);
+    pawGroup.add(mainPad);
+
+    const toeGeo = trackGeo(new THREE.SphereGeometry(0.068, 10, 10));
+    toeGeo.scale(0.9, 0.65, 1.35);
+    for (let t = -1.5; t <= 1.5; t += 1.0) {
+      const toe = new THREE.Mesh(toeGeo, padMat);
+      toe.position.set(t * 0.085, -0.01, 0.34 - Math.abs(t) * 0.03);
+      pawGroup.add(toe);
+    }
+    group.add(pawGroup);
+  } else if (id === 'foot_hoof') {
+    // 58. Pezuñas Clíperas de Embestida: Hardened cloven charging hoof with glowing keratin cleft
+    const hoofMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xf59e0b,
+        emissive: 0x92400e,
+        emissiveIntensity: 0.5,
+        roughness: 0.2,
+        metalness: 0.65,
+      })
+    );
+    const glowCleftMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0xfef08a,
+        emissive: 0xd97706,
+        emissiveIntensity: 0.95,
+        roughness: 0.18,
+      })
+    );
+
+    const hoofGroup = new THREE.Group();
+    const fetlock = new THREE.Mesh(
+      trackGeo(new THREE.CylinderGeometry(0.1, 0.14, 0.18, 12)),
+      hoofMat
+    );
+    fetlock.position.set(0, 0.06, 0.08);
+
+    const lobeGeo = trackGeo(new THREE.CylinderGeometry(0.065, 0.1, 0.22, 10));
+    for (const side of [-1, 1]) {
+      const lobe = new THREE.Mesh(lobeGeo, hoofMat);
+      lobe.position.set(side * 0.068, -0.06, 0.18);
+      lobe.rotation.x = 0.28;
+      hoofGroup.add(lobe);
+    }
+
+    const cleft = new THREE.Mesh(
+      trackGeo(new THREE.BoxGeometry(0.025, 0.16, 0.24)),
+      glowCleftMat
+    );
+    cleft.position.set(0, -0.05, 0.2);
+    hoofGroup.add(fetlock, cleft);
+    group.add(hoofGroup);
+  } else if (id === 'foot_webbed') {
+    // 59. Pies Palmeados de Anfibio: Wide amphibian webbed foot with 3 long toes & bioluminescent webbing
+    const toeMat = trackMat(
+      new THREE.MeshStandardMaterial({
+        color: 0x10b981,
+        emissive: 0x047857,
+        emissiveIntensity: 0.5,
+        roughness: 0.32,
+      })
+    );
+    const webMat = trackMat(
+      new THREE.MeshPhysicalMaterial({
+        color: 0x6ee7b7,
+        emissive: 0x10b981,
+        emissiveIntensity: 0.85,
+        roughness: 0.18,
+        transmission: 0.5,
+        transparent: true,
+        opacity: 0.82,
+        side: THREE.DoubleSide,
+      })
+    );
+
+    const webGroup = new THREE.Group();
+    const digitGeo = trackGeo(new THREE.CapsuleGeometry(0.035, 0.34, 6, 8));
+    digitGeo.rotateX(Math.PI / 2);
+    for (const side of [-1, 0, 1]) {
+      const digit = new THREE.Mesh(digitGeo, toeMat);
+      digit.position.set(side * 0.11, 0, 0.22);
+      digit.rotation.y = side * 0.38;
+      webGroup.add(digit);
+    }
+
+    const fanGeo = trackGeo(
+      new THREE.CircleGeometry(0.36, 16, Math.PI * 0.22, Math.PI * 0.56)
+    );
+    fanGeo.rotateX(-Math.PI / 2);
+    const fanMesh = new THREE.Mesh(fanGeo, webMat);
+    fanMesh.position.set(0, -0.01, 0.04);
+    webGroup.add(fanMesh);
+    group.add(webGroup);
+  }
+
+  // Attach 3-node articulated joint rig to all legs & arms
+  if (distalSocketLocalPos && group.children.length > 0) {
+    const limbRoot = group.children[0] as THREE.Group;
+    if (limbRoot && limbRoot.isGroup) {
+      const midPos = distalSocketLocalPos.clone().multiplyScalar(0.52);
+      if (id.startsWith('leg_')) {
+        midPos.y += 0.14;
+      }
+      attachLimbJointRig(limbRoot, midPos, distalSocketLocalPos);
+    }
   }
 
   // Selection / Preview ring at base of organ
@@ -1823,6 +2710,10 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
   const setHighlight = (
     mode: 'none' | 'selected' | 'preview_valid' | 'preview_invalid'
   ) => {
+    const showJointGizmos = mode === 'selected';
+    for (const jg of jointGizmoGroups) {
+      jg.visible = showJointGizmos;
+    }
     if (mode === 'none') {
       highlightRing.visible = false;
       return;
@@ -1841,12 +2732,27 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
   };
 
   let currentColorOverride: string | undefined = undefined;
-  const setColorOverride = (colorHex?: string) => {
-    const normalized = colorHex?.trim() || undefined;
-    if (currentColorOverride === normalized) return;
-    currentColorOverride = normalized;
+  let currentCoatBaseHex: string | undefined = undefined;
+  let currentCoatDetailHex: string | undefined = undefined;
 
-    if (!normalized) {
+  const applyEffectiveColors = () => {
+    if (currentColorOverride) {
+      const targetColor = new THREE.Color(currentColorOverride);
+      const targetEmissive = targetColor.clone().multiplyScalar(0.55);
+      for (const entry of tintableMaterials) {
+        const origColor = new THREE.Color(entry.origColorHex);
+        entry.mat.color.copy(origColor).lerp(targetColor, 0.78);
+        if (entry.origEmissiveHex !== 0x000000) {
+          const origEm = new THREE.Color(entry.origEmissiveHex);
+          entry.mat.emissive.copy(origEm).lerp(targetEmissive, 0.75);
+        } else {
+          entry.mat.emissive.copy(targetEmissive).multiplyScalar(0.35);
+        }
+      }
+      return;
+    }
+
+    if (!currentCoatBaseHex && !currentCoatDetailHex) {
       for (const entry of tintableMaterials) {
         entry.mat.color.setHex(entry.origColorHex);
         entry.mat.emissive.setHex(entry.origEmissiveHex);
@@ -1854,17 +2760,128 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       return;
     }
 
-    const targetColor = new THREE.Color(normalized);
-    const targetEmissive = targetColor.clone().multiplyScalar(0.55);
+    const baseColor = currentCoatBaseHex
+      ? new THREE.Color(currentCoatBaseHex)
+      : null;
+    const detailColor = currentCoatDetailHex
+      ? new THREE.Color(currentCoatDetailHex)
+      : null;
+
     for (const entry of tintableMaterials) {
       const origColor = new THREE.Color(entry.origColorHex);
-      // Blend 75% custom pigment with 25% original shading so multi-part organs keep depth contrast
-      entry.mat.color.copy(origColor).lerp(targetColor, 0.78);
-      if (entry.origEmissiveHex !== 0x000000) {
-        const origEm = new THREE.Color(entry.origEmissiveHex);
-        entry.mat.emissive.copy(origEm).lerp(targetEmissive, 0.75);
+      const target = entry.isDetailAccent
+        ? detailColor ?? baseColor
+        : baseColor ?? detailColor;
+      if (target) {
+        const blendFactor = entry.isDetailAccent ? 0.82 : 0.72;
+        entry.mat.color.copy(origColor).lerp(target, blendFactor);
+        const targetEm = target.clone().multiplyScalar(0.48);
+        if (entry.origEmissiveHex !== 0x000000) {
+          const origEm = new THREE.Color(entry.origEmissiveHex);
+          entry.mat.emissive.copy(origEm).lerp(targetEm, 0.7);
+        } else {
+          entry.mat.emissive.copy(targetEm).multiplyScalar(0.3);
+        }
       } else {
-        entry.mat.emissive.copy(targetEmissive).multiplyScalar(0.35);
+        entry.mat.color.setHex(entry.origColorHex);
+        entry.mat.emissive.setHex(entry.origEmissiveHex);
+      }
+    }
+  };
+
+  const setColorOverride = (colorHex?: string) => {
+    const normalized = colorHex?.trim() || undefined;
+    if (currentColorOverride === normalized) return;
+    currentColorOverride = normalized;
+    applyEffectiveColors();
+  };
+
+  const setCoatColors = (baseColorHex?: string, detailColorHex?: string) => {
+    const normBase = baseColorHex?.trim() || undefined;
+    const normDetail = detailColorHex?.trim() || undefined;
+    if (
+      currentCoatBaseHex === normBase &&
+      currentCoatDetailHex === normDetail
+    ) {
+      return;
+    }
+    currentCoatBaseHex = normBase;
+    currentCoatDetailHex = normDetail;
+    applyEffectiveColors();
+  };
+
+  const setLimbPose = (
+    upperJointAngle: number,
+    middleJointAngle: number,
+    boneLength: number
+  ) => {
+    if (
+      !limbProximalPivot ||
+      !limbMiddlePivot ||
+      !limbDistalSocketGroup ||
+      !baseDistalSocketPos ||
+      !distalSocketLocalPos
+    ) {
+      return;
+    }
+    savedUpperJointAngle = THREE.MathUtils.clamp(upperJointAngle, -1.0, 1.0);
+    savedMiddleJointAngle = THREE.MathUtils.clamp(middleJointAngle, -1.2, 1.2);
+    savedBoneLength = THREE.MathUtils.clamp(boneLength, 0.6, 1.75);
+
+    limbProximalPivot.rotation.x = savedUpperJointAngle;
+    limbProximalPivot.scale.set(1, savedBoneLength, savedBoneLength);
+    limbMiddlePivot.rotation.x = savedMiddleJointAngle;
+    // Counter-scale distalSocketGroup so attached Feet/Hands are not distorted by boneLength
+    limbDistalSocketGroup.scale.set(1, 1 / savedBoneLength, 1 / savedBoneLength);
+    if (id.startsWith('leg_')) {
+      // Counter-rotate ankle so foot sole aligns horizontally parallel to ground floor
+      limbDistalSocketGroup.rotation.x = -(
+        savedUpperJointAngle + savedMiddleJointAngle
+      );
+    }
+
+    limbProximalPivot.updateMatrix();
+    limbMiddlePivot.updateMatrix();
+    limbDistalSocketGroup.updateMatrix();
+
+    // Compute exact local socket position inside `group` after bone bending & stretching
+    const socketPos = new THREE.Vector3();
+    socketPos.copy(limbDistalSocketGroup.position);
+    socketPos.applyMatrix4(limbMiddlePivot.matrix);
+    socketPos.applyMatrix4(limbProximalPivot.matrix);
+    distalSocketLocalPos.copy(socketPos);
+  };
+
+  const wrappedAnimate = (
+    elapsedTime: number,
+    speedRatio: number,
+    isBoosting: boolean
+  ) => {
+    animateFn(elapsedTime, speedRatio, isBoosting);
+
+    // Secondary Reactive Articulation for Knees/Elbows and Ankles/Wrists (carrying attached Feet & Hands)
+    if (limbDistalSocketGroup && limbMiddlePivot) {
+      const rootChild = group.children[0];
+      if (id.startsWith('leg_') && rootChild) {
+        // Leg gait: rootChild.rotation.x is the active hip stride wave
+        const strideWave = rootChild.rotation.x;
+        // Knee bends dynamically during the forward/upward swing phase
+        limbMiddlePivot.rotation.x =
+          savedMiddleJointAngle + Math.max(0, -strideWave) * 0.48;
+        // Ankle counter-rotates with natural contact flattening
+        limbDistalSocketGroup.rotation.x =
+          -(savedUpperJointAngle + savedMiddleJointAngle) - strideWave * 0.35;
+      } else if (id.startsWith('arm_')) {
+        const phase = elapsedTime * (isBoosting ? 11.0 : 6.5);
+        const moveFactor = Math.min(1.4, Math.max(0.15, speedRatio));
+        // Elbow flexes with slight phase lag
+        limbMiddlePivot.rotation.x =
+          savedMiddleJointAngle + Math.sin(phase - 0.25) * 0.18 * moveFactor;
+        // Wrist oscillates with damped phase lag (phase - 0.4) for organic hand follow-through
+        limbDistalSocketGroup.rotation.z =
+          Math.sin(phase - 0.4) * 0.25 * moveFactor;
+        limbDistalSocketGroup.rotation.x =
+          Math.cos(phase - 0.4) * 0.18 * moveFactor;
       }
     }
   };
@@ -1872,9 +2889,18 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
   return {
     group,
     nozzleLocalPos,
-    animate: animateFn,
+    distalSocketLocalPos,
+    distalSocketGroup: limbDistalSocketGroup,
+    animate: wrappedAnimate,
     setHighlight,
     setColorOverride,
+    setCoatColors,
+    setLimbPose,
+    getLowestFootWorldY: () => {
+      group.updateMatrixWorld(true);
+      return new THREE.Box3().setFromObject(group).min.y;
+    },
+    getJointGizmoObjects: () => jointGizmoHitMeshes,
     dispose: () => {
       for (const g of geometries) g.dispose();
       for (const m of materials) m.dispose();
