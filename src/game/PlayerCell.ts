@@ -9,7 +9,11 @@ import {
   normalizeAdaptationId,
 } from './evolutionData';
 import { createOrganVisual, OrganVisualInstance } from './OrganFactory3D';
-import { EnvironmentObstacle } from './SceneEnvironment';
+import {
+  CONTINENT_CONFIG,
+  EnvironmentObstacle,
+  getLandHeightAt,
+} from './SceneEnvironment';
 import {
   CreatureSpineSystem,
   SpineRMFFrame,
@@ -112,7 +116,7 @@ export interface PooledAcidProjectile extends AcidSpitProjectile {
   life: number;
 }
 
-interface ActivePlacedOrganEntry {
+export interface ActivePlacedOrganEntry {
   instance: PlacedOrganInstance;
   primary: OrganVisualInstance;
   mirror: OrganVisualInstance | null;
@@ -120,12 +124,27 @@ interface ActivePlacedOrganEntry {
 
 export class PlayerCell {
   public readonly group: THREE.Group;
+  public get mesh(): THREE.Group {
+    return this.group;
+  }
+  public get cellMembraneMesh(): THREE.Mesh {
+    return this.cellCapsuleMesh;
+  }
+  public get activeOrganEntries(): readonly ActivePlacedOrganEntry[] {
+    return this.activePlacedOrgans;
+  }
   public readonly position: THREE.Vector3;
   public headingAngle = 0; // Radians around Y axis (0 = facing -Z)
   public currentSpeed = 0;
   public angularVelocity = 0;
   public isBoosting = false;
   public heightOffset = 0;
+  public verticalVelocity = 0;
+  public isGrounded = true;
+  public controlsLocked = false;
+  private birthAnimTimer = 0;
+  private wasBoostPressed = false;
+
   public currentScale = 1.0;
   public targetScale = 1.0;
   public cameraZoomMultiplier = 1.0;
@@ -186,6 +205,7 @@ export class PlayerCell {
   private editorSelectionTarget: EditorSelectionTarget = 'body';
   public groundClearanceY = 0;
   public bodyGroundOffsetY = 0;
+  private walkCyclePhase = 0;
 
   // Dynamic Placed 3D Organs (Spore Workshop Drag & Drop)
   private placedOrgansGroup!: THREE.Group;
@@ -1410,6 +1430,30 @@ export class PlayerCell {
     }
   }
 
+  private syncCleanBoundingHierarchy(): void {
+    const cleanCreatureGameplay = this.isLandCreature && !this.isEditingMode;
+    const auxiliaryGroups: THREE.Object3D[] = [
+      this.haloMesh,
+      this.evoAmphibianLegsGroup,
+      this.editorLabDishGroup,
+      this.editorSpineOverlayGroup,
+      this.editorOrientationGizmoGroup,
+      this.dragPreviewGroup,
+    ];
+    for (const obj of auxiliaryGroups) {
+      if (!obj) continue;
+      if (cleanCreatureGameplay) {
+        if (obj.parent === this.group) {
+          this.group.remove(obj);
+        }
+      } else {
+        if (obj.parent !== this.group) {
+          this.group.add(obj);
+        }
+      }
+    }
+  }
+
   /**
    * Restores the clean CapsuleGeometry in Cellular Stage (`cell_stage`) and applies the
    * 5 Pre-Built ARK-Style Creature Archetypes + per-sphere local radii in Creature Stage (`creature_stage`).
@@ -1418,10 +1462,30 @@ export class PlayerCell {
     const isCreature = this.isLandCreature;
     if (this.cellCapsuleMesh) {
       this.cellCapsuleMesh.visible = !isCreature;
+      if (isCreature && this.cellCapsuleMesh.parent === this.bodySegmentsGroup) {
+        this.bodySegmentsGroup.remove(this.cellCapsuleMesh);
+      } else if (
+        !isCreature &&
+        this.cellCapsuleMesh.parent !== this.bodySegmentsGroup
+      ) {
+        this.bodySegmentsGroup.add(this.cellCapsuleMesh);
+      }
     }
     if (this.creatureTorsoGroup) {
       this.creatureTorsoGroup.visible = isCreature;
+      if (
+        !isCreature &&
+        this.creatureTorsoGroup.parent === this.bodySegmentsGroup
+      ) {
+        this.bodySegmentsGroup.remove(this.creatureTorsoGroup);
+      } else if (
+        isCreature &&
+        this.creatureTorsoGroup.parent !== this.bodySegmentsGroup
+      ) {
+        this.bodySegmentsGroup.add(this.creatureTorsoGroup);
+      }
     }
+    this.syncCleanBoundingHierarchy();
 
     const { sx, sy, sz } = this.getBodyShapeFactors();
     const spineLen = this.spineLength;
@@ -1668,12 +1732,20 @@ export class PlayerCell {
       const sock = layout.sockets.forelimbs;
       const axialSpread = isLeg ? 0 : Math.cos(angle) * 0.18;
       const chestWidthFactor = THREE.MathUtils.lerp(1.0, pechoR, 0.55);
+      const isWing = normId === 'arm_patagium';
       return {
         x: side * sock[0] * chestWidthFactor * sxTorso,
         y: sock[1] * syTorso,
         z: (sock[2] + axialSpread) * szTorso,
-        normalAngle: side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5,
-        spinePitch: 0,
+        normalAngle: isLeg
+          ? Math.PI
+          : isWing
+          ? side > 0
+            ? Math.PI * 0.5
+            : -Math.PI * 0.5
+          : Math.PI - side * 0.16,
+        // En orden Euler 'YXZ' con Y ≈ Math.PI, un pitch positivo (+1.05 rad) inclina el eje +Z local hacia abajo (-Y)
+        spinePitch: isLeg || isWing ? 0 : 1.05,
       };
     }
 
@@ -1686,7 +1758,7 @@ export class PlayerCell {
         x: side * sock[0] * abdomenWidthFactor * sxTorso,
         y: sock[1] * syTorso,
         z: sock[2] * szTorso,
-        normalAngle: side > 0 ? Math.PI * 0.5 : -Math.PI * 0.5,
+        normalAngle: Math.PI,
         spinePitch: 0,
       };
     }
@@ -1792,11 +1864,28 @@ export class PlayerCell {
       );
       const upperJoint = morph?.upperJointAngle ?? 0;
       const middleJoint = morph?.middleJointAngle ?? 0;
-      const boneLen = morph?.boneLength ?? 1.0;
+      const isBipedalTorso =
+        this.isLandCreature &&
+        (this.creatureMorphology.archetype === 'bipedo_agil' ||
+          this.creatureMorphology.archetype === 'humanoide_erguido');
+      const isStandardArm =
+        isArmAdaptation(normId) && normId !== 'arm_patagium';
+
+      // C) Ajuste de longitud de brazos en bípedos para que las manos queden a la altura de la cadera/muslo sin arrastrar por el suelo
+      const boneLen =
+        isStandardArm && isBipedalTorso
+          ? Math.min(morph?.boneLength ?? 1.0, 0.78)
+          : morph?.boneLength ?? 1.0;
 
       const sx = scaleOverall * scaleWidth;
-      const sy = scaleOverall * scaleWidth;
-      const sz = scaleOverall * scaleHeight;
+      const sy =
+        isStandardArm && isBipedalTorso
+          ? Math.min(scaleOverall * scaleWidth, 0.72)
+          : scaleOverall * scaleWidth;
+      const sz =
+        isStandardArm && isBipedalTorso
+          ? Math.min(scaleOverall * scaleHeight, 0.68)
+          : scaleOverall * scaleHeight;
 
       const tPrimary = this.getMembraneAttachmentTransform(
         instance.angle,
@@ -2064,58 +2153,110 @@ export class PlayerCell {
     // Ground Clearance IK: Ensure creature torso elevates so lowest foot sole or ventral belly rests flush at Y=0
     if (this.isLandCreature) {
       if (recomputeBaseClearance) {
-        this.bodySegmentsGroup.position.y = 0;
-        this.placedOrgansGroup.position.y = 0;
-        this.bodySegmentsGroup.updateMatrixWorld(true);
-        this.placedOrgansGroup.updateMatrixWorld(true);
-
-        let lowestReach = 0;
-        let hasLimbs = false;
-
-        for (const entry of this.activePlacedOrgans) {
-          const normId = normalizeAdaptationId(entry.instance.adaptationId);
-          if (isLegAdaptation(normId) || isFootAdaptation(normId)) {
-            hasLimbs = true;
-            if (entry.primary.getLowestFootWorldY) {
-              const pLow = entry.primary.getLowestFootWorldY() - this.position.y;
-              if (pLow < lowestReach) lowestReach = pLow;
-            }
-            if (entry.mirror?.getLowestFootWorldY) {
-              const mLow = entry.mirror.getLowestFootWorldY() - this.position.y;
-              if (mLow < lowestReach) lowestReach = mLow;
-            }
-          }
-        }
-
-        if (hasLimbs && lowestReach < -0.01) {
-          // Legs extend downward: automatically elevate torso so feet rest flat and flush at ground level (Y = 0)
-          this.groundClearanceY = Math.abs(lowestReach);
-        } else if (!hasLimbs) {
-          // Legless crawler / slug mode: rest ventral belly flush at Y = 0 with a minimal contact margin (~0.05m)
-          this.creatureTorsoGroup.updateMatrixWorld(true);
-          const torsoBox = new THREE.Box3().setFromObject(this.creatureTorsoGroup);
-          const bellyBottom = torsoBox.min.y - this.position.y;
-          if (bellyBottom < 0) {
-            this.groundClearanceY = Math.abs(bellyBottom) + 0.05;
-          } else {
-            this.groundClearanceY = 0.05;
-          }
-        } else {
-          this.groundClearanceY = 0;
-        }
+        this.groundClearanceY = this.getGroundOffset();
       }
     } else {
       this.groundClearanceY = 0;
       this.bodyGroundOffsetY = 0;
     }
 
-    const effectiveY = this.getEffectiveGroundY();
+    const effectiveY = this.isEditingMode ? this.getEffectiveGroundY() : 0;
     this.bodySegmentsGroup.position.y = effectiveY;
     this.placedOrgansGroup.position.y = effectiveY;
     this.bodySegmentsGroup.updateMatrixWorld(true);
     this.placedOrgansGroup.updateMatrixWorld(true);
 
     this.updateOrientationGizmoTransform();
+  }
+
+  /**
+   * Calcula la altura exacta de contacto desde el origen de la criatura hasta la planta de los pies o el vientre
+   * para que apoye exactamente en Y = groundHeight sin flotar ni hundirse.
+   */
+  public getGroundOffset(): number {
+    // 1. Si la criatura tiene patas colocadas, medimos la extensión hacia abajo de los pies
+    let lowestLocalFootY = 0;
+    let hasLegs = false;
+
+    for (const organ of this.activePlacedOrgans) {
+      const normId = normalizeAdaptationId(organ.instance.adaptationId);
+      if (normId.startsWith('leg_')) {
+        hasLegs = true;
+        // Obtenemos la cota Y mínima de la pata respecto al origen local del PlayerCell
+        const footY = organ.primary.getLowestFootLocalY?.() ?? -0.75;
+        if (footY < lowestLocalFootY) {
+          lowestLocalFootY = footY;
+        }
+        if (organ.mirror) {
+          const mirrorFootY = organ.mirror.getLowestFootLocalY?.() ?? -0.75;
+          if (mirrorFootY < lowestLocalFootY) {
+            lowestLocalFootY = mirrorFootY;
+          }
+        }
+      }
+    }
+
+    if (hasLegs) {
+      // Elevamos el origen exactamente la longitud que cuelgan las patas hacia abajo
+      // para que la planta quede exactamente en Y = 0 (nivel del suelo)
+      return Math.abs(lowestLocalFootY);
+    }
+
+    // 2. Si no tiene patas (organismo serpentino/rastrero):
+    // La base de la cápsula/esfera del vientre descansa tangente al suelo
+    const bellyRadius = (this.bodySegments?.[2]?.radius ?? 0.8) * 0.5;
+    return bellyRadius;
+  }
+
+  /**
+   * Consulta la posición global real más baja alcanzada por las manos o pies tras la animación.
+   */
+  public getLowestLimbWorldY(): number {
+    let lowestY = this.position.y;
+    const tempVec = new THREE.Vector3();
+
+    // Recorrer todas las extremidades activas (piernas y brazos)
+    for (const organ of this.activePlacedOrgans) {
+      const normId = normalizeAdaptationId(organ.instance.adaptationId);
+      if (
+        organ.instance.adaptationId.startsWith('leg_') ||
+        organ.instance.adaptationId.startsWith('arm_') ||
+        normId.startsWith('leg_') ||
+        normId.startsWith('arm_')
+      ) {
+        const limbVisuals = organ.mirror
+          ? [organ.primary, organ.mirror]
+          : [organ.primary];
+        for (const visual of limbVisuals) {
+          // 1. Comprobar el nodo terminal (pie o mano)
+          const terminalNode =
+            visual.getBoneNode('foot') ||
+            visual.getBoneNode('hand') ||
+            visual.getBoneNode('ankle') ||
+            visual.getBoneNode('wrist');
+
+          if (terminalNode) {
+            terminalNode.getWorldPosition(tempVec);
+            // Restar un margen de grosor de la geometría del pie/mano (~0.15m)
+            const effectiveBottomY = tempVec.y - 0.15;
+            if (effectiveBottomY < lowestY) {
+              lowestY = effectiveBottomY;
+            }
+          }
+        }
+      }
+    }
+
+    return lowestY;
+  }
+
+  /**
+   * Returns the vertical clearance from the terrain surface to the creature's root position
+   * so the feet rest flush on the ground without sinking.
+   */
+  public getBodyClearanceY(): number {
+    if (!this.isLandCreature) return 0;
+    return this.getGroundOffset();
   }
 
   private updateOrientationGizmoTransform(): void {
@@ -2278,6 +2419,10 @@ export class PlayerCell {
     }));
     this.repositionAllPlacedOrgans(recomputeBaseClearance);
     this.refreshOrganSelectionHighlights();
+  }
+
+  public isInLandCreatureStage(): boolean {
+    return this.isLandCreature;
   }
 
   /**
@@ -2553,6 +2698,7 @@ export class PlayerCell {
 
   public setEditorMode(isEditing: boolean): void {
     this.isEditingMode = isEditing;
+    this.syncCleanBoundingHierarchy();
     this.editorLabDishGroup.visible = isEditing;
     this.editorSpineOverlayGroup.visible = isEditing && !this.isLandCreature;
     if (this.spineBackboneLine) {
@@ -2562,9 +2708,26 @@ export class PlayerCell {
       this.hoveredVertebraIndex = null;
       this.dragPreviewGroup.visible = false;
       this.editorOrientationGizmoGroup.visible = false;
+      if (this.isLandCreature) {
+        const standingOffset = this.getGroundOffset();
+        this.bodySegmentsGroup.position.y = 0;
+        this.placedOrgansGroup.position.y = 0;
+        this.position.y =
+          getLandHeightAt(this.position.x, this.position.z) + standingOffset;
+        this.verticalVelocity = 0;
+        this.isGrounded = true;
+      }
       this.refreshOrganSelectionHighlights();
       this.setHoveredBodySegment(null);
     } else {
+      if (this.isLandCreature) {
+        const effectiveY = this.getEffectiveGroundY();
+        this.bodySegmentsGroup.position.y = effectiveY;
+        this.placedOrgansGroup.position.y = effectiveY;
+        this.position.y = 0;
+        this.verticalVelocity = 0;
+        this.isGrounded = true;
+      }
       this.refreshOrganSelectionHighlights();
       this.setHoveredBodySegment(this.hoveredSegmentId);
       this.updateOrientationGizmoTransform();
@@ -3308,6 +3471,10 @@ export class PlayerCell {
       entry.primary.animate(elapsedTime, effectiveSpeed, previewBoosting);
       entry.mirror?.animate(elapsedTime, effectiveSpeed, previewBoosting);
     }
+    const isPreviewMoving = preview === 'walk' || preview === 'run';
+    const previewMoveSpeed =
+      preview === 'run' ? 6.5 : preview === 'walk' ? 3.4 : 0;
+    this.updateLimbAnimations(delta, previewMoveSpeed, isPreviewMoving);
 
     // Update social wave ring if triggered during 'social' Test Drive preview
     if (this.socialWaveTimer > 0) {
@@ -3419,9 +3586,10 @@ export class PlayerCell {
   public updateChemoreceptorCompass(
     targetPosition: THREE.Vector3 | null,
     isGeneticNodule: boolean,
-    elapsedTime: number
+    elapsedTime: number,
+    forceShowForMating = false
   ): void {
-    if (!this.hasChemoreceptorInstalled || !targetPosition) {
+    if ((!this.hasChemoreceptorInstalled && !forceShowForMating) || !targetPosition) {
       this.chemoreceptorCompassGroup.visible = false;
       return;
     }
@@ -3429,7 +3597,7 @@ export class PlayerCell {
     const dx = targetPosition.x - this.position.x;
     const dz = targetPosition.z - this.position.z;
     const distSq = dx * dx + dz * dz;
-    if (distSq < 9.0) {
+    if (distSq < (forceShowForMating ? 4.8 : 9.0)) {
       this.chemoreceptorCompassGroup.visible = false;
       return;
     }
@@ -3441,11 +3609,26 @@ export class PlayerCell {
     this.chemoreceptorCompassGroup.rotation.set(0, angle, 0);
 
     this.chemoreceptorArrowMat.color.setHex(
-      isGeneticNodule ? 0xfacc15 : 0x34d399
+      forceShowForMating
+        ? 0x38bdf8
+        : isGeneticNodule
+        ? 0xfacc15
+        : 0x34d399
     );
     this.chemoreceptorArrowMat.opacity =
-      0.55 + Math.sin(elapsedTime * 6.0) * 0.25;
+      0.65 + Math.sin(elapsedTime * 7.0) * 0.28;
   }
+
+  /**
+   * Impulso elástico de eclosión cuando la nueva generación emerge del huevo primordial.
+   */
+  public playBirthAnimation(): void {
+    this.birthAnimTimer = 0.65;
+    this.currentScale = this.targetScale * 0.35;
+    this.group.scale.setScalar(this.currentScale);
+    this.currentSpeed = GAME_CONFIG.PLAYER.MAX_FORWARD_SPEED * 0.85;
+  }
+
 
   public startMatingCall(): void {
     this.matingCallActive = true;
@@ -4236,12 +4419,16 @@ export class PlayerCell {
       }
     }
 
+    const effectPlaneY = this.isLandCreature
+      ? getLandHeightAt(this.position.x, this.position.z) + 0.55
+      : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
+
     if (nozzleWorldPositions.length === 0) {
       const backDist = 2.1 * this.currentScale;
       nozzleWorldPositions.push(
         new THREE.Vector3(
           this.position.x + Math.sin(this.headingAngle) * backDist,
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+          effectPlaneY,
           this.position.z + Math.cos(this.headingAngle) * backDist
         )
       );
@@ -4256,7 +4443,7 @@ export class PlayerCell {
 
       cloud.position.set(
         spawnPos.x + (Math.random() - 0.5) * 0.35,
-        GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+        effectPlaneY,
         spawnPos.z + (Math.random() - 0.5) * 0.35
       );
       cloud.radius = 2.35 * this.currentScale * stackBoost;
@@ -4272,7 +4459,9 @@ export class PlayerCell {
   public triggerElectricPulse(): void {
     this.electricPulseTimer = this.electricPulseDuration;
     this.electricWaveMesh.position.copy(this.position);
-    this.electricWaveMesh.position.y = GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.2;
+    this.electricWaveMesh.position.y = this.isLandCreature
+      ? getLandHeightAt(this.position.x, this.position.z) + 0.25
+      : GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.2;
     this.electricWaveMesh.scale.setScalar(1.0);
     this.electricWaveMesh.visible = true;
 
@@ -4402,9 +4591,14 @@ export class PlayerCell {
     this.group.scale.setScalar(this.currentScale);
     this.placedOrgansGroup.scale.set(1, 1, 1);
 
+    if (this.birthAnimTimer > 0) {
+      this.birthAnimTimer = Math.max(0, this.birthAnimTimer - safeDelta);
+    }
+
     // 1. Strict Control Mode Exclusivity: 'keyboard' (WASD/Arrows only) vs 'mouse' (Left-Click Point-and-Click only)
-    const isKeyboardMode = steeringMode === 'keyboard';
-    const isMouseMode = steeringMode === 'mouse';
+    const isKeyboardMode = steeringMode === 'keyboard' && !this.controlsLocked;
+    const isMouseMode = steeringMode === 'mouse' && !this.controlsLocked;
+
 
     const hasKeyboardInput =
       isKeyboardMode &&
@@ -4573,8 +4767,9 @@ export class PlayerCell {
       for (let i = 0; i < nearbyObstacles.length; i++) {
         const o = nearbyObstacles[i];
 
-        // 3D Height Check (Y axis): cell only collides if within the obstacle's physical vertical span
-        if (py < o.minY - 0.4 || py > o.maxY + 0.4) {
+        // 3D Height Check (Y axis): in cell_stage, only collide within the obstacle's vertical span;
+        // in creature_stage, continental tree trunks are solid barriers along the terrain surface.
+        if (!this.isLandCreature && (py < o.minY - 0.4 || py > o.maxY + 0.4)) {
           continue;
         }
 
@@ -4636,11 +4831,11 @@ export class PlayerCell {
       }
     }
 
-    // 4. Soft arena boundary containment (expands progressively across the 5 cellular growth stages)
+    // 4. Soft arena boundary containment (in creature_stage, open continent up to the Leviathan's ocean abyss)
     const distSq =
       this.position.x * this.position.x + this.position.z * this.position.z;
     const stageMaxR = this.isLandCreature
-      ? GAME_CONFIG.WORLD.ARENA_RADIUS
+      ? CONTINENT_CONFIG.OCEAN_ABYSS_LIMIT + 120
       : Math.min(GAME_CONFIG.WORLD.ARENA_RADIUS, this.activeArenaRadius);
     const maxRadius = stageMaxR - 2.0;
     if (distSq > maxRadius * maxRadius) {
@@ -4661,6 +4856,23 @@ export class PlayerCell {
     this.flagellumPhase = (this.flagellumPhase + safeDelta * swimFreq) % (Math.PI * 200);
 
     if (this.isLandCreature) {
+      const rawGroundElevation = getLandHeightAt(
+        this.position.x,
+        this.position.z
+      );
+      // When entering coastal or deep ocean water (ground < -0.25m), creature swims on the water surface (~ -0.35m)
+      const groundElevation =
+        rawGroundElevation < -0.25
+          ? Math.max(
+              rawGroundElevation,
+              -0.35 + Math.sin(elapsedTime * 2.8) * 0.1
+            )
+          : rawGroundElevation;
+
+      const standingOffset = this.getGroundOffset();
+      this.bodySegmentsGroup.position.y = 0;
+      this.placedOrgansGroup.position.y = 0;
+
       const targetHeight = isWingGliding ? 3.8 : 0.0;
       const heightLambda = isWingGliding ? 4.2 : 3.4;
       this.heightOffset = THREE.MathUtils.damp(
@@ -4670,6 +4882,19 @@ export class PlayerCell {
         safeDelta
       );
 
+      // Jump impulse when pressing Space (boost) on solid ground without wings
+      if (
+        input.boost &&
+        !this.wasBoostPressed &&
+        this.isGrounded &&
+        !this.hasWingsInstalled
+      ) {
+        this.verticalVelocity = 9.2;
+        this.isGrounded = false;
+      }
+      this.wasBoostPressed = input.boost;
+
+      let gaitBounce = 0;
       if (!this.hasCustomLegsInstalled && this.heightOffset <= 0.45) {
         // Legless Terrestrial Creature ("Modo Babosa"): peristaltic wave locomotion on land
         const crawlWave = Math.sin(this.flagellumPhase * 0.85);
@@ -4679,29 +4904,54 @@ export class PlayerCell {
           1.0 + Math.cos(this.flagellumPhase * 0.85) * crawlAmp * 0.5,
           1.0 + crawlWave * crawlAmp
         );
-        const crawlBounce = Math.abs(crawlWave) * 0.09 * Math.min(1, speedRatio * 1.4);
-        this.position.y = 0.0 + this.heightOffset + crawlBounce;
+        gaitBounce =
+          Math.abs(crawlWave) * 0.09 * Math.min(1, speedRatio * 1.4);
       } else {
         this.membraneMesh.scale.set(1, 1, 1);
-        const strideBounce =
+        gaitBounce =
           this.heightOffset > 0.45
             ? Math.sin(elapsedTime * 5.5) * 0.14
             : Math.abs(Math.sin(this.flagellumPhase * 0.9)) *
               0.22 *
               Math.min(1, speedRatio * 1.4);
-
-        this.position.y = 0.0 + this.heightOffset + strideBounce;
       }
+
+      const targetFloorY =
+        groundElevation + standingOffset + this.heightOffset;
+
+      // Apply downward gravity when airborne (jumping) & rigid terrain floor clamp
+      if (!this.isGrounded || this.verticalVelocity > 0) {
+        this.verticalVelocity -= 22.0 * safeDelta;
+        this.position.y += this.verticalVelocity * safeDelta;
+        this.isGrounded = false;
+      }
+
+      if (this.position.y <= targetFloorY) {
+        this.position.y = targetFloorY;
+        this.verticalVelocity = 0;
+        this.isGrounded = true;
+      } else if (this.isGrounded) {
+        this.position.y = THREE.MathUtils.lerp(
+          this.position.y,
+          targetFloorY,
+          Math.min(1.0, safeDelta * 10.0)
+        );
+        this.verticalVelocity = 0;
+      }
+
       this.haloMesh.position.y =
         -0.95 - this.heightOffset / Math.max(0.5, this.currentScale);
     } else {
+      this.wasBoostPressed = input.boost;
+      this.verticalVelocity = 0;
+      this.isGrounded = true;
       this.membraneMesh.scale.set(1, 1, 1);
       this.heightOffset = 0;
       this.position.y =
         GAME_CONFIG.WORLD.SWIM_PLANE_Y + Math.sin(elapsedTime * 2.4) * 0.16;
       this.haloMesh.position.y = -0.95;
     }
-    const effectiveY = this.getEffectiveGroundY();
+    const effectiveY = this.isEditingMode ? this.getEffectiveGroundY() : 0;
     this.membraneMesh.position.set(0, effectiveY, 0);
     this.placedOrgansGroup.position.set(0, effectiveY, 0);
 
@@ -4710,7 +4960,7 @@ export class PlayerCell {
       -0.28,
       0.28
     );
-    const glidePitch =
+    const rawPitch =
       this.heightOffset > 0.25
         ? isWingGliding
           ? 0.12
@@ -4718,13 +4968,33 @@ export class PlayerCell {
         : !this.hasCustomLegsInstalled && this.isLandCreature
         ? Math.cos(this.flagellumPhase * 0.85) * 0.045 * Math.min(1, speedRatio * 1.4)
         : 0;
-    this.group.rotation.set(glidePitch, this.headingAngle, bankAngle);
+    const clampedPitch = this.isGrounded
+      ? THREE.MathUtils.clamp(rawPitch, -0.35, 0.35)
+      : rawPitch;
+    this.group.rotation.set(clampedPitch, this.headingAngle, bankAngle);
 
-    // 6. Animate all placed 3D organs
+    // 5B. Subtle Thoracic Breathing in Idle vs Active Locomotion
+    if (this.isLandCreature && this.hasCustomLegsInstalled) {
+      const isCurrentlyMoving = Math.abs(this.currentSpeed) > 0.05;
+      if (!isCurrentlyMoving) {
+        const breathWave = Math.sin(elapsedTime * 2.4);
+        this.membraneMesh.scale.set(
+          1.0 + breathWave * 0.016,
+          1.0 + breathWave * 0.02,
+          1.0 - breathWave * 0.01
+        );
+      } else {
+        this.membraneMesh.scale.set(1, 1, 1);
+      }
+    }
+
+    // 6. Animate all placed 3D organs + Biphasic Limb Gait & Wrist Drag Engine
     for (const entry of this.activePlacedOrgans) {
       entry.primary.animate(elapsedTime, speedRatio, this.isBoosting);
       entry.mirror?.animate(elapsedTime, speedRatio, this.isBoosting);
     }
+    const absSpeed = Math.abs(this.currentSpeed);
+    this.updateLimbAnimations(safeDelta, absSpeed, absSpeed > 0.05);
 
     // 6B. Quadruped Amphibian Gait Cycle
     if (this.evoAmphibianLegsGroup.visible && this.amphibianLegs.length === 4) {
@@ -4855,13 +5125,16 @@ export class PlayerCell {
       );
       const progress = this.matingCallElapsed / this.matingCallDuration;
 
+      const mateGroundY = this.isLandCreature
+        ? getLandHeightAt(this.position.x, this.position.z) + 0.12
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.12;
       for (let r = 0; r < this.matingRingMeshes.length; r++) {
         const ringProgress = (progress + r * 0.45) % 1.0;
         const ringScale = (1.1 + ringProgress * 7.5) * this.currentScale;
         const ring = this.matingRingMeshes[r];
         ring.position.set(
           this.position.x,
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y - 0.12,
+          mateGroundY,
           this.position.z
         );
         ring.scale.setScalar(ringScale);
@@ -4885,8 +5158,12 @@ export class PlayerCell {
         targetZ,
         smoothT
       );
-      this.mateCellGroup.position.y =
-        GAME_CONFIG.WORLD.SWIM_PLANE_Y + Math.sin(elapsedTime * 5.0) * 0.14;
+      this.mateCellGroup.position.y = this.isLandCreature
+        ? getLandHeightAt(
+            this.mateCellGroup.position.x,
+            this.mateCellGroup.position.z
+          ) + 0.65
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y + Math.sin(elapsedTime * 5.0) * 0.14;
 
       const dxToPlayer = this.position.x - this.mateCellGroup.position.x;
       const dzToPlayer = this.position.z - this.mateCellGroup.position.z;
@@ -5042,5 +5319,268 @@ export class PlayerCell {
     for (const mat of this.disposableMaterials) {
       mat.dispose();
     }
+  }
+
+  /**
+   * Motor de Ciclo de Marcha Procedural Bifásico (Fase de Vuelo + Fase de Apoyo)
+   * y Balanceo Inercial de Brazos y Muñecas (Wrist Drag).
+   */
+  public updateLimbAnimations(
+    dt: number,
+    currentSpeed: number,
+    isMoving: boolean
+  ): void {
+    // Cadencia humana/animal natural: 1 paso cada ~0.7 segundos
+    const strideScale = 0.35; // Factor moderado de avance
+
+    if (isMoving && currentSpeed > 0.05) {
+      // Frecuencia suave limitada para evitar aceleraciones frenéticas
+      const stepSpeed = Math.min(currentSpeed, 6.0) * strideScale;
+      this.walkCyclePhase += dt * stepSpeed * Math.PI;
+    } else {
+      // Regreso suave a la pose de reposo neutra
+      this.walkCyclePhase = THREE.MathUtils.lerp(
+        this.walkCyclePhase,
+        Math.round(this.walkCyclePhase / Math.PI) * Math.PI,
+        dt * 4.0
+      );
+    }
+
+    // Iterar sobre las extremidades registradas
+    this.animateLegs(this.walkCyclePhase, isMoving, currentSpeed, dt);
+    this.animateArms(this.walkCyclePhase, isMoving, currentSpeed, dt);
+  }
+
+  private animateLegs(
+    phase: number,
+    isMoving: boolean,
+    speed: number,
+    dt: number
+  ): void {
+    const legEntries = this.activePlacedOrgans.filter((o) =>
+      normalizeAdaptationId(o.instance.adaptationId).startsWith('leg_')
+    );
+
+    legEntries.forEach((leg, index) => {
+      const limbs = [leg.primary, ...(leg.mirror ? [leg.mirror] : [])];
+      const pairPhaseOffset = (index % 2) * Math.PI;
+
+      for (const limb of limbs) {
+        // Desfase de 180° (Math.PI) entre la pierna izquierda y la derecha para marcha alterna
+        const isLeft = limb.position.x < 0;
+        const legPhase =
+          (((phase + (isLeft ? 0 : Math.PI) + pairPhaseOffset) %
+            (Math.PI * 2)) +
+            Math.PI * 2) %
+          (Math.PI * 2);
+
+        const hipJoint = limb.getBoneNode('hip');
+        const kneeJoint = limb.getBoneNode('knee');
+        const ankleJoint = limb.getBoneNode('ankle');
+        const footMesh = limb.getBoneNode('foot');
+
+        if (!hipJoint || !kneeJoint || !ankleJoint) continue;
+
+        if (!isMoving || speed <= 0.05) {
+          // ESTADO IDLE: Apoyo neutro firme en el suelo
+          hipJoint.rotation.x = THREE.MathUtils.lerp(
+            hipJoint.rotation.x,
+            0,
+            dt * 8
+          );
+          hipJoint.rotation.z = THREE.MathUtils.lerp(
+            hipJoint.rotation.z,
+            0,
+            dt * 8
+          );
+          kneeJoint.rotation.x = THREE.MathUtils.lerp(
+            kneeJoint.rotation.x,
+            0.2,
+            dt * 8
+          ); // Ligera flexión natural
+          ankleJoint.rotation.x = THREE.MathUtils.lerp(
+            ankleJoint.rotation.x,
+            -0.2,
+            dt * 8
+          );
+          if (footMesh) {
+            footMesh.rotation.x = THREE.MathUtils.lerp(
+              footMesh.rotation.x,
+              0,
+              dt * 8
+            );
+          }
+          continue;
+        }
+
+        // DIVISIÓN EN 2 FASES (0 a PI = Vuelo, PI a 2*PI = Apoyo)
+        if (legPhase < Math.PI) {
+          // 1. FASE DE VUELO / AVANCE (La pierna se eleva y avanza hacia el frente)
+          const swingProgress = legPhase / Math.PI; // 0.0 a 1.0
+
+          // Arco de elevación de la pata (sube y baja con una curva suave)
+          const liftCurve = Math.sin(swingProgress * Math.PI);
+
+          // Cadera balancea desde atrás (+0.4) hacia adelante (-0.45)
+          hipJoint.rotation.x = THREE.MathUtils.lerp(
+            0.4,
+            -0.45,
+            swingProgress
+          );
+          // Rodilla se flexiona notablemente para no arrastrar el pie por el suelo
+          kneeJoint.rotation.x = 0.2 + liftCurve * 0.75;
+          // Tobillo levanta la punta del pie al inicio y la prepara para aterrizar al final
+          ankleJoint.rotation.x =
+            -0.3 + liftCurve * 0.4 - swingProgress * 0.2;
+          if (footMesh) {
+            footMesh.rotation.x = liftCurve * -0.22;
+          }
+        } else {
+          // 2. FASE DE APOYO / EMPUJE (El pie toca el suelo y empuja hacia atrás)
+          const stanceProgress = (legPhase - Math.PI) / Math.PI; // 0.0 a 1.0
+
+          // Cadera empuja desde adelante (-0.45) hacia atrás (+0.4) a velocidad uniforme
+          hipJoint.rotation.x = THREE.MathUtils.lerp(
+            -0.45,
+            0.4,
+            stanceProgress
+          );
+          // Rodilla amortigua el impacto del peso corporal y luego se estira
+          kneeJoint.rotation.x = THREE.MathUtils.lerp(
+            0.35,
+            0.1,
+            stanceProgress
+          );
+          // Tobillo se mantiene horizontal adaptado al plano de apoyo
+          ankleJoint.rotation.x = THREE.MathUtils.lerp(
+            -0.25,
+            0.15,
+            stanceProgress
+          );
+          if (footMesh) {
+            footMesh.rotation.x = THREE.MathUtils.lerp(
+              footMesh.rotation.x,
+              0,
+              dt * 12
+            );
+          }
+        }
+
+        // Micro-inclinación lateral en la cadera para simular balanceo del peso
+        hipJoint.rotation.z = Math.sin(legPhase) * 0.05 * (isLeft ? 1 : -1);
+      }
+    });
+  }
+
+  private animateArms(
+    phase: number,
+    isMoving: boolean,
+    speed: number,
+    dt: number
+  ): void {
+    const armEntries = this.activePlacedOrgans.filter((o) =>
+      normalizeAdaptationId(o.instance.adaptationId).startsWith('arm_')
+    );
+
+    armEntries.forEach((arm) => {
+      const limbs = [arm.primary, ...(arm.mirror ? [arm.mirror] : [])];
+
+      for (const limb of limbs) {
+        const isLeft = limb.position.x < 0;
+        const armPhase =
+          (((phase + (isLeft ? Math.PI : 0)) % (Math.PI * 2)) + Math.PI * 2) %
+          (Math.PI * 2);
+
+        const shoulder = limb.getBoneNode('shoulder');
+        const elbow = limb.getBoneNode('elbow');
+        const wrist = limb.getBoneNode('wrist');
+        const hand = limb.getBoneNode('hand');
+
+        if (!shoulder || !elbow || !wrist) continue;
+
+        if (!isMoving || speed <= 0.05) {
+          // 1. POSE EN REPOSO (BRAZOS HACIA ABAJO Y RELAJADOS)
+          const naturalHangZ = isLeft ? 0.18 : -0.18;
+          shoulder.rotation.z = THREE.MathUtils.lerp(
+            shoulder.rotation.z,
+            naturalHangZ,
+            dt * 5.0
+          );
+          shoulder.rotation.x = THREE.MathUtils.lerp(
+            shoulder.rotation.x,
+            0.15,
+            dt * 5.0
+          );
+          shoulder.rotation.y = THREE.MathUtils.lerp(
+            shoulder.rotation.y,
+            0.0,
+            dt * 5.0
+          );
+
+          // Codo con ligera flexión orgánica hacia adelante
+          elbow.rotation.x = THREE.MathUtils.lerp(
+            elbow.rotation.x,
+            -0.25,
+            dt * 5.0
+          );
+          wrist.rotation.x = THREE.MathUtils.lerp(
+            wrist.rotation.x,
+            0.05,
+            dt * 5.0
+          );
+          wrist.rotation.y = THREE.MathUtils.lerp(wrist.rotation.y, 0, dt * 5.0);
+          if (hand) {
+            hand.rotation.x = THREE.MathUtils.lerp(hand.rotation.x, 0, dt * 5.0);
+          }
+          continue;
+        }
+
+        // 2. EN MOVIMIENTO: BALANCEO SUAVE CON BRAZOS COLGANTES
+        const swingFactor = THREE.MathUtils.clamp(speed / 4.5, 0.3, 0.7);
+
+        // Mantiene el brazo orientado hacia abajo pegado al costado
+        const baseHangZ = isLeft ? 0.2 : -0.2;
+        shoulder.rotation.z = THREE.MathUtils.lerp(
+          shoulder.rotation.z,
+          baseHangZ,
+          dt * 8.0
+        );
+
+        // Balanceo pendular hacia adelante y atrás en el eje X
+        const swingX = 0.12 + Math.sin(armPhase) * 0.35 * swingFactor;
+        shoulder.rotation.x = THREE.MathUtils.lerp(
+          shoulder.rotation.x,
+          swingX,
+          dt * 10.0
+        );
+
+        // Codo flexiona ligeramente al ir hacia adelante
+        const elbowFlex = -(
+          0.2 +
+          Math.max(0, -Math.sin(armPhase)) * 0.3 * swingFactor
+        );
+        elbow.rotation.x = THREE.MathUtils.lerp(
+          elbow.rotation.x,
+          elbowFlex,
+          dt * 8.0
+        );
+
+        // Inercia sutil en muñeca y mano
+        const wristLag = Math.sin(armPhase - 0.4) * 0.2 * swingFactor;
+        wrist.rotation.x = THREE.MathUtils.lerp(
+          wrist.rotation.x,
+          wristLag,
+          dt * 10.0
+        );
+
+        if (hand) {
+          hand.rotation.x = THREE.MathUtils.lerp(
+            hand.rotation.x,
+            wristLag * 0.5,
+            dt * 10.0
+          );
+        }
+      }
+    });
   }
 }

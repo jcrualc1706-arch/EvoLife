@@ -1,9 +1,13 @@
 import * as THREE from 'three';
 import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
-import { EnvironmentObstacle } from './SceneEnvironment';
+import {
+  CONTINENT_CONFIG,
+  EnvironmentObstacle,
+  getLandHeightAt,
+} from './SceneEnvironment';
 import { SpatialHashGrid } from './SpatialHashGrid';
-import { DietType, FoodKind } from './types';
+import { DietType, EvolutionaryStage, FoodKind } from './types';
 
 export interface EcosystemFoodCollider {
   active: boolean;
@@ -230,6 +234,7 @@ export class FoodManager {
   private meatDropCursor = 0;
   private dynamicNoduleCursor = 0;
   private readonly chemoreceptorTarget = new THREE.Vector3();
+  private isCreatureStage = false;
   private getNearbyObstacles?: (
     x: number,
     z: number,
@@ -463,7 +468,7 @@ export class FoodManager {
         kind === 'dna_spore'
           ? GAME_CONFIG.FOOD.ADN_REWARD_LARGE
           : kind === 'meat'
-          ? 10
+          ? 8
           : GAME_CONFIG.FOOD.ADN_REWARD_SMALL;
 
       const spawnScale = 0.92 + Math.random() * 0.22;
@@ -478,7 +483,7 @@ export class FoodManager {
         position: new THREE.Vector3(),
         velocity: new THREE.Vector3(),
         angularVelocity: new THREE.Euler(0, 0, 0),
-        active: true,
+        active: false,
         respawnTimer: 0,
         phase: Math.random() * Math.PI * 2,
         spawnScale,
@@ -491,7 +496,17 @@ export class FoodManager {
         adnValue,
       };
 
-      this.placeFoodRandomly(item, i < 6);
+      // CERO carne espontánea y densidad máxima de plancton vegetal = 28
+      if (kind === 'plant' && i < 28) {
+        this.placeFoodRandomly(item, i < 4);
+      } else {
+        item.active = false;
+        item.group.visible = false;
+        item.respawnTimer =
+          kind === 'meat' || kind === 'dna_spore'
+            ? 999999
+            : GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
+      }
       this.items.push(item);
     }
 
@@ -572,7 +587,81 @@ export class FoodManager {
     );
   }
 
+  private getActivePlantCount(): number {
+    let count = 0;
+    for (let i = 0; i < this.items.length; i++) {
+      const it = this.items[i];
+      if (it.active && it.kind === 'plant') count++;
+    }
+    return count;
+  }
+
+  public spawnAmbientFood(stage: EvolutionaryStage): void {
+    if (stage === 'creature_stage') {
+      // EN TIERRA: NUNCA generar carne libre de la nada.
+      // Solo se permite la gestión de arbustos y flora vegetal estática.
+      return;
+    }
+
+    // En la fase celular: CERO carne libre y máximo 28 partículas de plancton vegetal
+    const MAX_PLANT_FOOD = 28;
+    let activePlants = this.getActivePlantCount();
+    for (let i = 0; i < this.items.length; i++) {
+      const item = this.items[i];
+      if (
+        item.kind === 'plant' &&
+        !item.active &&
+        item.respawnTimer <= 0 &&
+        activePlants < MAX_PLANT_FOOD
+      ) {
+        this.placeFoodRandomly(item, false);
+        activePlants++;
+      }
+    }
+  }
+
+  public setStageMode(stage: EvolutionaryStage): void {
+    this.isCreatureStage = stage === 'creature_stage';
+    for (let i = 0; i < this.items.length; i++) {
+      const item = this.items[i];
+      if (
+        item.kind === 'meat' ||
+        item.kind === 'dna_spore' ||
+        (this.isCreatureStage && item.kind === 'plant')
+      ) {
+        // Desactivar siempre el spawn espontáneo de carne/esporas y de plantas libres en tierra
+        item.active = false;
+        item.group.visible = false;
+        item.respawnTimer = 999999;
+        continue;
+      }
+      item.position.y = this.isCreatureStage
+        ? getLandHeightAt(item.position.x, item.position.z) + 0.45
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
+      item.group.position.y = item.position.y;
+    }
+    for (let n = 0; n < this.geneticNodules.length; n++) {
+      const nod = this.geneticNodules[n];
+      nod.basePosition.y = this.isCreatureStage
+        ? getLandHeightAt(nod.basePosition.x, nod.basePosition.z) + 0.45
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
+      nod.group.position.y = nod.basePosition.y;
+    }
+  }
+
   private placeFoodRandomly(item: FoodItemState, nearCenter = false): void {
+    // CERO spawn aleatorio de carne (en agua o tierra) y cero plantas libres en tierra
+    if (
+      item.kind === 'meat' ||
+      item.kind === 'dna_spore' ||
+      (this.isCreatureStage && item.kind === 'plant')
+    ) {
+      item.active = false;
+      item.group.visible = false;
+      item.respawnTimer = 999999;
+      return;
+    }
+
     item.velocity.set(0, 0, 0);
     item.angularVelocity.set(0, 0, 0);
     item.group.rotation.set(0, 0, 0);
@@ -580,6 +669,7 @@ export class FoodManager {
 
     // Cluster >= 72% of edible chloroplasts ('plant') closely around towering Chloroplast Trees (grazing zone)
     if (
+      !this.isCreatureStage &&
       item.kind === 'plant' &&
       this.chloroplastTreeCoords.length > 0 &&
       Math.random() < 0.72
@@ -615,17 +705,26 @@ export class FoodManager {
     const minRadius = nearCenter ? 6.0 : 12.0;
     const maxRadius = nearCenter
       ? 24.0
+      : this.isCreatureStage
+      ? 520.0
       : Math.max(45.0, this.activeArenaRadius - 5.0);
 
     const r = minRadius + Math.sqrt(Math.random()) * (maxRadius - minRadius);
     const theta = Math.random() * Math.PI * 2;
+    const fx = Math.cos(theta) * r;
+    const fz = Math.sin(theta) * r;
 
     item.position.set(
-      Math.cos(theta) * r,
-      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-      Math.sin(theta) * r
+      fx,
+      this.isCreatureStage
+        ? getLandHeightAt(fx, fz) + 0.45
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+      fz
     );
     this.pushOutOfObstacles(item.position, 0.9);
+    if (this.isCreatureStage) {
+      item.position.y = getLandHeightAt(item.position.x, item.position.z) + 0.45;
+    }
     item.group.position.copy(item.position);
     item.active = true;
     item.respawnTimer = 0;
@@ -633,20 +732,28 @@ export class FoodManager {
   }
 
   public resetAll(): void {
-    let passiveMeatCount = 0;
+    const MAX_PLANT_FOOD = 28;
+    let activePlants = 0;
     for (let i = 0; i < this.items.length; i++) {
       const item = this.items[i];
-      if (item.kind === 'meat') {
-        passiveMeatCount++;
-        // Keep half of the meat pool inactive in reserve for active hunting drops so open water has scarce free carrion
-        if (passiveMeatCount % 2 === 0) {
-          item.active = false;
-          item.group.visible = false;
-          item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC * 1.6;
-          continue;
-        }
+      if (
+        item.kind === 'meat' ||
+        item.kind === 'dna_spore' ||
+        (this.isCreatureStage && item.kind === 'plant')
+      ) {
+        item.active = false;
+        item.group.visible = false;
+        item.respawnTimer = 999999;
+        continue;
       }
-      this.placeFoodRandomly(item, i < 6);
+      if (item.kind === 'plant' && activePlants < MAX_PLANT_FOOD) {
+        this.placeFoodRandomly(item, activePlants < 4);
+        activePlants++;
+      } else {
+        item.active = false;
+        item.group.visible = false;
+        item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
+      }
     }
     for (let n = 0; n < this.geneticNodules.length; n++) {
       const nod = this.geneticNodules[n];
@@ -670,13 +777,20 @@ export class FoodManager {
   }
 
   /**
-   * Spawns 1 to 3 fresh Meat Fragments expelled in a radial fan with physical water impulse,
-   * plus a Golden DNA Spore right where an organism was defeated.
-   * These only restore Energy and ADN — never unlock adaptations.
+   * Spawns fresh Meat Fragments expelled when an organism is defeated in combat.
+   * In cell_stage: drops 1-2 meat chunks (+8 ADN each).
+   * In creature_stage: drops 2-4 meat chunks (+25 ADN base, scaled by creatureTier).
    */
-  public spawnMeatDrop(originPosition: THREE.Vector3, requestedCount?: number): number {
+  public spawnMeatDrop(
+    originPosition: THREE.Vector3,
+    requestedCount?: number,
+    creatureTier = 1
+  ): number {
     const count =
-      requestedCount ?? (1 + Math.floor(Math.random() * 3)); // 1 to 3 meat chunks
+      requestedCount ??
+      (this.isCreatureStage
+        ? 2 + Math.floor(Math.random() * 3) // 2 a 4 filetes de carne fresca junto al cadáver en tierra
+        : 1 + Math.floor(Math.random() * 2));
     const meatItems = this.items.filter((it) => it.kind === 'meat');
     const baseAngle = Math.random() * Math.PI * 2;
 
@@ -692,12 +806,24 @@ export class FoodManager {
             ? 0
             : ((m / (count - 1)) - 0.5) * (Math.PI * 0.85);
         const angle = baseAngle + fanSpread + (Math.random() - 0.5) * 0.35;
-        const speed = 5.5 + Math.random() * 4.2;
+        const speed = this.isCreatureStage
+          ? 2.8 + Math.random() * 2.2
+          : 5.5 + Math.random() * 4.2;
 
+        const spreadX = this.isCreatureStage
+          ? (Math.random() - 0.5) * 2.0
+          : Math.cos(angle) * 0.45;
+        const spreadZ = this.isCreatureStage
+          ? (Math.random() - 0.5) * 2.0
+          : Math.sin(angle) * 0.45;
+        const mx = originPosition.x + spreadX;
+        const mz = originPosition.z + spreadZ;
         chosenMeat.position.set(
-          originPosition.x + Math.cos(angle) * 0.45,
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-          originPosition.z + Math.sin(angle) * 0.45
+          mx,
+          this.isCreatureStage
+            ? getLandHeightAt(mx, mz) + 0.35
+            : GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+          mz
         );
         chosenMeat.velocity.set(
           Math.cos(angle) * speed,
@@ -709,39 +835,15 @@ export class FoodManager {
           (Math.random() - 0.5) * 6.0,
           (Math.random() - 0.5) * 5.0
         );
+        chosenMeat.energyValue = this.isCreatureStage ? 40 : 34;
+        chosenMeat.adnValue = this.isCreatureStage
+          ? 25 + Math.max(0, creatureTier - 1) * 5
+          : 8;
         chosenMeat.group.position.copy(chosenMeat.position);
         chosenMeat.active = true;
         chosenMeat.respawnTimer = 0;
         chosenMeat.group.visible = true;
       }
-    }
-
-    const sporeItems = this.items.filter((it) => it.kind === 'dna_spore');
-    if (sporeItems.length > 0) {
-      const chosenSpore =
-        sporeItems.find((it) => !it.active) ??
-        sporeItems[this.meatDropCursor % sporeItems.length];
-
-      const angle = baseAngle + Math.PI + (Math.random() - 0.5) * 0.6;
-      chosenSpore.position.set(
-        originPosition.x + Math.cos(angle) * 0.6,
-        GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-        originPosition.z + Math.sin(angle) * 0.6
-      );
-      chosenSpore.velocity.set(
-        Math.cos(angle) * 4.5,
-        0,
-        Math.sin(angle) * 4.5
-      );
-      chosenSpore.angularVelocity.set(
-        (Math.random() - 0.5) * 3.5,
-        (Math.random() - 0.5) * 4.5,
-        (Math.random() - 0.5) * 3.5
-      );
-      chosenSpore.group.position.copy(chosenSpore.position);
-      chosenSpore.active = true;
-      chosenSpore.respawnTimer = 0;
-      chosenSpore.group.visible = true;
     }
 
     return count;
@@ -769,10 +871,14 @@ export class FoodManager {
         this.meatDropCursor++;
         const ang = (k / Math.max(1, count)) * Math.PI * 2 + Math.random() * 0.4;
         const dist = 1.2 + Math.random() * radius;
+        const cx = centerX + Math.cos(ang) * dist;
+        const cz = centerZ + Math.sin(ang) * dist;
         chosen.position.set(
-          centerX + Math.cos(ang) * dist,
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-          centerZ + Math.sin(ang) * dist
+          cx,
+          this.isCreatureStage
+            ? getLandHeightAt(cx, cz) + 0.45
+            : GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+          cz
         );
         chosen.velocity.set(
           Math.cos(ang) * 2.2,
@@ -811,10 +917,14 @@ export class FoodManager {
     this.dynamicNoduleCursor++;
 
     const angle = Math.random() * Math.PI * 2;
+    const nx = originPosition.x + Math.cos(angle) * 0.9;
+    const nz = originPosition.z + Math.sin(angle) * 0.9;
     chosen.basePosition.set(
-      originPosition.x + Math.cos(angle) * 0.9,
-      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-      originPosition.z + Math.sin(angle) * 0.9
+      nx,
+      this.isCreatureStage
+        ? getLandHeightAt(nx, nz) + 0.45
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+      nz
     );
     chosen.group.position.copy(chosen.basePosition);
     chosen.adaptationId = adaptationId;
@@ -964,6 +1074,7 @@ export class FoodManager {
   ): {
     itemsEaten: number;
     plantsEaten: number;
+    meatEaten: number;
     energyGained: number;
     adnGained: number;
     blockedFoodKind: FoodKind | null;
@@ -971,6 +1082,7 @@ export class FoodManager {
   } {
     let itemsEaten = 0;
     let plantsEaten = 0;
+    let meatEaten = 0;
     let energyGained = 0;
     let adnGained = 0;
     let blockedFoodKind: FoodKind | null;
@@ -980,16 +1092,34 @@ export class FoodManager {
     this.spatialGrid.clear();
 
     // 1. Update hydrodynamic drift physics, water drag, rotation damping & insert active items into SpatialHashGrid
-    const arenaLimit = Math.max(40, this.activeArenaRadius - 2.5);
+    const arenaLimit = this.isCreatureStage
+      ? CONTINENT_CONFIG.CONTINENT_RADIUS - 30
+      : Math.max(40, this.activeArenaRadius - 2.5);
     const arenaLimitSq = arenaLimit * arenaLimit;
+
+    const MAX_PLANT_FOOD = 28; // Reducción estricta de la densidad máxima de plancton vegetal
+    let currentActivePlants = this.getActivePlantCount();
 
     for (let i = 0; i < this.items.length; i++) {
       const item = this.items[i];
 
       if (!item.active) {
+        // CERO spawn aleatorio de carne (solo se genera al cazar microbios/criaturas) y cero plantas libres en tierra
+        if (
+          item.kind === 'meat' ||
+          item.kind === 'dna_spore' ||
+          (this.isCreatureStage && item.kind === 'plant')
+        ) {
+          continue;
+        }
         item.respawnTimer -= delta;
-        if (item.respawnTimer <= 0) {
+        if (
+          item.respawnTimer <= 0 &&
+          currentActivePlants < MAX_PLANT_FOOD &&
+          Math.random() < 0.08
+        ) {
           this.placeFoodRandomly(item, false);
+          currentActivePlants++;
         }
         continue;
       }
@@ -1014,6 +1144,9 @@ export class FoodManager {
 
         item.velocity.x = THREE.MathUtils.damp(item.velocity.x, 0, 4.2, delta);
         item.velocity.z = THREE.MathUtils.damp(item.velocity.z, 0, 4.2, delta);
+        if (this.isCreatureStage) {
+          item.position.y = getLandHeightAt(item.position.x, item.position.z) + 0.45;
+        }
         item.group.position.x = item.position.x;
         item.group.position.z = item.position.z;
       } else {
@@ -1063,11 +1196,14 @@ export class FoodManager {
         );
       }
 
-      // Mantenimiento del Plano de Nado y rotación orgánica interna (< 115m del jugador)
+      // Mantenimiento del Plano de Nado / Terreno y rotación orgánica interna (< 115m del jugador)
       const dx = item.position.x - playerPosition.x;
       const dz = item.position.z - playerPosition.z;
       if (dx * dx + dz * dz <= 115 * 115) {
         const bob = Math.sin(elapsedTime * 2.8 + item.phase) * 0.22;
+        if (this.isCreatureStage) {
+          item.position.y = getLandHeightAt(item.position.x, item.position.z) + 0.45;
+        }
         item.group.position.y = item.position.y + bob;
         item.coreMesh.rotation.x += item.rotationSpeed.x * delta;
         item.coreMesh.rotation.y += item.rotationSpeed.y * delta;
@@ -1140,7 +1276,10 @@ export class FoodManager {
           item.group.visible = false;
           item.velocity.set(0, 0, 0);
           item.angularVelocity.set(0, 0, 0);
-          item.respawnTimer = GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
+          item.respawnTimer =
+            item.kind === 'meat'
+              ? 999999
+              : GAME_CONFIG.FOOD.RESPAWN_DELAY_SEC;
           itemsEaten++;
           audioManager.playFoodEaten(item.kind);
           if (item.kind === 'plant') {
@@ -1153,6 +1292,9 @@ export class FoodManager {
               : 0;
             energyGained += basePlantEnergy + radulaExtra;
           } else {
+            if (item.kind === 'meat') {
+              meatEaten++;
+            }
             energyGained += item.energyValue;
           }
           adnGained += item.adnValue;
@@ -1202,9 +1344,11 @@ export class FoodManager {
         const distSq = dx * dx + dz * dz;
 
         if (distSq < orgPickupDistSq) {
-          // Golden DNA spores remain reserved for player evolution; AI organisms push spores or incompatible diet items
+          // Las piezas de carne fresca de caza quedan reservadas para el jugador
           const aiCanDigest =
-            item.kind !== 'dna_spore' && this.canDigest(orgDiet, item.kind, false);
+            item.kind !== 'dna_spore' &&
+            item.kind !== 'meat' &&
+            this.canDigest(orgDiet, item.kind, false);
           if (aiCanDigest) {
             item.active = false;
             item.group.visible = false;
@@ -1276,6 +1420,7 @@ export class FoodManager {
     return {
       itemsEaten,
       plantsEaten,
+      meatEaten,
       energyGained,
       adnGained,
       blockedFoodKind,

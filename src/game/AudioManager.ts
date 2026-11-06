@@ -40,7 +40,14 @@ export class AudioManager {
   private combatBusGain: GainNode | null = null;
   private combatTailUntilTime = 0;
   private oceanCurrentSource: AudioBufferSourceNode | null = null;
+  private oceanCurrentFilter: BiquadFilterNode | null = null;
   private oceanCurrentGain: GainNode | null = null;
+  private bubblingBusGain: GainNode | null = null;
+  private bubblingSpawnAccumulator = 0;
+  private currentDepthNorm = 0.2;
+  private currentActivityNorm = 0.0;
+  private currentBubblingVolume = 0;
+  private currentCurrentsVolume = 0;
   private pinkNoiseBuffer: AudioBuffer | null = null;
   private whiteNoiseBuffer: AudioBuffer | null = null;
   private brownNoiseBuffer: AudioBuffer | null = null;
@@ -66,12 +73,15 @@ export class AudioManager {
         this.musicGain = this.ctx.createGain();
         this.peacefulBusGain = this.ctx.createGain();
         this.combatBusGain = this.ctx.createGain();
+        this.bubblingBusGain = this.ctx.createGain();
 
         this.peacefulBusGain.gain.value = 1.0;
         this.combatBusGain.gain.value = 0.0001;
+        this.bubblingBusGain.gain.value = 0.0001;
 
         this.peacefulBusGain.connect(this.musicGain);
         this.combatBusGain.connect(this.musicGain);
+        this.bubblingBusGain.connect(this.musicGain);
         this.sfxGain.connect(this.ctx.destination);
         this.musicGain.connect(this.ctx.destination);
         this.updateGainNodesImmediate();
@@ -1194,6 +1204,94 @@ export class AudioManager {
   }
 
   /**
+   * Colossal sub-bass abyssal roar + hydraulic breach splash when the Sea Leviathan emerges
+   * at the oceanic boundary of the continent.
+   */
+  public playLeviathanRoar(): void {
+    const vol = this.getEffectiveSfxVolume();
+    if (vol <= 0.01) return;
+    const ctx = this.getContext();
+    const dest = this.getSfxDestination();
+    if (!ctx || !dest) return;
+
+    const t = ctx.currentTime;
+
+    // Layer 1: Deep abyssal sub-bass growl (95Hz -> 28Hz over 1.35s)
+    const subOsc = ctx.createOscillator();
+    const growlOsc = ctx.createOscillator();
+    const filter = ctx.createBiquadFilter();
+    const shaper = ctx.createWaveShaper();
+    const gain = ctx.createGain();
+
+    subOsc.type = 'sawtooth';
+    subOsc.frequency.setValueAtTime(92, t);
+    subOsc.frequency.exponentialRampToValueAtTime(34, t + 0.55);
+    subOsc.frequency.exponentialRampToValueAtTime(26, t + 1.35);
+
+    growlOsc.type = 'triangle';
+    growlOsc.frequency.setValueAtTime(138, t);
+    growlOsc.frequency.exponentialRampToValueAtTime(48, t + 0.65);
+    growlOsc.frequency.exponentialRampToValueAtTime(36, t + 1.35);
+    growlOsc.detune.setValueAtTime(14, t);
+
+    filter.type = 'lowpass';
+    filter.Q.setValueAtTime(4.5, t);
+    filter.frequency.setValueAtTime(460, t);
+    filter.frequency.exponentialRampToValueAtTime(120, t + 1.35);
+
+    shaper.curve = this.getSoftClipCurve();
+    shaper.oversample = '2x';
+
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.linearRampToValueAtTime(0.42, t + 0.04);
+    gain.gain.exponentialRampToValueAtTime(0.24, t + 0.65);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 1.4);
+
+    subOsc.connect(shaper);
+    growlOsc.connect(shaper);
+    shaper.connect(filter);
+    filter.connect(gain);
+    gain.connect(dest);
+
+    subOsc.onended = () => {
+      subOsc.disconnect();
+      growlOsc.disconnect();
+      shaper.disconnect();
+      filter.disconnect();
+      gain.disconnect();
+    };
+    subOsc.start(t);
+    growlOsc.start(t);
+    subOsc.stop(t + 1.45);
+    growlOsc.stop(t + 1.45);
+
+    // Layer 2: Oceanic breach splash burst
+    const splashSrc = ctx.createBufferSource();
+    splashSrc.buffer = this.getBrownNoiseBuffer(ctx);
+    const splashFilter = ctx.createBiquadFilter();
+    splashFilter.type = 'bandpass';
+    splashFilter.frequency.setValueAtTime(380, t);
+    splashFilter.frequency.exponentialRampToValueAtTime(140, t + 1.1);
+    splashFilter.Q.value = 1.8;
+
+    const splashGain = ctx.createGain();
+    splashGain.gain.setValueAtTime(0.0001, t);
+    splashGain.gain.linearRampToValueAtTime(0.32, t + 0.05);
+    splashGain.gain.exponentialRampToValueAtTime(0.0001, t + 1.15);
+
+    splashSrc.connect(splashFilter);
+    splashFilter.connect(splashGain);
+    splashGain.connect(dest);
+    splashSrc.onended = () => {
+      splashSrc.disconnect();
+      splashFilter.disconnect();
+      splashGain.disconnect();
+    };
+    splashSrc.start(t);
+    splashSrc.stop(t + 1.2);
+  }
+
+  /**
    * Soft aquatic transition chime when opening/closing Pause or the 3D Editor.
    */
   public playMenuOpenClose(): void {
@@ -2001,7 +2099,7 @@ export class AudioManager {
       }
     }
 
-    if (nextState === 'ocean') {
+    if (nextState === 'ocean' || nextState === 'combat') {
       this.ensureOceanCurrentDrone();
     } else {
       this.stopOceanCurrentDrone();
@@ -2014,8 +2112,7 @@ export class AudioManager {
 
   private ensureOceanCurrentDrone(): void {
     const ctx = this.getContext();
-    const dest = this.getMusicDestination();
-    if (!ctx || !dest || this.oceanCurrentSource) return;
+    if (!ctx || !this.musicGain || this.oceanCurrentSource) return;
 
     try {
       const src = ctx.createBufferSource();
@@ -2025,17 +2122,19 @@ export class AudioManager {
       const filter = ctx.createBiquadFilter();
       filter.type = 'lowpass';
       filter.frequency.value = 185;
+      filter.Q.value = 1.6;
 
       const gain = ctx.createGain();
       gain.gain.setValueAtTime(0.001, ctx.currentTime);
-      gain.gain.setTargetAtTime(0.11, ctx.currentTime, 0.6);
+      gain.gain.setTargetAtTime(0.11, ctx.currentTime, 0.5);
 
       src.connect(filter);
       filter.connect(gain);
-      gain.connect(dest);
+      gain.connect(this.musicGain);
       src.start();
 
       this.oceanCurrentSource = src;
+      this.oceanCurrentFilter = filter;
       this.oceanCurrentGain = gain;
     } catch {
       // Ignore if context not ready
@@ -2043,6 +2142,13 @@ export class AudioManager {
   }
 
   private stopOceanCurrentDrone(): void {
+    if (this.ctx && this.bubblingBusGain) {
+      this.bubblingBusGain.gain.setTargetAtTime(
+        0.0001,
+        this.ctx.currentTime,
+        0.2
+      );
+    }
     if (this.oceanCurrentSource && this.ctx) {
       try {
         if (this.oceanCurrentGain) {
@@ -2057,8 +2163,206 @@ export class AudioManager {
         // Ignore
       }
       this.oceanCurrentSource = null;
+      this.oceanCurrentFilter = null;
       this.oceanCurrentGain = null;
     }
+  }
+
+  /**
+   * Ajusta en tiempo real el paisaje sonoro ambiental ('corrientes' y 'burbujeo')
+   * en función de la profundidad actual de la célula (0..1) y la intensidad de actividad (0..1).
+   */
+  public updateAmbientSoundscape(
+    delta: number,
+    depthNorm: number,
+    activityNorm: number,
+    isNearThermalVent = false,
+    isUnderwater = true
+  ): void {
+    if (this.getEffectiveMusicVolume() <= 0.01) return;
+    const ctx = this.getContext();
+    if (!ctx || ctx.state !== 'running') return;
+
+    const clampedDepth = Math.max(0, Math.min(1, depthNorm));
+    const clampedActivity = Math.max(0, Math.min(1, activityNorm));
+    this.currentDepthNorm = clampedDepth;
+    this.currentActivityNorm = clampedActivity;
+
+    const now = ctx.currentTime;
+
+    if (
+      !isUnderwater ||
+      this.currentMusicState === 'menu' ||
+      this.currentMusicState === 'editor' ||
+      this.currentMusicState === 'none'
+    ) {
+      this.currentBubblingVolume = 0;
+      this.currentCurrentsVolume = 0;
+      if (this.oceanCurrentGain) {
+        this.oceanCurrentGain.gain.setTargetAtTime(0.0001, now, 0.25);
+      }
+      if (this.bubblingBusGain) {
+        this.bubblingBusGain.gain.setTargetAtTime(0.0001, now, 0.2);
+      }
+      return;
+    }
+
+    this.ensureOceanCurrentDrone();
+
+    // 1. Modulación de 'Corrientes' (Sub-aquatic currents):
+    // Mayor profundidad aumenta la presión y el peso de la corriente de fondo;
+    // mayor actividad (velocidad de nado, impulso, combate) abre el filtro paso-bajo e intensifica el flujo hidrodinámico.
+    const baseCurrentGain = 0.065 + clampedDepth * 0.115;
+    const activityCurrentBoost = clampedActivity * 0.145;
+    const ventCurrentBoost = isNearThermalVent ? 0.045 : 0;
+    const targetCurrentsGain = Math.min(
+      0.34,
+      baseCurrentGain + activityCurrentBoost + ventCurrentBoost
+    );
+    this.currentCurrentsVolume = targetCurrentsGain;
+
+    if (this.oceanCurrentGain) {
+      this.oceanCurrentGain.gain.setTargetAtTime(targetCurrentsGain, now, 0.12);
+    }
+    if (this.oceanCurrentFilter) {
+      // Aguas someras: filtro más brillante (~225Hz base); aguas abisales: más grave (~115Hz base).
+      // Al nadar rápido o usar boost, el flujo hidrodinámico eleva la frecuencia de corte hasta +320Hz.
+      const depthBaseCutoff = 225 - clampedDepth * 110;
+      const targetCutoff = Math.max(
+        95,
+        Math.min(640, depthBaseCutoff + clampedActivity * 320)
+      );
+      this.oceanCurrentFilter.frequency.setTargetAtTime(
+        targetCutoff,
+        now,
+        0.12
+      );
+      this.oceanCurrentFilter.Q.setTargetAtTime(
+        1.4 + clampedDepth * 1.3 + clampedActivity * 0.8,
+        now,
+        0.15
+      );
+    }
+
+    // 2. Modulación de 'Burbujeo' (Cavitation & Hydrothermal/Photosynthetic Bubbling):
+    // El volumen y cadencia de burbujeo crecen con la intensidad de actividad (propulsión flagelar/combate),
+    // la oxigenación superficial o las fumarolas hidrotermales en aguas profundas.
+    const shallowOxygenFactor = (1.0 - clampedDepth * 0.45) * 0.09;
+    const deepTrenchFactor = clampedDepth * 0.08;
+    const activityBubbleBoost = clampedActivity * 0.22;
+    const ventBubbleBoost = isNearThermalVent ? 0.15 : 0;
+
+    const targetBubblingGain = Math.min(
+      0.42,
+      shallowOxygenFactor +
+        deepTrenchFactor +
+        activityBubbleBoost +
+        ventBubbleBoost
+    );
+    this.currentBubblingVolume = targetBubblingGain;
+
+    if (this.bubblingBusGain) {
+      this.bubblingBusGain.gain.setTargetAtTime(targetBubblingGain, now, 0.1);
+    }
+
+    const safeDelta = Math.min(Math.max(delta, 0.001), 0.1);
+    const bubbleRatePerSec =
+      1.1 +
+      clampedActivity * 4.8 +
+      (isNearThermalVent ? 2.6 : 0) +
+      clampedDepth * 0.75;
+    this.bubblingSpawnAccumulator += safeDelta * bubbleRatePerSec;
+
+    if (this.bubblingSpawnAccumulator >= 1.0) {
+      const count = Math.min(3, Math.floor(this.bubblingSpawnAccumulator));
+      this.bubblingSpawnAccumulator -= count;
+      this.triggerAmbientBubbleCluster(
+        clampedDepth,
+        clampedActivity,
+        isNearThermalVent,
+        count
+      );
+    }
+  }
+
+  private triggerAmbientBubbleCluster(
+    depthNorm: number,
+    activityNorm: number,
+    isNearThermalVent: boolean,
+    count: number
+  ): void {
+    const ctx = this.ctx;
+    const dest = this.bubblingBusGain;
+    if (!ctx || !dest) return;
+
+    const now = ctx.currentTime;
+    // En superficie: burbujas cristalinas y agudas (440-880 Hz).
+    // En fosas abisales: burbujas densas y resonantes de baja frecuencia (185-420 Hz).
+    const minFreq = 440 - depthNorm * 255;
+    const maxFreq = 860 - depthNorm * 430;
+
+    for (let i = 0; i < count; i++) {
+      const delay = i * (0.045 + Math.random() * 0.055);
+      const start = now + delay;
+      const dur = 0.045 + (1 - activityNorm * 0.35) * 0.04 + depthNorm * 0.025;
+      const baseFreq = minFreq + Math.random() * (maxFreq - minFreq);
+
+      const osc = ctx.createOscillator();
+      const filter = ctx.createBiquadFilter();
+      const gain = ctx.createGain();
+      const panner = ctx.createStereoPanner ? ctx.createStereoPanner() : null;
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(baseFreq * 0.76, start);
+      osc.frequency.exponentialRampToValueAtTime(
+        baseFreq * (1.38 + activityNorm * 0.22),
+        start + dur
+      );
+
+      filter.type = 'bandpass';
+      filter.frequency.setValueAtTime(baseFreq, start);
+      filter.Q.value =
+        3.2 + depthNorm * 2.8 + (isNearThermalVent ? 1.5 : 0);
+
+      const peak = 0.14 + activityNorm * 0.1 + (isNearThermalVent ? 0.05 : 0);
+      gain.gain.setValueAtTime(0.0001, start);
+      gain.gain.linearRampToValueAtTime(peak, start + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + dur);
+
+      osc.connect(filter);
+      if (panner) {
+        panner.pan.setValueAtTime((Math.random() * 2 - 1) * 0.65, start);
+        filter.connect(panner);
+        panner.connect(gain);
+      } else {
+        filter.connect(gain);
+      }
+      gain.connect(dest);
+
+      osc.onended = () => {
+        osc.disconnect();
+        filter.disconnect();
+        panner?.disconnect();
+        gain.disconnect();
+      };
+
+      osc.start(start);
+      osc.stop(start + dur + 0.01);
+    }
+  }
+
+  public getAmbientSoundscapeTelemetry(): {
+    depthNorm: number;
+    activityNorm: number;
+    bubblingVolume: number;
+    currentsVolume: number;
+  } {
+    return {
+      depthNorm: this.currentDepthNorm,
+      activityNorm: this.currentActivityNorm,
+      bubblingVolume: this.currentBubblingVolume,
+      currentsVolume: this.currentCurrentsVolume,
+    };
   }
 
   private startMusicScheduler(): void {
@@ -2502,7 +2806,228 @@ export class AudioManager {
     osc.start(startTime);
     osc.stop(startTime + duration + 0.02);
   }
+
+  /**
+   * Sintetizador procedural para los eventos del ritual reproductivo de Spore:
+   * - 'mating_call_emit': Canto sonar bioluminiscente ascendente + eco armónico
+   * - 'egg_heartbeat': Latido embrionario doble (lub-dub) profundo del huevo
+   * - 'egg_hatch_burst': Eclosión cristalina del cascarón y acorde de nacimiento
+   */
+  public playSound(
+    soundId:
+      | 'mating_success_jingle'
+      | 'mating_call_emit'
+      | 'egg_heartbeat'
+      | 'egg_hatch_burst'
+  ): void {
+    this.playSFX(soundId);
+  }
+
+  public playSFX(
+    sfxId:
+      | 'mating_call_emit'
+      | 'mating_success_jingle'
+      | 'egg_heartbeat'
+      | 'egg_hatch_burst'
+  ): void {
+    const vol = this.getEffectiveSfxVolume();
+    if (vol <= 0.01) return;
+    const ctx = this.getContext();
+    const dest = this.getSfxDestination();
+    if (!ctx || !dest) return;
+
+    const now = ctx.currentTime;
+
+    if (sfxId === 'mating_success_jingle') {
+      const notes = [523.25, 659.25, 783.99, 987.77, 1046.5];
+      notes.forEach((freq, idx) => {
+        const start = now + idx * 0.09;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, start);
+        osc.frequency.exponentialRampToValueAtTime(freq * 1.02, start + 0.38);
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.16 * vol, start + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.42);
+
+        osc.connect(gain);
+        gain.connect(dest);
+        osc.start(start);
+        osc.stop(start + 0.45);
+      });
+      return;
+    }
+
+    if (sfxId === 'mating_call_emit') {
+
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      notes.forEach((freq, idx) => {
+        const start = now + idx * 0.11;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(freq * 0.92, start);
+        osc.frequency.exponentialRampToValueAtTime(freq, start + 0.08);
+        osc.frequency.exponentialRampToValueAtTime(freq * 1.04, start + 0.42);
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.14 * vol, start + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.45);
+
+        osc.connect(gain);
+        gain.connect(dest);
+        osc.start(start);
+        osc.stop(start + 0.48);
+      });
+      return;
+    }
+
+    if (sfxId === 'egg_heartbeat') {
+      const pulses = [0, 0.18];
+      pulses.forEach((offset, idx) => {
+        const start = now + offset;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        const baseFreq = idx === 0 ? 95 : 118;
+        osc.frequency.setValueAtTime(baseFreq, start);
+        osc.frequency.exponentialRampToValueAtTime(42, start + 0.14);
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.24 * vol, start + 0.018);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.16);
+
+        osc.connect(gain);
+        gain.connect(dest);
+        osc.start(start);
+        osc.stop(start + 0.18);
+      });
+      return;
+    }
+
+    if (sfxId === 'egg_hatch_burst') {
+      const chord = [523.25, 659.25, 783.99, 1046.5, 1318.5];
+      chord.forEach((freq, idx) => {
+        const start = now + idx * 0.04;
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, start);
+        osc.frequency.exponentialRampToValueAtTime(freq * 1.06, start + 0.45);
+
+        gain.gain.setValueAtTime(0.0001, start);
+        gain.gain.linearRampToValueAtTime(0.12 * vol, start + 0.02);
+        gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.52);
+
+        osc.connect(gain);
+        gain.connect(dest);
+        osc.start(start);
+        osc.stop(start + 0.55);
+      });
+    }
+  }
 }
 
 export const audioManager = new AudioManager();
 
+export interface AmbientAudioUpdateParams {
+  delta: number;
+  x: number;
+  y: number;
+  z: number;
+  arenaRadius: number;
+  growthStage: number;
+  biomeId: string;
+  isNearThermalVent: boolean;
+  isCreatureStage: boolean;
+  currentSpeed: number;
+  isBoosting: boolean;
+  inCombatAlert: boolean;
+  nearestPredatorDistance: number;
+  isAbilityActive: boolean;
+}
+
+/**
+ * Gestor de Audio Ambiental en tiempo real para `GameEngine`:
+ * Evalúa la profundidad batimétrica actual de la célula y la intensidad de actividad
+ * (nado, impulso, combate y habilidades) para modular suavemente los canales de
+ * 'burbujeo' y 'corrientes' en el motor de síntesis Web Audio.
+ */
+export class AmbientAudioManager {
+  private readonly audio: AudioManager;
+  private smoothedDepth = 0.25;
+  private smoothedActivity = 0.05;
+
+  constructor(audio: AudioManager = audioManager) {
+    this.audio = audio;
+  }
+
+  public update(params: AmbientAudioUpdateParams): void {
+    const safeDelta = Math.min(Math.max(params.delta, 0.001), 0.1);
+
+    // 1. Calcular profundidad normalizada (0 = aguas someras luminosas, 1 = fosa abisal profunda)
+    const radialDist = Math.hypot(params.x, params.z);
+    const radialNorm = Math.min(
+      1.0,
+      radialDist / Math.max(60, params.arenaRadius)
+    );
+    const stageDepthFactor = Math.max(
+      0,
+      Math.min(1, (params.growthStage - 1) / 4)
+    );
+    const biomeDepthBonus =
+      params.biomeId === 'fosa_termal'
+        ? 0.28
+        : params.biomeId === 'arrecife_abisal'
+        ? 0.22
+        : 0.0;
+    const verticalDepthFactor = params.isCreatureStage
+      ? Math.max(0, Math.min(1, (-params.y + 1.5) / 8.0))
+      : radialNorm * 0.55 + stageDepthFactor * 0.3 + biomeDepthBonus;
+
+    const targetDepth = Math.max(0, Math.min(1, verticalDepthFactor));
+
+    // 2. Calcular intensidad de actividad (0 = reposo tranquilo, 1 = frenesí / impulso / combate)
+    const speedNorm = Math.min(1.0, Math.abs(params.currentSpeed) / 14.0);
+    const boostBonus = params.isBoosting ? 0.32 : 0.0;
+    const combatBonus = params.inCombatAlert
+      ? 0.35
+      : params.nearestPredatorDistance < 28.0
+      ? 0.16 * (1.0 - params.nearestPredatorDistance / 28.0)
+      : 0.0;
+    const abilityBonus = params.isAbilityActive ? 0.22 : 0.0;
+
+    const targetActivity = Math.max(
+      0,
+      Math.min(1, speedNorm * 0.55 + boostBonus + combatBonus + abilityBonus)
+    );
+
+    // Suavizado exponencial para evitar saltos bruscos de volumen
+    const lerpFactor = Math.min(1.0, safeDelta * 4.5);
+    this.smoothedDepth += (targetDepth - this.smoothedDepth) * lerpFactor;
+    this.smoothedActivity +=
+      (targetActivity - this.smoothedActivity) * lerpFactor;
+
+    const isUnderwater = !params.isCreatureStage || params.y < 0.85;
+
+    this.audio.updateAmbientSoundscape(
+      safeDelta,
+      this.smoothedDepth,
+      this.smoothedActivity,
+      params.isNearThermalVent,
+      isUnderwater
+    );
+  }
+
+  public silence(delta = 0.016): void {
+    this.audio.updateAmbientSoundscape(
+      delta,
+      this.smoothedDepth,
+      0,
+      false,
+      false
+    );
+  }
+}

@@ -6,9 +6,11 @@ import { DeathModal } from './components/DeathModal';
 import { DevToolsModal } from './components/DevToolsModal';
 import { GameHUD } from './components/GameHUD';
 import { GenesisModal } from './components/GenesisModal';
+import { InteractiveTutorialOverlay } from './components/InteractiveTutorialOverlay';
 import { MainMenuModal } from './components/MainMenuModal';
 import { PauseModal } from './components/PauseModal';
 import { SettingsModal } from './components/SettingsModal';
+import { StageEvolutionSummaryModal } from './components/StageEvolutionSummaryModal';
 import { UnlockBannerToast } from './components/UnlockBannerToast';
 import { GAME_CONFIG } from './game/config';
 import { GameEngine } from './game/GameEngine';
@@ -387,6 +389,18 @@ export default function App() {
     engineRef.current?.evolveToCreatureStage();
   }, []);
 
+  const handleProceedToLand = useCallback(() => {
+    engineRef.current?.proceedFromSummaryToLand();
+  }, []);
+
+  const handleAdvanceFromVitals = useCallback(() => {
+    engineRef.current?.advanceTutorialFromVitals();
+  }, []);
+
+  const handleSkipTutorial = useCallback(() => {
+    engineRef.current?.skipTutorial();
+  }, []);
+
   const handleSkipBrainCinematic = useCallback(() => {
     engineRef.current?.skipBrainCinematic();
   }, []);
@@ -694,6 +708,14 @@ export default function App() {
         </div>
       )}
 
+      {/* Spore-Style Geological Timeline & Cell Stage Summary Modal */}
+      {snapshot.isEvolutionSummaryOpen && snapshot.stageEvolutionHistory && (
+        <StageEvolutionSummaryModal
+          history={snapshot.stageEvolutionHistory}
+          onProceedToLand={handleProceedToLand}
+        />
+      )}
+
       {/* 3D Brain Evolution Sequence Overlay (Cell -> Terrestrial Creature) */}
       {isBrainCinematic && brainCinematic && (
         <BrainTransitionModal
@@ -854,6 +876,24 @@ export default function App() {
           />
         ) : null}
       </AnimatePresence>
+
+      {/* Post-Meteor Interactive Step-by-Step Tutorial Overlay */}
+      {!isEditing &&
+        !isMenu &&
+        !isIntroCinematic &&
+        !isBrainCinematic &&
+        !isFadingToIntro &&
+        !isPaused &&
+        !isTransitioning &&
+        !snapshot.isEvolutionSummaryOpen &&
+        snapshot.tutorialState && (
+          <InteractiveTutorialOverlay
+            step={snapshot.tutorialState.currentStep}
+            isActive={snapshot.tutorialState.isActive}
+            onAdvanceFromVitals={handleAdvanceFromVitals}
+            onSkipTutorial={handleSkipTutorial}
+          />
+        )}
 
       {/* Pause Menu Modal (Escape) */}
       {isPaused && (

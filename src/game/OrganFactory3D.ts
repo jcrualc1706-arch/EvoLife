@@ -1,11 +1,29 @@
 import * as THREE from 'three';
 import { normalizeAdaptationId } from './evolutionData';
+import type { PlayerCell } from './PlayerCell';
+import {
+  CellBodyShape,
+  CellColorTheme,
+  PlacedOrganInstance,
+} from './types';
+
+export type LimbBoneRole =
+  | 'hip'
+  | 'knee'
+  | 'ankle'
+  | 'foot'
+  | 'shoulder'
+  | 'elbow'
+  | 'wrist'
+  | 'hand';
 
 export interface OrganVisualInstance {
   group: THREE.Group;
+  position: THREE.Vector3;
   nozzleLocalPos?: THREE.Vector3;
   distalSocketLocalPos?: THREE.Vector3;
   distalSocketGroup?: THREE.Group;
+  getBoneNode: (role: LimbBoneRole) => THREE.Object3D | null;
   animate: (elapsedTime: number, speedRatio: number, isBoosting: boolean) => void;
   setHighlight: (mode: 'none' | 'selected' | 'preview_valid' | 'preview_invalid') => void;
   setColorOverride: (colorHex?: string) => void;
@@ -16,6 +34,7 @@ export interface OrganVisualInstance {
     boneLength: number
   ) => void;
   getLowestFootWorldY?: () => number;
+  getLowestFootLocalY?: () => number;
   getJointGizmoObjects: () => THREE.Object3D[];
   dispose: () => void;
 }
@@ -2705,7 +2724,6 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
   const highlightRing = new THREE.Mesh(highlightRingGeo, highlightRingMat);
   highlightRing.position.set(0, 0, 0.03);
   highlightRing.visible = false;
-  group.add(highlightRing);
 
   const setHighlight = (
     mode: 'none' | 'selected' | 'preview_valid' | 'preview_invalid'
@@ -2716,7 +2734,13 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     }
     if (mode === 'none') {
       highlightRing.visible = false;
+      if (highlightRing.parent === group) {
+        group.remove(highlightRing);
+      }
       return;
+    }
+    if (highlightRing.parent !== group) {
+      group.add(highlightRing);
     }
     highlightRing.visible = true;
     if (mode === 'selected') {
@@ -2852,45 +2876,46 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     distalSocketLocalPos.copy(socketPos);
   };
 
+  const getBoneNode = (role: LimbBoneRole): THREE.Object3D | null => {
+    switch (role) {
+      case 'hip':
+      case 'shoulder':
+        return limbProximalPivot ?? group.children[0] ?? null;
+      case 'knee':
+      case 'elbow':
+        return limbMiddlePivot ?? null;
+      case 'ankle':
+      case 'wrist':
+        return limbDistalSocketGroup ?? null;
+      case 'foot':
+      case 'hand':
+        return limbDistalSocketGroup && limbDistalSocketGroup.children.length > 0
+          ? limbDistalSocketGroup.children[0]
+          : null;
+      default:
+        return null;
+    }
+  };
+
   const wrappedAnimate = (
     elapsedTime: number,
     speedRatio: number,
     isBoosting: boolean
   ) => {
-    animateFn(elapsedTime, speedRatio, isBoosting);
-
-    // Secondary Reactive Articulation for Knees/Elbows and Ankles/Wrists (carrying attached Feet & Hands)
-    if (limbDistalSocketGroup && limbMiddlePivot) {
-      const rootChild = group.children[0];
-      if (id.startsWith('leg_') && rootChild) {
-        // Leg gait: rootChild.rotation.x is the active hip stride wave
-        const strideWave = rootChild.rotation.x;
-        // Knee bends dynamically during the forward/upward swing phase
-        limbMiddlePivot.rotation.x =
-          savedMiddleJointAngle + Math.max(0, -strideWave) * 0.48;
-        // Ankle counter-rotates with natural contact flattening
-        limbDistalSocketGroup.rotation.x =
-          -(savedUpperJointAngle + savedMiddleJointAngle) - strideWave * 0.35;
-      } else if (id.startsWith('arm_')) {
-        const phase = elapsedTime * (isBoosting ? 11.0 : 6.5);
-        const moveFactor = Math.min(1.4, Math.max(0.15, speedRatio));
-        // Elbow flexes with slight phase lag
-        limbMiddlePivot.rotation.x =
-          savedMiddleJointAngle + Math.sin(phase - 0.25) * 0.18 * moveFactor;
-        // Wrist oscillates with damped phase lag (phase - 0.4) for organic hand follow-through
-        limbDistalSocketGroup.rotation.z =
-          Math.sin(phase - 0.4) * 0.25 * moveFactor;
-        limbDistalSocketGroup.rotation.x =
-          Math.cos(phase - 0.4) * 0.18 * moveFactor;
-      }
+    // Legs and arms are driven by the biphasic procedural gait engine (updateLimbAnimations in PlayerCell)
+    if (id.startsWith('leg_') || id.startsWith('arm_')) {
+      return;
     }
+    animateFn(elapsedTime, speedRatio, isBoosting);
   };
 
   return {
     group,
+    position: group.position,
     nozzleLocalPos,
     distalSocketLocalPos,
     distalSocketGroup: limbDistalSocketGroup,
+    getBoneNode,
     animate: wrappedAnimate,
     setHighlight,
     setColorOverride,
@@ -2900,6 +2925,16 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
       group.updateMatrixWorld(true);
       return new THREE.Box3().setFromObject(group).min.y;
     },
+    getLowestFootLocalY: () => {
+      group.updateMatrix();
+      if (distalSocketLocalPos) {
+        const footSolePos = distalSocketLocalPos.clone();
+        footSolePos.y -= 0.05;
+        footSolePos.applyMatrix4(group.matrix);
+        return footSolePos.y;
+      }
+      return group.position.y - 0.75 * group.scale.y;
+    },
     getJointGizmoObjects: () => jointGizmoHitMeshes,
     dispose: () => {
       for (const g of geometries) g.dispose();
@@ -2907,3 +2942,231 @@ export function createOrganVisual(rawAdaptationId: string): OrganVisualInstance 
     },
   };
 }
+
+const CLONE_COLOR_THEMES: Record<
+  CellColorTheme,
+  {
+    membraneColor: number;
+    membraneEmissive: number;
+    nucleusColor: number;
+    nucleusEmissive: number;
+  }
+> = {
+  cyan: {
+    membraneColor: 0x22d3ee,
+    membraneEmissive: 0x0891b2,
+    nucleusColor: 0xa7f3d0,
+    nucleusEmissive: 0x10b981,
+  },
+  emerald: {
+    membraneColor: 0x34d399,
+    membraneEmissive: 0x059669,
+    nucleusColor: 0xfef08a,
+    nucleusEmissive: 0x84cc16,
+  },
+  crimson: {
+    membraneColor: 0xfb7185,
+    membraneEmissive: 0xe11d48,
+    nucleusColor: 0xfde047,
+    nucleusEmissive: 0xf97316,
+  },
+  violet: {
+    membraneColor: 0xc084fc,
+    membraneEmissive: 0x7e22ce,
+    nucleusColor: 0x67e8f9,
+    nucleusEmissive: 0x06b6d4,
+  },
+};
+
+/**
+ * Construye un clon 3D exacto de la morfología celular del jugador (membrana, núcleo y órganos acoplados)
+ * para poblar la sopa primigenia con congéneres idénticos de la misma especie.
+ */
+export function buildCellMeshClone(
+  bodyShape: CellBodyShape,
+  colorTheme: CellColorTheme,
+  placedOrgans: readonly PlacedOrganInstance[],
+  growthStage: number
+): THREE.Group {
+  const rootGroup = new THREE.Group();
+  const palette = CLONE_COLOR_THEMES[colorTheme] ?? CLONE_COLOR_THEMES.cyan;
+
+  const shapeFactors =
+    bodyShape === 'esferico'
+      ? { sx: 1.18, sy: 1.0, sz: 0.84 }
+      : bodyShape === 'alargado'
+      ? { sx: 0.8, sy: 0.92, sz: 1.24 }
+      : { sx: 1.0, sy: 1.0, sz: 1.0 };
+
+  const geometries: THREE.BufferGeometry[] = [];
+  const materials: THREE.Material[] = [];
+  const organVisuals: OrganVisualInstance[] = [];
+
+  // 1. Membrana celular translúcida
+  const membraneGeo = new THREE.SphereGeometry(0.95, 22, 18);
+  membraneGeo.scale(
+    shapeFactors.sx,
+    0.68 * shapeFactors.sy,
+    1.42 * shapeFactors.sz
+  );
+  geometries.push(membraneGeo);
+
+  const membraneMat = new THREE.MeshPhysicalMaterial({
+    color: palette.membraneColor,
+    emissive: palette.membraneEmissive,
+    emissiveIntensity: 0.38,
+    roughness: 0.18,
+    metalness: 0.05,
+    transmission: 0.62,
+    transparent: true,
+    opacity: 0.88,
+  });
+  materials.push(membraneMat);
+
+  const membraneMesh = new THREE.Mesh(membraneGeo, membraneMat);
+  rootGroup.add(membraneMesh);
+
+  // 2. Núcleo celular bioluminiscente interno
+  const nucleusGeo = new THREE.SphereGeometry(0.42, 16, 14);
+  nucleusGeo.scale(1.0, 0.78, 1.15);
+  geometries.push(nucleusGeo);
+
+  const nucleusMat = new THREE.MeshStandardMaterial({
+    color: palette.nucleusColor,
+    emissive: palette.nucleusEmissive,
+    emissiveIntensity: 0.95,
+    roughness: 0.3,
+  });
+  materials.push(nucleusMat);
+
+  const nucleusMesh = new THREE.Mesh(nucleusGeo, nucleusMat);
+  nucleusMesh.position.set(0, 0.04, 0.08);
+  rootGroup.add(nucleusMesh);
+
+  // 3. Órganos instalados clonados con simetría bilateral y escala morfológica
+  const rx = 0.92 * shapeFactors.sx;
+  const rz = 1.35 * shapeFactors.sz;
+
+  const attachOrganAtAngle = (inst: PlacedOrganInstance, angle: number, isMirror: boolean) => {
+    const visual = createOrganVisual(inst.adaptationId);
+    const x = Math.sin(angle) * rx;
+    const z = Math.cos(angle) * rz;
+    const normalAngle = Math.atan2(x / (rx * rx), z / (rz * rz));
+
+    const yaw = (inst.orientationYaw ?? 0) * (isMirror ? -1 : 1);
+    const pitch = inst.orientationPitch ?? 0;
+
+    visual.group.position.set(x, 0.02, z);
+    visual.group.rotation.set(pitch, normalAngle + yaw, 0);
+
+    const morph = inst.morphology;
+    if (morph) {
+      const sOverall = morph.scaleOverall ?? 1.0;
+      const sW = morph.scaleWidth ?? 1.0;
+      const sH = morph.scaleHeight ?? 1.0;
+      visual.group.scale.set(
+        sOverall * sW * (isMirror ? -1 : 1),
+        sOverall,
+        sOverall * sH
+      );
+    } else if (isMirror) {
+      visual.group.scale.set(-1, 1, 1);
+    }
+
+
+    rootGroup.add(visual.group);
+    organVisuals.push(visual);
+  };
+
+
+  for (const inst of placedOrgans) {
+    attachOrganAtAngle(inst, inst.angle, false);
+    if (inst.mirrorSymmetry && Math.abs(Math.sin(inst.angle)) > 0.16) {
+      attachOrganAtAngle(inst, -inst.angle, true);
+    }
+  }
+
+  // 4. Escala según etapa de crecimiento (1..5)
+  const stageScale = 0.85 + Math.max(1, Math.min(5, growthStage)) * 0.1;
+  rootGroup.scale.setScalar(stageScale);
+
+  rootGroup.userData.organVisuals = organVisuals;
+  rootGroup.userData.disposeClone = () => {
+    for (const v of organVisuals) v.dispose();
+    for (const g of geometries) g.dispose();
+    for (const m of materials) m.dispose();
+  };
+
+  return rootGroup;
+}
+
+/**
+ * Clona al 100% la estructura morfológica 3D real de la célula del jugador
+ * (membrana esculpida, material físico con tema de color, núcleo, orgánulos
+ * internos y todos los órganos colocados con sus posiciones, giros, escalas y simetría).
+ */
+export function buildIdenticalCellClone(playerCell: PlayerCell): THREE.Group {
+  const cloneGroup = new THREE.Group();
+  const clonedGeometries: THREE.BufferGeometry[] = [];
+
+  // 1. Clonar la membrana celular exacta (con su geometría deformada por columna y su material actual)
+  const originalMembrane = playerCell.cellMembraneMesh;
+  if (originalMembrane) {
+    const clonedGeo = originalMembrane.geometry.clone();
+    clonedGeometries.push(clonedGeo);
+
+    const clonedMembrane = new THREE.Mesh(clonedGeo, originalMembrane.material);
+    clonedMembrane.scale.copy(originalMembrane.scale);
+    clonedMembrane.position.copy(originalMembrane.position);
+    clonedMembrane.rotation.copy(originalMembrane.rotation);
+    clonedMembrane.castShadow = originalMembrane.castShadow;
+    clonedMembrane.receiveShadow = originalMembrane.receiveShadow;
+
+    // Clonar orgánulos internos (núcleo bioluminiscente, mitocondrias/vacuolas y cilios visibles)
+    for (const child of originalMembrane.children) {
+      if (!child.visible) continue;
+      const clonedChild = child.clone(true);
+      clonedMembrane.add(clonedChild);
+    }
+
+    cloneGroup.add(clonedMembrane);
+  }
+
+  // 2. Clonar todos los órganos colocados (bocas, ojos, flagelos, púas, glándulas) en su posición y escala exacta
+  for (const organEntry of playerCell.activeOrganEntries) {
+    if (organEntry.primary && organEntry.primary.group.visible) {
+      const clonedPrimary = organEntry.primary.group.clone(true);
+      clonedPrimary.position.copy(organEntry.primary.group.position);
+      clonedPrimary.rotation.copy(organEntry.primary.group.rotation);
+      clonedPrimary.scale.copy(organEntry.primary.group.scale);
+      cloneGroup.add(clonedPrimary);
+    }
+
+    if (organEntry.mirror && organEntry.mirror.group.visible) {
+      const clonedMirror = organEntry.mirror.group.clone(true);
+      clonedMirror.position.copy(organEntry.mirror.group.position);
+      clonedMirror.rotation.copy(organEntry.mirror.group.rotation);
+      clonedMirror.scale.copy(organEntry.mirror.group.scale);
+      cloneGroup.add(clonedMirror);
+    }
+  }
+
+  // 3. Igualar la escala de crecimiento general del jugador
+  cloneGroup.scale.copy(playerCell.mesh.scale);
+
+  cloneGroup.userData.disposeClone = () => {
+    for (const g of clonedGeometries) {
+      g.dispose();
+    }
+  };
+
+  return cloneGroup;
+}
+
+export const organFactory = {
+  createOrganVisual,
+  buildCellMeshClone,
+  buildIdenticalCellClone,
+};
+
+

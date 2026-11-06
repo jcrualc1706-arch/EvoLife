@@ -1,18 +1,39 @@
 import * as THREE from 'three';
 import { audioManager } from './AudioManager';
 import { GAME_CONFIG } from './config';
-import { createOrganVisual, OrganVisualInstance } from './OrganFactory3D';
-import { PooledAcidProjectile } from './PlayerCell';
-import { EnvironmentObstacle } from './SceneEnvironment';
+import {
+  createOrganVisual,
+  organFactory,
+  OrganVisualInstance,
+} from './OrganFactory3D';
+import { PlayerCell, PooledAcidProjectile } from './PlayerCell';
+import {
+  CONTINENT_CONFIG,
+  EnvironmentObstacle,
+  getLandHeightAt,
+} from './SceneEnvironment';
 import { SpatialHashGrid } from './SpatialHashGrid';
 import {
   CellularGrowthStage,
   EvolutionaryStage,
+  PlayerStats,
   PoisonCloudHazard,
   PredatorBehaviorState,
   PredatorTelemetry,
   SpeciesType,
 } from './types';
+
+export interface KinCellEntity {
+  id: string;
+  mesh: THREE.Group;
+  position: THREE.Vector3;
+  velocity: THREE.Vector3;
+  targetHeading: number;
+  isMateReceptive: boolean;
+  pingTimer?: number;
+  wanderTimer?: number;
+}
+
 
 type CreatureAttitude = 'herbivore' | 'neutral' | 'hostile';
 
@@ -563,6 +584,23 @@ interface OrganismEntity {
   electricArcMeshes: THREE.Mesh[];
   tailSegments: THREE.Mesh[];
   attachedOrgans: OrganVisualInstance[];
+  cellBodyGroup: THREE.Group;
+  landCreatureGroup: THREE.Group;
+  landSpeciesName: string;
+  landArchetype: 'bipedo_agil' | 'cuadrupedo_robusto' | 'reptiliano_rastreador';
+  landLegs: {
+    hipGroup: THREE.Group;
+    kneeGroup: THREE.Group;
+    side: number;
+    isRear: boolean;
+  }[];
+  landArms: THREE.Group[];
+  landTailGroup: THREE.Group | null;
+  landHeadGroup: THREE.Group | null;
+  landLowerJaw: THREE.Object3D | null;
+  standingOffset: number;
+  verticalVelocity: number;
+  packNestIndex: number;
   legsGroup: THREE.Group;
   legs: THREE.Mesh[];
   stateRingMat: THREE.MeshBasicMaterial;
@@ -644,14 +682,19 @@ const _toTarget = new THREE.Vector3();
 const _forward = new THREE.Vector3();
 
 export class PredatorManager {
+  private readonly scene: THREE.Scene;
   private currentStage: EvolutionaryStage = 'cell_stage';
   private playerGrowthStage: CellularGrowthStage = 1;
   private readonly organisms: OrganismEntity[] = [];
+  public kinCells: KinCellEntity[] = [];
+  private playerCellRef: PlayerCell | null = null;
+  private isEcosystemCurrentlyVisible = true;
   private readonly telemetryCache: PredatorTelemetry[] = [];
   private readonly spatialGrid = new SpatialHashGrid<OrganismEntity>();
   private readonly nearbyEntitiesBuffer: OrganismEntity[] = [];
   private readonly sharedGeometries: THREE.BufferGeometry[] = [];
   private readonly disposableMaterials: THREE.Material[] = [];
+
   private readonly floatingDamagePool: FloatingDamagePopup[] = [];
   private floatingDamageCursor = 0;
   private readonly deathParticlePool: DeathBurstParticle[] = [];
@@ -722,10 +765,12 @@ export class PredatorManager {
   private electricArcMat!: THREE.MeshBasicMaterial;
 
   constructor(scene: THREE.Scene) {
+    this.scene = scene;
     this.initSharedAssets();
     this.initCombatVfxPools(scene);
     this.spawnEcosystem(scene);
   }
+
 
   public setObstacleQuery(
     queryFn: (
@@ -753,8 +798,9 @@ export class PredatorManager {
     for (let i = 0; i < obstacles.length; i++) {
       const o = obstacles[i];
       if (
-        entity.position.y < o.minY - 0.4 ||
-        entity.position.y > o.maxY + 0.4
+        this.currentStage !== 'creature_stage' &&
+        (entity.position.y < o.minY - 0.4 ||
+          entity.position.y > o.maxY + 0.4)
       ) {
         continue;
       }
@@ -1426,6 +1472,46 @@ export class PredatorManager {
     popup.life = 0.8;
     popup.maxLife = 0.8;
     popup.velocityY = style === 'critical_hit' ? 3.1 : 2.45;
+    popup.sprite.visible = true;
+  }
+
+  public spawnFloatingText(
+    text: string,
+    worldPos: THREE.Vector3,
+    fillColor = '#22c55e'
+  ): void {
+    const popup =
+      this.floatingDamagePool.find((p) => !p.active) ??
+      this.floatingDamagePool[
+        this.floatingDamageCursor % this.floatingDamagePool.length
+      ];
+    this.floatingDamageCursor++;
+
+    const ctx = popup.ctx;
+    if (ctx) {
+      ctx.clearRect(0, 0, popup.canvas.width, popup.canvas.height);
+      ctx.save();
+      ctx.font = '800 22px "Space Grotesk", system-ui, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.shadowColor = fillColor;
+      ctx.shadowBlur = 10;
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.strokeText(text, 96, 48);
+      ctx.fillStyle = fillColor;
+      ctx.fillText(text, 96, 48);
+      ctx.restore();
+      popup.texture.needsUpdate = true;
+    }
+
+    popup.sprite.position.set(worldPos.x, worldPos.y + 1.85, worldPos.z);
+    popup.sprite.scale.set(3.4, 1.7, 1);
+    popup.material.opacity = 1.0;
+    popup.active = true;
+    popup.life = 1.1;
+    popup.maxLife = 1.1;
+    popup.velocityY = 2.1;
     popup.sprite.visible = true;
   }
 
@@ -3436,6 +3522,18 @@ export class PredatorManager {
         }
       }
 
+      // Wrap all cellular meshes created in switch(speciesType) into cellBodyGroup so they can be cleanly hidden in creature_stage
+      const cellBodyGroup = new THREE.Group();
+      while (group.children.length > 0) {
+        cellBodyGroup.add(group.children[0]);
+      }
+      group.add(cellBodyGroup);
+
+      // Build Full 3D Terrestrial Creature Model (ARK / Spore Archetype with 5-segment torso, legs, feet, arms, eyes, and jaws/beak)
+      const landVisual = this.buildTerrestrialCreatureModel(profile, i);
+      landVisual.landCreatureGroup.visible = false;
+      group.add(landVisual.landCreatureGroup);
+
       // Unified Ground Attitude Circle (Green 0x22c55e for Herbivores, White 0xf8fafc for Neutral, Red 0xef4444 for Hostile)
       const initialRingColor =
         profile.attitude === 'herbivore'
@@ -3455,28 +3553,10 @@ export class PredatorManager {
       ringMesh.position.y = -0.95;
       group.add(ringMesh);
 
-      // Pre-allocated Terrestrial Legs Group (4 legs, shown in Creature Stage)
+      // Legacy fallback group (kept hidden)
       const legsGroup = new THREE.Group();
       legsGroup.visible = false;
       const legs: THREE.Mesh[] = [];
-      const legMat = profile.isHerbivore
-        ? this.herbivoreCiliaMat
-        : profile.tier === 3
-        ? this.leviathanMandibleMat
-        : this.hunterMandibleMat;
-      const legSockets: [number, number, number, number][] = [
-        [-0.78, -0.2, -0.5, -1],
-        [0.78, -0.2, -0.5, 1],
-        [-0.82, -0.2, 0.5, -1],
-        [0.82, -0.2, 0.5, 1],
-      ];
-      for (const [lx, ly, lz, side] of legSockets) {
-        const legMesh = new THREE.Mesh(this.creatureLegGeo, legMat);
-        legMesh.position.set(lx, ly, lz);
-        legMesh.rotation.z = side * 0.28;
-        legsGroup.add(legMesh);
-        legs.push(legMesh);
-      }
       group.add(legsGroup);
 
       // 3D Circular Health Bar Ring (ShaderMaterial around/above the organism, visible only when damaged/in combat)
@@ -3556,6 +3636,18 @@ export class PredatorManager {
         ciliaMeshes,
         electricArcMeshes,
         attachedOrgans,
+        cellBodyGroup,
+        landCreatureGroup: landVisual.landCreatureGroup,
+        landSpeciesName: landVisual.landSpeciesName,
+        landArchetype: landVisual.landArchetype,
+        landLegs: landVisual.landLegs,
+        landArms: landVisual.landArms,
+        landTailGroup: landVisual.landTailGroup,
+        landHeadGroup: landVisual.landHeadGroup,
+        landLowerJaw: landVisual.landLowerJaw,
+        standingOffset: landVisual.standingOffset,
+        verticalVelocity: 0,
+        packNestIndex: Math.floor(i / 4) % 12,
         legsGroup,
         legs,
         stateRingMat,
@@ -3577,8 +3669,432 @@ export class PredatorManager {
   }
 
   /**
+   * Computes the world coordinate of one of the 12 secondary rival nests on emergent continental land.
+   */
+  private getRivalNestCenter(nestIndex: number): { x: number; z: number; y: number } {
+    const n = ((nestIndex % 12) + 12) % 12;
+    const baseAngle = (n / 12) * Math.PI * 2 + 0.35;
+    const ringRadius = n < 6 ? 85 + (n % 3) * 42 : 220 + ((n - 6) % 6) * 75;
+    let nx = Math.cos(baseAngle) * ringRadius;
+    let nz = Math.sin(baseAngle) * ringRadius;
+    let ny = getLandHeightAt(nx, nz);
+    if (ny < 0.8) {
+      nx = Math.cos(baseAngle) * 95;
+      nz = Math.sin(baseAngle) * 95;
+      ny = Math.max(0.8, getLandHeightAt(nx, nz));
+    }
+    return { x: nx, z: nz, y: ny };
+  }
+
+  /**
+   * Builds a complete 3D terrestrial creature model (ARK / Spore style) using one of the 3 body archetypes
+   * (`bipedo_agil`, `cuadrupedo_robusto`, `reptiliano_rastreador`) with opaque scaly/leathery terrestrial skin,
+   * 5 chained anatomical segments, articulated legs with feet, forelimbs/claws, binocular/lateral eyes, and jaws/beaks.
+   */
+  private buildTerrestrialCreatureModel(
+    profile: SpeciesProfile,
+    index: number
+  ): {
+    landCreatureGroup: THREE.Group;
+    landSpeciesName: string;
+    landArchetype: 'bipedo_agil' | 'cuadrupedo_robusto' | 'reptiliano_rastreador';
+    landLegs: {
+      hipGroup: THREE.Group;
+      kneeGroup: THREE.Group;
+      side: number;
+      isRear: boolean;
+    }[];
+    landArms: THREE.Group[];
+    landTailGroup: THREE.Group | null;
+    landHeadGroup: THREE.Group | null;
+    landLowerJaw: THREE.Object3D | null;
+    standingOffset: number;
+  } {
+    const landCreatureGroup = new THREE.Group();
+    const landLegs: {
+      hipGroup: THREE.Group;
+      kneeGroup: THREE.Group;
+      side: number;
+      isRear: boolean;
+    }[] = [];
+    const landArms: THREE.Group[] = [];
+
+    // 1. Choose Archetype & Terrestrial Name based on ecological role and tier
+    let landArchetype: 'bipedo_agil' | 'cuadrupedo_robusto' | 'reptiliano_rastreador';
+    let landSpeciesName: string;
+
+    if (profile.isHerbivore) {
+      if (profile.tier === 3) {
+        landArchetype = 'cuadrupedo_robusto';
+        landSpeciesName = 'Braquiosaurio Continental';
+      } else if (index % 2 === 0) {
+        landArchetype = 'cuadrupedo_robusto';
+        landSpeciesName =
+          profile.tier === 2
+            ? 'Herbívoro Acorazado de Pradera'
+            : 'Pastador Cuadrúpedo Costero';
+      } else {
+        landArchetype = 'bipedo_agil';
+        landSpeciesName =
+          profile.tier === 2
+            ? 'Ornitópodo de Cresta Vocal'
+            : 'Corredor Herbívoro Bípedo';
+      }
+    } else if (profile.attitude === 'neutral') {
+      landArchetype =
+        index % 2 === 0 ? 'cuadrupedo_robusto' : 'reptiliano_rastreador';
+      landSpeciesName =
+        profile.tier >= 2
+          ? 'Estegosaurio Territorial'
+          : 'Rastreador de Espinas';
+    } else {
+      if (profile.tier === 3) {
+        landArchetype = index % 2 === 0 ? 'bipedo_agil' : 'cuadrupedo_robusto';
+        landSpeciesName =
+          landArchetype === 'bipedo_agil'
+            ? 'Tirano Alfa Continental'
+            : 'Gorgonópsido Colosal';
+      } else if (index % 3 === 0) {
+        landArchetype = 'reptiliano_rastreador';
+        landSpeciesName = 'Varano Cazador de Maleza';
+      } else {
+        landArchetype = 'bipedo_agil';
+        landSpeciesName =
+          profile.tier === 2
+            ? 'Terópodo Rapaz de Garras'
+            : 'Velocirraptor Costero';
+      }
+    }
+
+    // 2. Terrestrial Skin & Scale Materials (opaque organic skin, dorsal plates, belly & claws)
+    const skinHue = profile.isHerbivore
+      ? 0.24 + ((index % 5) - 2) * 0.035
+      : profile.attitude === 'neutral'
+      ? 0.09 + ((index % 4) - 1.5) * 0.025
+      : 0.02 + ((index % 5) - 2) * 0.02;
+    const skinSat = profile.isHerbivore ? 0.58 : 0.68;
+    const skinLight = profile.tier === 3 ? 0.28 : 0.36 + (index % 3) * 0.04;
+
+    const skinColor = new THREE.Color().setHSL(skinHue, skinSat, skinLight);
+    const dorsalColor = skinColor.clone().offsetHSL(-0.02, 0.1, -0.12);
+    const hornColor = new THREE.Color(profile.isHerbivore ? 0xfef3c7 : 0xfde68a);
+
+    const skinMat = new THREE.MeshStandardMaterial({
+      color: skinColor,
+      roughness: 0.72,
+      metalness: 0.06,
+    });
+    const dorsalMat = new THREE.MeshStandardMaterial({
+      color: dorsalColor,
+      roughness: 0.58,
+      metalness: 0.12,
+    });
+    const hornMat = new THREE.MeshStandardMaterial({
+      color: hornColor,
+      roughness: 0.35,
+      metalness: 0.15,
+    });
+    this.disposableMaterials.push(skinMat, dorsalMat, hornMat);
+
+    // 3. Build 5-Segment Chained Torso (pecho, abdomen, cuello, cabeza, cola)
+    const isBiped = landArchetype === 'bipedo_agil';
+    const isQuad = landArchetype === 'cuadrupedo_robusto';
+    const standingOffset = isBiped ? 1.15 : isQuad ? 1.05 : 0.72;
+
+    const torsoGroup = new THREE.Group();
+    landCreatureGroup.add(torsoGroup);
+
+    // Pecho & Abdomen
+    const chestGeo = new THREE.SphereGeometry(0.62, 16, 14);
+    const chestMesh = new THREE.Mesh(chestGeo, skinMat);
+    chestMesh.castShadow = true;
+    chestMesh.receiveShadow = true;
+    if (isBiped) {
+      chestMesh.position.set(0, 0.18, -0.25);
+      chestMesh.scale.set(0.95, 1.08, 1.35);
+      chestMesh.rotation.x = -0.28;
+    } else if (isQuad) {
+      chestMesh.position.set(0, 0.08, -0.38);
+      chestMesh.scale.set(1.22, 1.12, 1.45);
+    } else {
+      chestMesh.position.set(0, -0.05, -0.32);
+      chestMesh.scale.set(1.18, 0.72, 1.48);
+    }
+    this.sharedGeometries.push(chestGeo);
+    torsoGroup.add(chestMesh);
+
+    const abdomenGeo = new THREE.SphereGeometry(0.68, 16, 14);
+    const abdomenMesh = new THREE.Mesh(abdomenGeo, skinMat);
+    abdomenMesh.castShadow = true;
+    abdomenMesh.receiveShadow = true;
+    if (isBiped) {
+      abdomenMesh.position.set(0, 0.02, 0.38);
+      abdomenMesh.scale.set(1.05, 1.12, 1.35);
+    } else if (isQuad) {
+      abdomenMesh.position.set(0, 0.06, 0.42);
+      abdomenMesh.scale.set(1.32, 1.18, 1.48);
+    } else {
+      abdomenMesh.position.set(0, -0.08, 0.42);
+      abdomenMesh.scale.set(1.22, 0.68, 1.42);
+    }
+    this.sharedGeometries.push(abdomenGeo);
+    torsoGroup.add(abdomenMesh);
+
+    // Dorsal Osteoderm Plates along the back
+    const plateGeo = new THREE.ConeGeometry(0.16, 0.38, 6);
+    this.sharedGeometries.push(plateGeo);
+    for (let pIdx = 0; pIdx < 4; pIdx++) {
+      const plate = new THREE.Mesh(plateGeo, dorsalMat);
+      const pz = -0.55 + pIdx * 0.42;
+      const py = (isBiped ? 0.68 - pIdx * 0.06 : isQuad ? 0.76 : 0.36);
+      plate.position.set(0, py, pz);
+      plate.rotation.x = -0.22;
+      plate.scale.set(0.85, 1.0 + (profile.tier === 3 ? 0.45 : 0), 1.3);
+      torsoGroup.add(plate);
+    }
+
+    // Neck & Head Group (facing -Z)
+    const neckGeo = new THREE.CylinderGeometry(0.24, 0.36, 0.75, 10);
+    this.sharedGeometries.push(neckGeo);
+    const neckMesh = new THREE.Mesh(neckGeo, skinMat);
+    neckMesh.position.set(
+      0,
+      isBiped ? 0.56 : isQuad ? 0.46 : 0.14,
+      isBiped ? -0.72 : -0.92
+    );
+    neckMesh.rotation.x = isBiped ? 0.52 : isQuad ? 0.68 : 0.95;
+    torsoGroup.add(neckMesh);
+
+    const landHeadGroup = new THREE.Group();
+    landHeadGroup.position.set(
+      0,
+      isBiped ? 0.86 : isQuad ? 0.72 : 0.24,
+      isBiped ? -1.02 : -1.32
+    );
+    torsoGroup.add(landHeadGroup);
+
+    const skullGeo = new THREE.SphereGeometry(0.38, 14, 12);
+    this.sharedGeometries.push(skullGeo);
+    const skullMesh = new THREE.Mesh(skullGeo, skinMat);
+    skullMesh.scale.set(0.95, 0.85, 1.42);
+    skullMesh.castShadow = true;
+    landHeadGroup.add(skullMesh);
+
+    // Snout / Upper Jaw & Articulated Lower Jaw (or Herbivore Beak)
+    const jawGroup = new THREE.Group();
+    jawGroup.position.set(0, -0.1, -0.18);
+    landHeadGroup.add(jawGroup);
+
+    const lowerJawGeo = new THREE.ConeGeometry(0.24, 0.58, 8);
+    lowerJawGeo.rotateX(-Math.PI / 2);
+    lowerJawGeo.scale(1.0, 0.48, 1.0);
+    lowerJawGeo.translate(0, 0, -0.22);
+    this.sharedGeometries.push(lowerJawGeo);
+    const lowerJawMesh = new THREE.Mesh(
+      lowerJawGeo,
+      profile.isHerbivore ? hornMat : dorsalMat
+    );
+    jawGroup.add(lowerJawMesh);
+
+    if (!profile.isHerbivore) {
+      // Serrated carnivore fangs on upper & lower jaws
+      const fangGeo = new THREE.ConeGeometry(0.055, 0.22, 6);
+      this.sharedGeometries.push(fangGeo);
+      for (const side of [-1, 1]) {
+        const upperFang = new THREE.Mesh(fangGeo, hornMat);
+        upperFang.position.set(side * 0.18, -0.12, -0.42);
+        upperFang.rotation.x = Math.PI;
+        landHeadGroup.add(upperFang);
+      }
+    } else {
+      // Herbivore horns or cranial vocal crest
+      const crestGeo = new THREE.ConeGeometry(0.12, 0.52, 8);
+      this.sharedGeometries.push(crestGeo);
+      for (const side of [-1, 1]) {
+        const horn = new THREE.Mesh(crestGeo, hornMat);
+        horn.position.set(side * 0.22, 0.28, -0.05);
+        horn.rotation.set(-0.35, 0, side * -0.35);
+        landHeadGroup.add(horn);
+      }
+    }
+
+    // Terrestrial Eyes with Sclera and Pupil
+    const eyeScleraGeo = new THREE.SphereGeometry(0.11, 10, 10);
+    const eyePupilGeo = new THREE.SphereGeometry(0.06, 8, 8);
+    this.sharedGeometries.push(eyeScleraGeo, eyePupilGeo);
+    for (const side of [-1, 1]) {
+      const sclera = new THREE.Mesh(eyeScleraGeo, this.eyeScleraMat);
+      sclera.position.set(
+        side * (profile.isHerbivore ? 0.31 : 0.24),
+        0.1,
+        -0.24
+      );
+      landHeadGroup.add(sclera);
+
+      const pupil = new THREE.Mesh(eyePupilGeo, this.eyePupilMat);
+      pupil.position.set(
+        side * (profile.isHerbivore ? 0.36 : 0.27),
+        0.1,
+        -0.31
+      );
+      landHeadGroup.add(pupil);
+    }
+
+    // 4. Articulated Tail Group (+Z)
+    const landTailGroup = new THREE.Group();
+    landTailGroup.position.set(0, isBiped ? 0.05 : -0.04, 0.88);
+    torsoGroup.add(landTailGroup);
+
+    const tailBaseGeo = new THREE.ConeGeometry(0.34, 1.45, 10);
+    tailBaseGeo.rotateX(Math.PI / 2);
+    tailBaseGeo.translate(0, 0, 0.68);
+    this.sharedGeometries.push(tailBaseGeo);
+    const tailMesh = new THREE.Mesh(tailBaseGeo, skinMat);
+    tailMesh.castShadow = true;
+    landTailGroup.add(tailMesh);
+
+    if (profile.tier >= 2) {
+      const tailClubGeo = new THREE.DodecahedronGeometry(0.26, 1);
+      this.sharedGeometries.push(tailClubGeo);
+      const tailClub = new THREE.Mesh(tailClubGeo, dorsalMat);
+      tailClub.position.set(0, 0, 1.38);
+      tailClub.scale.set(1.2, 0.75, 1.3);
+      landTailGroup.add(tailClub);
+    }
+
+    // 5. Articulated Legs & Three-Toed Terrestrial Feet resting at Y = -standingOffset
+    const thighLen = isBiped ? 0.58 : isQuad ? 0.52 : 0.38;
+    const shinLen = isBiped ? 0.58 : isQuad ? 0.52 : 0.36;
+    const thighGeo = new THREE.CylinderGeometry(0.18, 0.14, thighLen, 9);
+    thighGeo.translate(0, -thighLen * 0.5, 0);
+    const shinGeo = new THREE.CylinderGeometry(0.13, 0.1, shinLen, 9);
+    shinGeo.translate(0, -shinLen * 0.5, 0);
+    const footGeo = new THREE.BoxGeometry(0.32, 0.14, 0.48);
+    footGeo.translate(0, -0.05, -0.1);
+    const clawGeo = new THREE.ConeGeometry(0.05, 0.18, 5);
+    clawGeo.rotateX(-Math.PI / 2);
+    this.sharedGeometries.push(thighGeo, shinGeo, footGeo, clawGeo);
+
+    const legConfigs: { x: number; y: number; z: number; side: number; isRear: boolean }[] =
+      isBiped
+        ? [
+            { x: -0.52, y: 0.02, z: 0.18, side: -1, isRear: true },
+            { x: 0.52, y: 0.02, z: 0.18, side: 1, isRear: true },
+          ]
+        : [
+            {
+              x: isQuad ? -0.68 : -0.78,
+              y: -0.02,
+              z: -0.45,
+              side: -1,
+              isRear: false,
+            },
+            {
+              x: isQuad ? 0.68 : 0.78,
+              y: -0.02,
+              z: -0.45,
+              side: 1,
+              isRear: false,
+            },
+            {
+              x: isQuad ? -0.7 : -0.8,
+              y: -0.02,
+              z: 0.48,
+              side: -1,
+              isRear: true,
+            },
+            {
+              x: isQuad ? 0.7 : 0.8,
+              y: -0.02,
+              z: 0.48,
+              side: 1,
+              isRear: true,
+            },
+          ];
+
+    for (const cfg of legConfigs) {
+      const hipGroup = new THREE.Group();
+      hipGroup.position.set(cfg.x, cfg.y, cfg.z);
+      if (landArchetype === 'reptiliano_rastreador') {
+        hipGroup.rotation.z = cfg.side * 0.26;
+      }
+      torsoGroup.add(hipGroup);
+
+      const thighMesh = new THREE.Mesh(thighGeo, skinMat);
+      thighMesh.castShadow = true;
+      thighMesh.rotation.x = isBiped ? -0.22 : -0.12;
+      hipGroup.add(thighMesh);
+
+      const kneeGroup = new THREE.Group();
+      kneeGroup.position.set(0, -thighLen, 0.06);
+      hipGroup.add(kneeGroup);
+
+      const shinMesh = new THREE.Mesh(shinGeo, dorsalMat);
+      shinMesh.castShadow = true;
+      shinMesh.rotation.x = isBiped ? 0.24 : 0.12;
+      kneeGroup.add(shinMesh);
+
+      const footMesh = new THREE.Mesh(footGeo, dorsalMat);
+      footMesh.position.set(0, -shinLen, -0.04);
+      footMesh.castShadow = true;
+      kneeGroup.add(footMesh);
+
+      for (const toeOffset of [-0.1, 0, 0.1]) {
+        const claw = new THREE.Mesh(clawGeo, hornMat);
+        claw.position.set(toeOffset, -shinLen - 0.06, -0.32);
+        kneeGroup.add(claw);
+      }
+
+      landLegs.push({
+        hipGroup,
+        kneeGroup,
+        side: cfg.side,
+        isRear: cfg.isRear,
+      });
+    }
+
+    // 6. Articulated Grasping Forelimbs & Claws for Bipeds
+    if (isBiped) {
+      const armGeo = new THREE.CylinderGeometry(0.11, 0.08, 0.52, 8);
+      armGeo.translate(0, -0.26, 0);
+      this.sharedGeometries.push(armGeo);
+
+      for (const side of [-1, 1]) {
+        const armGroup = new THREE.Group();
+        armGroup.position.set(side * 0.48, 0.22, -0.52);
+        armGroup.rotation.set(0.55, 0, side * 0.22);
+        torsoGroup.add(armGroup);
+
+        const armMesh = new THREE.Mesh(armGeo, skinMat);
+        armMesh.castShadow = true;
+        armGroup.add(armMesh);
+
+        for (const cOff of [-0.05, 0.05]) {
+          const talon = new THREE.Mesh(clawGeo, hornMat);
+          talon.position.set(cOff, -0.52, -0.1);
+          armGroup.add(talon);
+        }
+
+        landArms.push(armGroup);
+      }
+    }
+
+    return {
+      landCreatureGroup,
+      landSpeciesName,
+      landArchetype,
+      landLegs,
+      landArms,
+      landTailGroup,
+      landHeadGroup,
+      landLowerJaw: jawGroup,
+      standingOffset,
+    };
+  }
+
+  /**
    * Animates internal nucleus/organelles, articulated flagella waves proportional to real velocity,
-   * vibrating oral/lateral cilia, and bioelectric arcs for any active organism.
+   * vibrating oral/lateral cilia, bioelectric arcs, AND terrestrial walk-cycle (legs, arms, tail, head/jaw).
    */
   private animateBiologicalAnatomy(
     p: OrganismEntity,
@@ -3586,7 +4102,68 @@ export class PredatorManager {
     safeDelta: number,
     poisonSpeedFactor: number
   ): void {
-    // 1. Pulsating bioluminescent nucleus & internal organelles
+    const isLand = this.currentStage === 'creature_stage';
+
+    // Advance phase strictly proportional to the organism's real movement velocity
+    const speedRatio = Math.min(2.4, Math.max(0.15, p.currentSpeed / 4.2));
+    const phaseRate = (3.2 + speedRatio * 7.8) * poisonSpeedFactor;
+    p.swimPhase = (p.swimPhase + safeDelta * phaseRate) % (Math.PI * 200);
+
+    if (isLand) {
+      // Terrestrial Walk-Cycle Animation (Bipedal or Quadrupedal gait + tail counterbalance + snapping jaw)
+      const isMoving = p.currentSpeed > 0.15;
+      const strideAmp = isMoving
+        ? Math.min(0.68, 0.24 + speedRatio * 0.28)
+        : 0.04;
+      const walkPhase = p.swimPhase * 0.95;
+
+      for (let l = 0; l < p.landLegs.length; l++) {
+        const leg = p.landLegs[l];
+        const phaseOffset =
+           (leg.side > 0 ? Math.PI : 0) + (leg.isRear ? Math.PI * 0.5 : 0);
+        const swing = Math.sin(walkPhase + phaseOffset) * strideAmp;
+        const kneeLift = Math.max(0, -Math.cos(walkPhase + phaseOffset)) * strideAmp * 0.85;
+        leg.hipGroup.rotation.x = swing;
+        leg.kneeGroup.rotation.x = kneeLift;
+      }
+
+      for (let a = 0; a < p.landArms.length; a++) {
+        const arm = p.landArms[a];
+        const sideSign = a === 0 ? -1 : 1;
+        const slash =
+          p.lungeTimer > 0
+            ? -0.75
+            : Math.sin(walkPhase + (sideSign > 0 ? 0 : Math.PI)) * 0.24;
+        arm.rotation.x = 0.55 + slash;
+      }
+
+      if (p.landTailGroup) {
+        p.landTailGroup.rotation.y =
+          Math.sin(walkPhase * 0.75) * (isMoving ? 0.28 : 0.12);
+        p.landTailGroup.rotation.x =
+          Math.cos(walkPhase * 1.5) * 0.06;
+      }
+
+      if (p.landHeadGroup) {
+        p.landHeadGroup.rotation.x =
+          Math.sin(walkPhase * 1.5) * (isMoving ? 0.08 : 0.04);
+        p.landHeadGroup.rotation.y =
+          Math.cos(elapsedTime * 1.8 + p.id) * 0.12;
+      }
+
+      if (p.landLowerJaw) {
+        const jawOpen =
+          p.lungeTimer > 0
+            ? 0.55
+            : p.state === 'PERSEGUIR' || p.state === 'ATACAR'
+            ? 0.22 + Math.abs(Math.sin(elapsedTime * 9.0 + p.id)) * 0.22
+            : Math.max(0, Math.sin(elapsedTime * 2.4 + p.id)) * 0.08;
+        p.landLowerJaw.rotation.x = jawOpen;
+      }
+      return;
+    }
+
+    // 1. Pulsating bioluminescent nucleus & internal organelles (Cell Stage)
     const pulse = 1.0 + Math.sin(elapsedTime * 3.8 + p.id * 1.3) * 0.11;
     if (p.coreMesh) {
       p.coreMesh.scale.setScalar(pulse);
@@ -3613,7 +4190,7 @@ export class PredatorManager {
       }
     }
 
-    // 3. Biological Rule: Sessile organisms without flagella/cilia do not self-propel; they gently sway with the ocean current
+    // 3. Biological Rule: Sessile organisms without flagella/cilia do not self-propel in cell_stage
     if (p.isSessile) {
       p.currentSpeed = 0;
       const swayX = Math.sin(elapsedTime * 1.65 + p.id * 0.9) * 0.085;
@@ -3621,11 +4198,6 @@ export class PredatorManager {
       p.group.rotation.set(swayX, p.headingAngle, swayZ);
       return;
     }
-
-    // 4. Advance swim phase strictly proportional to the organism's real movement velocity
-    const speedRatio = Math.min(2.4, Math.max(0.15, p.currentSpeed / 4.2));
-    const phaseRate = (3.2 + speedRatio * 7.8) * poisonSpeedFactor;
-    p.swimPhase = (p.swimPhase + safeDelta * phaseRate) % (Math.PI * 200);
 
     // 5. Propagate sinusoidal travelling wave along each articulated flagellum chain
     for (let f = 0; f < p.flagellaChains.length; f++) {
@@ -3660,26 +4232,76 @@ export class PredatorManager {
   }
 
   public setStageMode(stage: EvolutionaryStage): void {
+    const stageChanged = this.currentStage !== stage;
     this.currentStage = stage;
     const isLand = stage === 'creature_stage';
     for (let i = 0; i < this.organisms.length; i++) {
       const entity = this.organisms[i];
-      entity.legsGroup.visible = isLand;
-      entity.speciesName = entity.profile.name;
+      entity.cellBodyGroup.visible = !isLand;
+      entity.landCreatureGroup.visible = isLand;
+      entity.legsGroup.visible = false;
+      entity.speciesName = isLand
+        ? entity.landSpeciesName
+        : entity.profile.name;
       this.telemetryCache[i].speciesName = entity.speciesName;
+      entity.verticalVelocity = 0;
+
+      if (stageChanged) {
+        this.spawnOrganismAtSafeRadius(entity, i);
+      } else {
+        entity.position.y = isLand
+          ? getLandHeightAt(entity.position.x, entity.position.z) +
+            entity.standingOffset * entity.profile.scaleMultiplier
+          : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
+      }
+    }
+    for (const kin of this.kinCells) {
+      kin.mesh.visible = !isLand && this.isEcosystemCurrentlyVisible;
     }
   }
 
+
   private pickWanderTarget(entity: OrganismEntity): void {
+    if (this.currentStage === 'creature_stage') {
+      // Patrol in a pack around the assigned rival nest or across emergent continental land (y > 0.8)
+      const nest = this.getRivalNestCenter(entity.packNestIndex);
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const roamRadius = 12 + Math.random() * 48;
+        const roamAngle = Math.random() * Math.PI * 2;
+        const wx = nest.x + Math.cos(roamAngle) * roamRadius;
+        const wz = nest.z + Math.sin(roamAngle) * roamRadius;
+        const distFromOrigin = Math.hypot(wx, wz);
+        const wy = getLandHeightAt(wx, wz);
+        if (
+          distFromOrigin > 38 &&
+          distFromOrigin < CONTINENT_CONFIG.CONTINENT_RADIUS - 80 &&
+          wy > 0.65
+        ) {
+          entity.wanderTarget.set(
+            wx,
+            wy + entity.standingOffset * entity.profile.scaleMultiplier,
+            wz
+          );
+          entity.wanderRetargetTimer = 4.0 + Math.random() * 4.5;
+          return;
+        }
+      }
+      entity.wanderTarget.set(
+        nest.x,
+        nest.y + entity.standingOffset * entity.profile.scaleMultiplier,
+        nest.z
+      );
+      entity.wanderRetargetTimer = 4.0 + Math.random() * 4.5;
+      return;
+    }
+
     const minR = entity.profile.tier === 1 ? 10 : entity.profile.tier === 2 ? 22 : 36;
     const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 14;
     const r = minR + Math.random() * (maxR - minR);
     const angle = Math.random() * Math.PI * 2;
-    entity.wanderTarget.set(
-      Math.cos(angle) * r,
-      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-      Math.sin(angle) * r
-    );
+    const wx = Math.cos(angle) * r;
+    const wz = Math.sin(angle) * r;
+    entity.wanderTarget.set(wx, GAME_CONFIG.WORLD.SWIM_PLANE_Y, wz);
     entity.wanderRetargetTimer = 4.0 + Math.random() * 4.5;
   }
 
@@ -3688,30 +4310,52 @@ export class PredatorManager {
     index: number
   ): void {
     const total = this.organisms.length;
-    const angle = (index / total) * Math.PI * 2 + Math.random() * 0.5;
-    // Distribute Tiers across the expanded 320m arena: Tier 1 inner/mid, Tier 2 mid/outer, Tier 3 colossi in deep outer reefs
-    const minDist =
-      entity.profile.tier === 1
-        ? 18.0
-        : entity.profile.tier === 2
-        ? 38.0
-        : 75.0;
-    const maxExtra =
-      entity.profile.tier === 1
-        ? 125.0
-        : entity.profile.tier === 2
-        ? 195.0
-        : 225.0;
-    const radius = Math.min(
-      GAME_CONFIG.WORLD.ARENA_RADIUS - 14,
-      minDist + ((index * 23) % maxExtra) + Math.random() * 18
-    );
+    let sx = 0;
+    let sz = 0;
+    let angle = (index / total) * Math.PI * 2 + Math.random() * 0.5;
 
-    entity.position.set(
-      Math.cos(angle) * radius,
-      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-      Math.sin(angle) * radius
-    );
+    if (this.currentStage === 'creature_stage') {
+      // Spawn in packs of 3-5 terrestrial creatures around secondary rival nests on solid emergent land
+      const nest = this.getRivalNestCenter(entity.packNestIndex);
+      const memberOffsetAngle = ((index % 5) / 5) * Math.PI * 2 + Math.random() * 0.4;
+      const memberDist = 5.5 + (index % 4) * 3.8;
+      sx = nest.x + Math.cos(memberOffsetAngle) * memberDist;
+      sz = nest.z + Math.sin(memberOffsetAngle) * memberDist;
+      if (getLandHeightAt(sx, sz) < 0.65) {
+        sx = nest.x;
+        sz = nest.z;
+      }
+      angle = memberOffsetAngle;
+    } else {
+      // Distribute Tiers across the expanded 320m arena: Tier 1 inner/mid, Tier 2 mid/outer, Tier 3 colossi in deep outer reefs
+      const minDist =
+        entity.profile.tier === 1
+          ? 18.0
+          : entity.profile.tier === 2
+          ? 38.0
+          : 75.0;
+      const maxExtra =
+        entity.profile.tier === 1
+          ? 125.0
+          : entity.profile.tier === 2
+          ? 195.0
+          : 225.0;
+      const radius = Math.min(
+        GAME_CONFIG.WORLD.ARENA_RADIUS - 14,
+        minDist + ((index * 23) % maxExtra) + Math.random() * 18
+      );
+      sx = Math.cos(angle) * radius;
+      sz = Math.sin(angle) * radius;
+    }
+
+    const spawnFloorY =
+      this.currentStage === 'creature_stage'
+        ? getLandHeightAt(sx, sz) +
+          entity.standingOffset * entity.profile.scaleMultiplier
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
+
+    entity.position.set(sx, spawnFloorY, sz);
+    entity.verticalVelocity = 0;
     entity.headingAngle = angle + Math.PI / 2;
     this.resolveEntityObstacleCollisions(
       entity,
@@ -3768,6 +4412,7 @@ export class PredatorManager {
     visible: boolean,
     playerPosition?: THREE.Vector3
   ): void {
+    this.isEcosystemCurrentlyVisible = visible;
     if (!visible) {
       for (const popup of this.floatingDamagePool) {
         popup.active = false;
@@ -3778,9 +4423,13 @@ export class PredatorManager {
         part.mesh.visible = false;
       }
     }
+    for (const kin of this.kinCells) {
+      kin.mesh.visible = visible && this.currentStage === 'cell_stage';
+    }
     for (let i = 0; i < this.organisms.length; i++) {
       const p = this.organisms[i];
       p.group.visible = visible && p.active;
+
 
       if (!visible && p.active) {
         if (
@@ -3981,6 +4630,48 @@ export class PredatorManager {
     return { effectiveScale: base * 1.12, depthOffsetY: 0 };
   }
 
+  public onCreatureKilled(
+    deadCreature: OrganismEntity,
+    killedByPlayer: boolean,
+    onCellKilled?: (
+      position: THREE.Vector3,
+      geneticTraits: string[],
+      speciesName: string,
+      killedByPlayer: boolean,
+      creatureTier: number,
+      meatDropCount: number
+    ) => void
+  ): void {
+    const isLand = this.currentStage === 'creature_stage';
+    deadCreature.dyingTimer = isLand ? 0.55 : 0.25;
+    deadCreature.dyingKilledByPlayer = killedByPlayer;
+    deadCreature.healthRingMesh.visible = false;
+    if (killedByPlayer) {
+      audioManager.playCreatureDeath();
+    }
+    this.spawnDeathMicroSpheres(
+      deadCreature.position,
+      deadCreature.profile.isHerbivore,
+      deadCreature.profile.scaleMultiplier
+    );
+
+    // Generar entre 2 y 4 filetes de carne fresca en el lugar del cadáver
+    const meatDropCount = isLand
+      ? 2 + Math.floor(Math.random() * 3)
+      : 1 + Math.floor(Math.random() * 3);
+
+    if (onCellKilled) {
+      onCellKilled(
+        deadCreature.position,
+        deadCreature.geneticTraits,
+        deadCreature.speciesName,
+        killedByPlayer,
+        deadCreature.profile.tier,
+        meatDropCount
+      );
+    }
+  }
+
   private applyOrganismDamage(
     p: OrganismEntity,
     damage: number,
@@ -3992,7 +4683,9 @@ export class PredatorManager {
       position: THREE.Vector3,
       geneticTraits: string[],
       speciesName: string,
-      killedByPlayer: boolean
+      killedByPlayer: boolean,
+      creatureTier: number,
+      meatDropCount: number
     ) => void,
     isCritical = false
   ): boolean {
@@ -4030,21 +4723,7 @@ export class PredatorManager {
     }
 
     if (p.health <= 0) {
-      // Trigger 0.25s swelling + flash + micro-sphere rupture animation & meat drop
-      p.dyingTimer = 0.25;
-      p.dyingKilledByPlayer = killedByPlayer;
-      p.healthRingMesh.visible = false;
-      if (killedByPlayer) {
-        audioManager.playCreatureDeath();
-      }
-      this.spawnDeathMicroSpheres(
-        p.position,
-        p.profile.isHerbivore,
-        p.profile.scaleMultiplier
-      );
-      if (onCellKilled) {
-        onCellKilled(p.position, p.geneticTraits, p.speciesName, killedByPlayer);
-      }
+      this.onCreatureKilled(p, killedByPlayer, onCellKilled);
       return true;
     }
 
@@ -4062,7 +4741,9 @@ export class PredatorManager {
       position: THREE.Vector3,
       geneticTraits: string[],
       speciesName: string,
-      killedByPlayer: boolean
+      killedByPlayer: boolean,
+      creatureTier: number,
+      meatDropCount: number
     ) => void,
     activePoisonClouds: readonly PoisonCloudHazard[] = [],
     electricPulseTriggered = false,
@@ -4173,6 +4854,9 @@ export class PredatorManager {
       part.mesh.scale.setScalar((1 - progress * 0.65) * 0.9);
     }
 
+    // 0C. Update Conspecific Kin Cells (Población Viva de Congéneres Idénticos en cell_stage)
+    this.updateKinCells(safeDelta, elapsedTime, playerPosition);
+
     // Populate the 32m SpatialHashGrid with all living active organisms for O(1) neighbor lookups
     this.spatialGrid.clear();
     for (let i = 0; i < this.organisms.length; i++) {
@@ -4184,6 +4868,7 @@ export class PredatorManager {
 
     const playerForwardX = -Math.sin(playerHeadingAngle);
     const playerForwardZ = -Math.cos(playerHeadingAngle);
+
 
     for (let i = 0; i < this.organisms.length; i++) {
       const p = this.organisms[i];
@@ -4200,12 +4885,30 @@ export class PredatorManager {
 
       const { effectiveScale, depthOffsetY } = this.getTieredScaleAndDepth(p);
 
-      // Handle 0.25s Cell Death Swelling & Incandescent Flash Animation before hiding
+      // Handle Death Animation (Ragdoll topple on land vs Swelling rupture in water)
       if (p.dyingTimer > 0) {
+        const totalDeathDuration =
+          this.currentStage === 'creature_stage' ? 0.55 : 0.25;
         p.dyingTimer = Math.max(0, p.dyingTimer - safeDelta);
-        const deathProgress = 1.0 - p.dyingTimer / 0.25;
-        const swellScale = effectiveScale * (1.0 + deathProgress * 0.42);
-        p.group.scale.setScalar(swellScale);
+        const deathProgress = 1.0 - p.dyingTimer / totalDeathDuration;
+
+        if (this.currentStage === 'creature_stage') {
+          // Ragdoll / abatimiento lateral sobre el terreno
+          const groundY = getLandHeightAt(p.position.x, p.position.z);
+          p.position.y = THREE.MathUtils.lerp(
+            p.position.y,
+            groundY + 0.25,
+            safeDelta * 8.0
+          );
+          p.group.rotation.z = deathProgress * (Math.PI * 0.48);
+          p.group.scale.setScalar(
+            effectiveScale * (1.0 - deathProgress * 0.25)
+          );
+        } else {
+          const swellScale = effectiveScale * (1.0 + deathProgress * 0.42);
+          p.group.scale.setScalar(swellScale);
+        }
+
         p.stateRingMat.color.setHex(0xffffff);
         p.stateRingMat.opacity = (1.0 - deathProgress) * 0.95;
         p.coreMat.emissive.setHex(0xffffff);
@@ -4214,6 +4917,7 @@ export class PredatorManager {
         if (p.dyingTimer <= 0) {
           p.active = false;
           p.group.visible = false;
+          p.group.rotation.z = 0;
           p.respawnTimer = 7.5;
           p.coreMat.emissive.setHex(p.profile.isHerbivore ? 0x10b981 : 0xf43f5e);
         }
@@ -4551,10 +5255,13 @@ export class PredatorManager {
         p.coreMat.emissiveIntensity =
           1.8 + Math.sin(elapsedTime * 34.0 + p.id) * 0.6;
 
+        const baseGroundY =
+          this.currentStage === 'creature_stage'
+            ? getLandHeightAt(p.position.x, p.position.z) +
+              p.standingOffset * effectiveScale
+            : GAME_CONFIG.WORLD.SWIM_PLANE_Y + depthOffsetY;
         p.position.y =
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y +
-          depthOffsetY +
-          Math.sin(elapsedTime * 28.0 + p.id) * 0.08;
+          baseGroundY + Math.sin(elapsedTime * 28.0 + p.id) * 0.08;
         p.group.rotation.set(
           Math.sin(elapsedTime * 42.0 + p.id) * 0.08,
           p.headingAngle + Math.cos(elapsedTime * 38.0 + p.id) * 0.11,
@@ -4585,10 +5292,13 @@ export class PredatorManager {
         p.state = 'DEAMBULAR';
         p.currentSpeed = 0;
         p.lungeTimer = 0;
+        const frozenBaseY =
+          this.currentStage === 'creature_stage'
+            ? getLandHeightAt(p.position.x, p.position.z) +
+              p.standingOffset * effectiveScale
+            : GAME_CONFIG.WORLD.SWIM_PLANE_Y + depthOffsetY;
         p.position.y =
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y +
-          depthOffsetY +
-          Math.sin(elapsedTime * 2.2 + p.id) * 0.1;
+          frozenBaseY + Math.sin(elapsedTime * 2.2 + p.id) * 0.1;
         this.animateBiologicalAnatomy(p, elapsedTime, safeDelta, 0.35);
         this.telemetryCache[i].state = p.state;
         this.telemetryCache[i].distanceToPlayer = distToPlayer;
@@ -4712,7 +5422,9 @@ export class PredatorManager {
             p.hitFlashTimer > 0 ? 2.2 : p.socialCooldown > 0 ? 1.4 : 0.75;
         }
 
-        if (!p.isSessile && _toTarget.lengthSq() > 0.001) {
+        const isSessileNow =
+          this.currentStage === 'creature_stage' ? false : p.isSessile;
+        if (!isSessileNow && _toTarget.lengthSq() > 0.001) {
           const desiredHeading = Math.atan2(-_toTarget.x, -_toTarget.z);
           let angleDiff = desiredHeading - p.headingAngle;
           while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
@@ -4722,37 +5434,63 @@ export class PredatorManager {
             Math.min(1, GAME_CONFIG.PREDATOR.TURN_DAMPING * safeDelta);
         }
 
-        p.currentSpeed = p.isSessile
+        const baseWalkSpeed = Math.max(3.4, p.profile.wanderSpeed);
+        const effTargetSpeed =
+          this.currentStage === 'creature_stage' && p.isSessile
+            ? baseWalkSpeed * poisonSpeedFactor
+            : targetSpeed;
+
+        p.currentSpeed = isSessileNow
           ? 0
           : THREE.MathUtils.damp(
               p.currentSpeed,
-              targetSpeed,
+              effTargetSpeed,
               5.0,
               safeDelta
             );
 
-        if (!p.isSessile && p.currentSpeed > 0.001) {
+        if (!isSessileNow && p.currentSpeed > 0.001) {
           _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
           p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
         }
         this.resolveEntityObstacleCollisions(p, effectiveScale, safeDelta);
 
         const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
-        const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 3.0;
+        const maxR =
+          this.currentStage === 'creature_stage'
+            ? CONTINENT_CONFIG.CONTINENT_RADIUS - 80
+            : GAME_CONFIG.WORLD.ARENA_RADIUS - 3.0;
         if (rSq > maxR * maxR) {
           const r = Math.sqrt(rSq);
           p.position.x = (p.position.x / r) * maxR;
           p.position.z = (p.position.z / r) * maxR;
-          if (!p.isSessile) {
+          if (!isSessileNow) {
             this.pickWanderTarget(p);
           }
         }
 
-        p.position.y =
-          GAME_CONFIG.WORLD.SWIM_PLANE_Y +
-          depthOffsetY +
-          Math.sin(elapsedTime * 3.0 + p.id) * 0.14;
-        if (!p.isSessile) {
+        if (this.currentStage === 'creature_stage') {
+          // Keep terrestrial creatures on solid emergent land and apply gravity + floor clamp
+          const rawTerrainY = getLandHeightAt(p.position.x, p.position.z);
+          const floorY =
+            Math.max(0.2, rawTerrainY) +
+            p.standingOffset * effectiveScale +
+            Math.abs(Math.sin(p.swimPhase * 0.95)) * 0.14;
+          if (p.position.y > floorY + 0.04) {
+            p.verticalVelocity -= 22.0 * safeDelta;
+            p.position.y += p.verticalVelocity * safeDelta;
+          }
+          if (p.position.y <= floorY) {
+            p.position.y = floorY;
+            p.verticalVelocity = 0;
+          }
+        } else {
+          p.position.y =
+            GAME_CONFIG.WORLD.SWIM_PLANE_Y +
+            depthOffsetY +
+            Math.sin(elapsedTime * 3.0 + p.id) * 0.14;
+        }
+        if (!isSessileNow) {
           p.group.rotation.set(0, p.headingAngle, 0);
         }
 
@@ -4762,13 +5500,6 @@ export class PredatorManager {
           safeDelta,
           poisonSpeedFactor
         );
-        if (p.legsGroup.visible && p.legs.length === 4 && !p.isSessile) {
-          const legSwing = Math.sin(p.swimPhase * 0.85) * 0.42;
-          p.legs[0].rotation.x = legSwing;
-          p.legs[1].rotation.x = -legSwing;
-          p.legs[2].rotation.x = -legSwing;
-          p.legs[3].rotation.x = legSwing;
-        }
 
         this.telemetryCache[i].state = p.state;
         this.telemetryCache[i].distanceToPlayer = distToPlayer;
@@ -5008,7 +5739,9 @@ export class PredatorManager {
         }
       }
 
-      if (!p.isSessile && _toTarget.lengthSq() > 0.001) {
+      const isSessileNow =
+        this.currentStage === 'creature_stage' ? false : p.isSessile;
+      if (!isSessileNow && _toTarget.lengthSq() > 0.001) {
         const desiredHeading = Math.atan2(-_toTarget.x, -_toTarget.z);
         let angleDiff = desiredHeading - p.headingAngle;
         while (angleDiff > Math.PI) angleDiff -= Math.PI * 2;
@@ -5021,37 +5754,61 @@ export class PredatorManager {
         p.headingAngle += angleDiff * Math.min(1, turnRate * safeDelta);
       }
 
-      p.currentSpeed = p.isSessile
+      const effPredTargetSpeed =
+        this.currentStage === 'creature_stage' && p.isSessile
+          ? Math.max(3.6, targetSpeed)
+          : targetSpeed;
+
+      p.currentSpeed = isSessileNow
         ? 0
         : THREE.MathUtils.damp(
             p.currentSpeed,
-            targetSpeed,
+            effPredTargetSpeed,
             5.0,
             safeDelta
           );
 
-      if (!p.isSessile && p.currentSpeed > 0.001) {
+      if (!isSessileNow && p.currentSpeed > 0.001) {
         _forward.set(-Math.sin(p.headingAngle), 0, -Math.cos(p.headingAngle));
         p.position.addScaledVector(_forward, p.currentSpeed * safeDelta);
       }
       this.resolveEntityObstacleCollisions(p, effectiveScale, safeDelta);
 
       const rSq = p.position.x * p.position.x + p.position.z * p.position.z;
-      const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 2.0;
+      const maxR =
+        this.currentStage === 'creature_stage'
+          ? CONTINENT_CONFIG.CONTINENT_RADIUS - 80
+          : GAME_CONFIG.WORLD.ARENA_RADIUS - 2.0;
       if (rSq > maxR * maxR) {
         const r = Math.sqrt(rSq);
         p.position.x = (p.position.x / r) * maxR;
         p.position.z = (p.position.z / r) * maxR;
-        if (!p.isSessile) {
+        if (!isSessileNow) {
           this.pickWanderTarget(p);
         }
       }
 
-      p.position.y =
-        GAME_CONFIG.WORLD.SWIM_PLANE_Y +
-        depthOffsetY +
-        Math.sin(elapsedTime * 2.6 + p.id) * 0.14;
-      if (!p.isSessile) {
+      if (this.currentStage === 'creature_stage') {
+        const rawTerrainY = getLandHeightAt(p.position.x, p.position.z);
+        const floorY =
+          Math.max(0.2, rawTerrainY) +
+          p.standingOffset * effectiveScale +
+          Math.abs(Math.sin(p.swimPhase * 0.95)) * 0.14;
+        if (p.position.y > floorY + 0.04) {
+          p.verticalVelocity -= 22.0 * safeDelta;
+          p.position.y += p.verticalVelocity * safeDelta;
+        }
+        if (p.position.y <= floorY) {
+          p.position.y = floorY;
+          p.verticalVelocity = 0;
+        }
+      } else {
+        p.position.y =
+          GAME_CONFIG.WORLD.SWIM_PLANE_Y +
+          depthOffsetY +
+          Math.sin(elapsedTime * 2.6 + p.id) * 0.14;
+      }
+      if (!isSessileNow) {
         p.group.rotation.set(0, p.headingAngle, 0);
       }
 
@@ -5061,14 +5818,6 @@ export class PredatorManager {
         safeDelta,
         poisonSpeedFactor
       );
-
-      if (p.legsGroup.visible && p.legs.length === 4 && !p.isSessile) {
-        const legSwing = Math.sin(p.swimPhase * 0.85) * 0.45;
-        p.legs[0].rotation.x = legSwing;
-        p.legs[1].rotation.x = -legSwing;
-        p.legs[2].rotation.x = -legSwing;
-        p.legs[3].rotation.x = legSwing;
-      }
 
       if (p.mandibleLeft && p.mandibleRight) {
         const jawSnap =
@@ -5183,10 +5932,14 @@ export class PredatorManager {
     const jitterLat = (Math.random() - 0.5) * 4.5;
     const distAhead = 10.5 + Math.random() * 2.5;
 
+    const fx = playerPosition.x + forwardX * distAhead + lateralX * jitterLat;
+    const fz = playerPosition.z + forwardZ * distAhead + lateralZ * jitterLat;
     target.position.set(
-      playerPosition.x + forwardX * distAhead + lateralX * jitterLat,
-      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
-      playerPosition.z + forwardZ * distAhead + lateralZ * jitterLat
+      fx,
+      this.currentStage === 'creature_stage'
+        ? getLandHeightAt(fx, fz) + 0.55
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+      fz
     );
     target.headingAngle = headingAngle + Math.PI;
     target.group.position.copy(target.position);
@@ -5213,7 +5966,267 @@ export class PredatorManager {
     return this.organisms;
   }
 
+  public getDesiredKinCount(growthStage: number): number {
+    // Etapa 1: 7 congéneres -> Etapa 5: 23 congéneres poblando el caldo
+    return 3 + growthStage * 4;
+  }
+
+  public setPlayerCellRef(player: PlayerCell): void {
+    this.playerCellRef = player;
+  }
+
+  /**
+   * Actualiza todas las células de la misma especie en el mapa clonando al 100%
+   * la jerarquía 3D activa de `playerCell` (membrana deformada, material, núcleo y órganos).
+   */
+  public refreshAllKinClones(
+    playerCell: PlayerCell,
+    factory = organFactory
+  ): void {
+    this.playerCellRef = playerCell;
+    const desiredCount = this.getDesiredKinCount(this.playerGrowthStage);
+    const arenaRadius = Math.max(85, playerCell.activeArenaRadius ?? 110);
+
+    // Asegurar que la población de congéneres coincida con la etapa actual
+    while (this.kinCells.length < desiredCount) {
+      const idx = this.kinCells.length;
+      const angle = (idx / desiredCount) * Math.PI * 2 + Math.random() * 0.45;
+      const dist = 24.0 + ((idx * 17) % (arenaRadius - 32.0));
+      const pos = new THREE.Vector3(
+        Math.cos(angle) * dist,
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+        Math.sin(angle) * dist
+      );
+      const heading = angle + Math.PI * 0.5;
+      const kinRoot = new THREE.Group();
+      kinRoot.position.copy(pos);
+      kinRoot.rotation.set(0, heading, 0);
+      kinRoot.visible =
+        this.currentStage === 'cell_stage' && this.isEcosystemCurrentlyVisible;
+      this.scene.add(kinRoot);
+
+      this.kinCells.push({
+        id: `kin_${idx + 1}`,
+        mesh: kinRoot,
+        position: pos,
+        velocity: new THREE.Vector3(),
+        targetHeading: heading,
+        isMateReceptive: false,
+        pingTimer: 0,
+        wanderTimer: 2.0 + Math.random() * 3.5,
+      });
+    }
+
+    for (const kin of this.kinCells) {
+      // Limpiar la geometría vieja del congénere
+      if (typeof kin.mesh.userData.disposeClone === 'function') {
+        kin.mesh.userData.disposeClone();
+        delete kin.mesh.userData.disposeClone;
+      }
+      while (kin.mesh.children.length > 0) {
+        const child = kin.mesh.children[0];
+        if (typeof child.userData?.disposeClone === 'function') {
+          child.userData.disposeClone();
+        }
+        kin.mesh.remove(child);
+      }
+
+      // Instanciar el nuevo modelo idéntico al jugador recién mutado
+      const freshClone = factory.buildIdenticalCellClone(playerCell);
+      kin.mesh.add(freshClone);
+      kin.mesh.position.copy(kin.position);
+      kin.mesh.rotation.set(0, kin.targetHeading, 0);
+      kin.mesh.visible =
+        this.currentStage === 'cell_stage' && this.isEcosystemCurrentlyVisible;
+    }
+  }
+
+  /**
+   * Reconstruye la malla 3D de todos los congéneres en el mapa copiando exactamente
+   * las piezas, forma corporal, color y escala actuales del jugador.
+   */
+  public syncAllKinToPlayerMorphology(playerStats: PlayerStats): void {
+    this.playerGrowthStage = playerStats.growthStage;
+    if (this.playerCellRef) {
+      this.refreshAllKinClones(this.playerCellRef, organFactory);
+      return;
+    }
+
+    const desiredCount = this.getDesiredKinCount(playerStats.growthStage);
+    const arenaRadius = Math.max(85, playerStats.activeArenaRadius ?? 110);
+
+    // Ajustar población de congéneres si creció la etapa
+    while (this.kinCells.length < desiredCount) {
+      const idx = this.kinCells.length;
+      const angle = (idx / desiredCount) * Math.PI * 2 + Math.random() * 0.45;
+      const dist = 24.0 + ((idx * 17) % (arenaRadius - 32.0));
+      const pos = new THREE.Vector3(
+        Math.cos(angle) * dist,
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+        Math.sin(angle) * dist
+      );
+      const cloneMesh = organFactory.buildCellMeshClone(
+        playerStats.bodyShape,
+        playerStats.colorTheme,
+        playerStats.placedOrgans,
+        playerStats.growthStage
+      );
+      cloneMesh.position.copy(pos);
+      const heading = angle + Math.PI * 0.5;
+      cloneMesh.rotation.set(0, heading, 0);
+      cloneMesh.visible =
+        this.currentStage === 'cell_stage' && this.isEcosystemCurrentlyVisible;
+      this.scene.add(cloneMesh);
+
+      this.kinCells.push({
+        id: `kin_${idx + 1}`,
+        mesh: cloneMesh,
+        position: pos,
+        velocity: new THREE.Vector3(),
+        targetHeading: heading,
+        isMateReceptive: false,
+        pingTimer: 0,
+        wanderTimer: 2.0 + Math.random() * 3.5,
+      });
+    }
+
+    for (let i = 0; i < this.kinCells.length; i++) {
+      const kin = this.kinCells[i];
+      if (typeof kin.mesh.userData.disposeClone === 'function') {
+        kin.mesh.userData.disposeClone();
+      }
+      this.scene.remove(kin.mesh);
+
+      const clonedMesh = organFactory.buildCellMeshClone(
+        playerStats.bodyShape,
+        playerStats.colorTheme,
+        playerStats.placedOrgans,
+        playerStats.growthStage
+      );
+
+      clonedMesh.position.copy(kin.position);
+      clonedMesh.rotation.set(0, kin.targetHeading, 0);
+      clonedMesh.visible =
+        this.currentStage === 'cell_stage' && this.isEcosystemCurrentlyVisible;
+      this.scene.add(clonedMesh);
+      kin.mesh = clonedMesh;
+    }
+  }
+
+  /**
+   * Activa o genera un congénere receptivo a distancia (~45-70m) que responde
+   * al llamado de cortejo del jugador y nada a su encuentro.
+   */
+  public spawnReceptiveMate(
+    matePos: THREE.Vector3,
+    playerStats: PlayerStats
+  ): KinCellEntity {
+    if (this.kinCells.length === 0) {
+      this.syncAllKinToPlayerMorphology(playerStats);
+    }
+
+    // Desmarcar cualquier pareja previa
+    for (const k of this.kinCells) {
+      k.isMateReceptive = false;
+    }
+
+    const mate = this.kinCells[0];
+    mate.position.set(
+      matePos.x,
+      GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+      matePos.z
+    );
+    mate.mesh.position.copy(mate.position);
+    mate.mesh.visible = true;
+    mate.isMateReceptive = true;
+    mate.pingTimer = 0.2;
+    return mate;
+  }
+
+  private updateKinCells(
+    safeDelta: number,
+    elapsedTime: number,
+    playerPosition: THREE.Vector3
+  ): void {
+    if (this.currentStage !== 'cell_stage' || !this.isEcosystemCurrentlyVisible) {
+      return;
+    }
+
+    const maxR = GAME_CONFIG.WORLD.ARENA_RADIUS - 12.0;
+
+    for (let i = 0; i < this.kinCells.length; i++) {
+      const kin = this.kinCells[i];
+      if (!kin.mesh.visible) continue;
+
+      if (kin.isMateReceptive) {
+        // Nadar activamente al encuentro del jugador
+        const dx = playerPosition.x - kin.position.x;
+        const dz = playerPosition.z - kin.position.z;
+        const dist = Math.hypot(dx, dz);
+        if (dist > 0.5) {
+          kin.targetHeading = Math.atan2(-dx, -dz);
+          const swimSpeed = 9.2;
+          kin.velocity.set((dx / dist) * swimSpeed, 0, (dz / dist) * swimSpeed);
+          kin.position.x += kin.velocity.x * safeDelta;
+          kin.position.z += kin.velocity.z * safeDelta;
+        }
+      } else {
+        // Nado pacífico en cardumen por la sopa primigenia
+        kin.wanderTimer = (kin.wanderTimer ?? 2.5) - safeDelta;
+        if (kin.wanderTimer <= 0) {
+          kin.wanderTimer = 3.0 + Math.random() * 4.0;
+          kin.targetHeading += (Math.random() - 0.5) * 1.6;
+        }
+
+        // Mantener dentro del radio de la arena
+        const rSq = kin.position.x * kin.position.x + kin.position.z * kin.position.z;
+        if (rSq > maxR * maxR) {
+          kin.targetHeading = Math.atan2(kin.position.x, kin.position.z);
+        }
+
+        const wanderSpeed = 4.6;
+        const fx = -Math.sin(kin.targetHeading);
+        const fz = -Math.cos(kin.targetHeading);
+        kin.velocity.set(fx * wanderSpeed, 0, fz * wanderSpeed);
+        kin.position.x += kin.velocity.x * safeDelta;
+        kin.position.z += kin.velocity.z * safeDelta;
+      }
+
+      kin.position.y =
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y +
+        Math.sin(elapsedTime * 2.2 + i * 0.9) * 0.08;
+      kin.mesh.position.copy(kin.position);
+
+      // Interpolación suave de giro
+      let diff = kin.targetHeading - kin.mesh.rotation.y;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      kin.mesh.rotation.y += diff * Math.min(1.0, safeDelta * 6.5);
+
+      // Animar flagelos y órganos acoplados del clon
+      const organVisuals = kin.mesh.userData.organVisuals as
+        | OrganVisualInstance[]
+        | undefined;
+      if (organVisuals) {
+        const speedRatio = kin.isMateReceptive ? 1.15 : 0.65;
+        for (let o = 0; o < organVisuals.length; o++) {
+          organVisuals[o].animate(
+            elapsedTime + i * 0.35,
+            speedRatio,
+            kin.isMateReceptive
+          );
+        }
+      }
+    }
+  }
+
   public dispose(): void {
+    for (const kin of this.kinCells) {
+      if (typeof kin.mesh.userData.disposeClone === 'function') {
+        kin.mesh.userData.disposeClone();
+      }
+      kin.mesh.removeFromParent();
+    }
     for (const p of this.organisms) {
       for (const org of p.attachedOrgans) {
         org.dispose();
@@ -5227,3 +6240,4 @@ export class PredatorManager {
     }
   }
 }
+

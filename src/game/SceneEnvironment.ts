@@ -112,6 +112,18 @@ export interface EnvironmentObstacle {
   radius: number;
 }
 
+export interface FruitNode {
+  mesh: THREE.Mesh;
+  isHarvested: boolean;
+  respawnTimer: number;
+}
+
+export interface FruitBushEntity {
+  position: THREE.Vector3;
+  bushGroup: THREE.Group;
+  fruits: FruitNode[];
+}
+
 const _dummy = new THREE.Object3D();
 const _color = new THREE.Color();
 const _baseColorA = new THREE.Color();
@@ -135,6 +147,63 @@ export function getGroundHeightAt(x: number, z: number): number {
 
   // Deepened seabed (-7.2 base) so Spore-style abyssal silhouettes & 12m giant kelp fit naturally
   return -7.2 + ripples + rimHeight;
+}
+
+export const CONTINENT_CONFIG = {
+  CONTINENT_RADIUS: 1200, // Radio del continente emergido (2.4 km de diámetro)
+  SHALLOW_WATER_LIMIT: 1350, // Zona de playa y aguas poco profundas
+  OCEAN_ABYSS_LIMIT: 1500, // Océano profundo donde acecha el Leviatán
+  CHUNK_SIZE: 128, // Tamaño de cada bloque de terreno
+  VISIBLE_CHUNK_RADIUS: 4, // Radio de chunks activos alrededor del jugador
+};
+
+export interface TerrainChunk {
+  chunkX: number;
+  chunkZ: number;
+  mesh: THREE.Mesh;
+  boundingBox: THREE.Box3;
+  assigned: boolean;
+}
+
+const _frustum = new THREE.Frustum();
+const _projScreenMatrix = new THREE.Matrix4();
+
+export function getLandHeightAt(x: number, z: number): number {
+  const dist = Math.sqrt(x * x + z * z);
+
+  // 1. Máscara Continental: Cae suavemente bajo el nivel del mar (Y < 0) al acercarse a la costa
+  const continentMask =
+    1.0 -
+    THREE.MathUtils.smoothstep(dist, 700, CONTINENT_CONFIG.CONTINENT_RADIUS);
+  const oceanDepression =
+    THREE.MathUtils.smoothstep(
+      dist,
+      CONTINENT_CONFIG.CONTINENT_RADIUS,
+      1600
+    ) * -22.0;
+
+  // 2. Llanura segura del Nido Central (Radio < 40m)
+  if (dist < 40) {
+    return 1.2 + Math.sin(x * 0.08) * Math.cos(z * 0.08) * 0.2;
+  }
+
+  // 3. Relieve Continental Multiescala (Montañas, Valles y Colinas)
+  const macroHills = Math.sin(x * 0.005) * Math.cos(z * 0.005) * 35.0; // Cordilleras grandes
+  const mesoHills =
+    Math.sin(x * 0.015 + 1.2) * Math.cos(z * 0.015 + 0.8) * 12.0; // Lomas medias
+  const microDetail = Math.sin(x * 0.05) * Math.cos(z * 0.05) * 2.5; // Rugosidad del suelo
+
+  const landElevation = (macroHills + mesoHills + microDetail) * continentMask;
+  const fullContinentY = Math.max(-25.0, 1.0 + landElevation + oceanDepression);
+
+  // Transición suave entre la plataforma del nido (40m) y el relieve continental (72m)
+  if (dist < 72) {
+    const nestPlainY = 1.2 + Math.sin(x * 0.08) * Math.cos(z * 0.08) * 0.2;
+    const blend = THREE.MathUtils.smoothstep(dist, 40, 72);
+    return THREE.MathUtils.lerp(nestPlainY, fullContinentY, blend);
+  }
+
+  return fullContinentY;
 }
 
 interface AbyssalSilhouette {
@@ -182,7 +251,7 @@ export class SceneEnvironment {
   private isEditorSandboxActive = false;
   private bgColor!: THREE.Color;
 
-  private seabedMesh!: THREE.Mesh;
+  public seabedMesh!: THREE.Mesh;
   private seabedMat!: THREE.MeshStandardMaterial;
   private rocksInstanced!: THREE.InstancedMesh;
   private rockCapsInstanced!: THREE.InstancedMesh;
@@ -215,6 +284,37 @@ export class SceneEnvironment {
   private nestGroup!: THREE.Group;
   private nestAuraMat!: THREE.MeshBasicMaterial;
   private readonly nestEggs: THREE.Mesh[] = [];
+
+  // Massive Spore Continent Chunk System (LOD + Frustum Culling) & Ocean / Leviathan
+  public continentChunksGroup!: THREE.Group;
+  public get terrainMesh(): THREE.Object3D {
+    return this.continentChunksGroup;
+  }
+  private readonly terrainChunks: TerrainChunk[] = [];
+  private lowPolyContinentProxyMesh!: THREE.Mesh;
+  private oceanWaterMesh!: THREE.Mesh;
+  private oceanWaterMat!: THREE.MeshStandardMaterial;
+  private lastChunkCenterX = Number.NaN;
+  private lastChunkCenterZ = Number.NaN;
+  private chunksInitialized = false;
+  private leviathanGroup!: THREE.Group;
+  private leviathanSplashRing!: THREE.Mesh;
+  private leviathanJawMesh!: THREE.Mesh;
+  private leviathanBreachTimer = 0;
+  private readonly leviathanOrigin = new THREE.Vector3();
+
+  // Macroscopic Continental Flora (Trees, Bushes, Giant Ferns & Rival Nests) & Trunk Colliders
+  private treesTrunkInstanced!: THREE.InstancedMesh;
+  private treesFoliageInstanced!: THREE.InstancedMesh;
+  private bushesInstanced!: THREE.InstancedMesh;
+  private fernsInstanced!: THREE.InstancedMesh;
+  private rivalNestsInstanced!: THREE.InstancedMesh;
+  public fruitBushes: FruitBushEntity[] = [];
+  public treeColliders: { x: number; z: number; radius: number }[] = [];
+  public readonly rivalNestPositions: THREE.Vector3[] = [];
+  private readonly landObstacles: EnvironmentObstacle[] = [];
+  private readonly landObstacleSpatialGrid =
+    new SpatialHashGrid<EnvironmentObstacle>();
 
   // Hydrothermal Vents & Ascending Bubble Plumes
   private readonly ventPositions: THREE.Vector3[] = [];
@@ -275,6 +375,9 @@ export class SceneEnvironment {
     this.initPlanktonParticles();
     this.initArenaBoundaryMarker();
     this.initSpeciesNest();
+    this.initContinentChunkSystem();
+    this.initContinentalFlora();
+    this.initFruitBushes();
     this.initEditorSandbox();
     this.rebuildObstacleSpatialGrid();
   }
@@ -291,17 +394,36 @@ export class SceneEnvironment {
     return obs;
   }
 
+  private registerLandObstacle(
+    x: number,
+    z: number,
+    minY: number,
+    maxY: number,
+    radius: number
+  ): EnvironmentObstacle {
+    const obs: EnvironmentObstacle = { x, z, minY, maxY, radius };
+    this.landObstacles.push(obs);
+    return obs;
+  }
+
   private rebuildObstacleSpatialGrid(): void {
     this.obstacleSpatialGrid.clear();
     for (let i = 0; i < this.obstacles.length; i++) {
       const obs = this.obstacles[i];
       this.obstacleSpatialGrid.insert(obs, obs.x, obs.z);
     }
+
+    this.landObstacleSpatialGrid.clear();
+    for (let i = 0; i < this.landObstacles.length; i++) {
+      const obs = this.landObstacles[i];
+      this.landObstacleSpatialGrid.insert(obs, obs.x, obs.z);
+    }
   }
 
   /**
-   * Queries nearby solid 2D circular obstacles (rocks, chloroplast tree trunks, hydrothermal vents, and reef formations)
-   * using the O(1) SpatialHashGrid so cells and AI organisms can slide smoothly around them.
+   * Queries nearby solid 2D circular obstacles (continental tree trunks in creature_stage;
+   * rocks, chloroplast tree trunks, hydrothermal vents, and reef formations in cell_stage)
+   * using the O(1) SpatialHashGrid so creatures and AI organisms slide smoothly around them.
    */
   public getNearbyObstacles(
     x: number,
@@ -317,7 +439,11 @@ export class SceneEnvironment {
       1,
       Math.ceil((searchRadius + 3.5) / GAME_CONFIG.WORLD.SPATIAL_GRID_CELL_SIZE)
     );
-    const candidates = this.obstacleSpatialGrid.queryCells(
+    const activeGrid =
+      this.currentStage === 'creature_stage'
+        ? this.landObstacleSpatialGrid
+        : this.obstacleSpatialGrid;
+    const candidates = activeGrid.queryCells(
       x,
       z,
       cellRadius,
@@ -340,13 +466,26 @@ export class SceneEnvironment {
   public getBiomeAt(x: number, z: number): { id: BiomeType; name: string } {
     const radius = Math.sqrt(x * x + z * z);
     if (this.currentStage === 'creature_stage') {
+      const elev = getLandHeightAt(x, z);
       if (radius < 45) {
-        return { id: 'pradera_luminosa', name: 'Nido Costero Primigenio' };
+        return { id: 'pradera_luminosa', name: 'Nido Central de la Especie' };
       }
-      if (x < 0) {
-        return { id: 'fosa_termal', name: 'Costa Termal Volcánica' };
+      if (radius > CONTINENT_CONFIG.SHALLOW_WATER_LIMIT || elev < -4.0) {
+        return {
+          id: 'arrecife_abisal',
+          name: 'Aguas Profundas (Dominio del Leviatán)',
+        };
       }
-      return { id: 'arrecife_abisal', name: 'Pradera de Helechos Costeros' };
+      if (radius > CONTINENT_CONFIG.CONTINENT_RADIUS - 120 || elev < 0.8) {
+        return {
+          id: 'pradera_luminosa',
+          name: 'Playa y Plataforma Costera',
+        };
+      }
+      if (elev > 16.0) {
+        return { id: 'fosa_termal', name: 'Cordillera Continental' };
+      }
+      return { id: 'pradera_luminosa', name: 'Valles y Colinas Continentales' };
     }
 
     if (radius < 52) {
@@ -385,7 +524,7 @@ export class SceneEnvironment {
 
   public isNearNest(x: number, z: number): boolean {
     if (this.currentStage !== 'creature_stage') return false;
-    return x * x + z * z <= 7.2 * 7.2;
+    return x * x + z * z <= 8.0 * 8.0;
   }
 
   /**
@@ -427,17 +566,99 @@ export class SceneEnvironment {
       PLANET_THEME_PALETTES[this.currentPlanetTheme] ??
       PLANET_THEME_PALETTES.oceanic;
 
-    this.nestGroup.visible = isLand;
-    this.causticRingMesh.visible = !isLand;
-    for (const s of this.abyssalSilhouettes) {
-      s.group.visible = !isLand;
+    if (this.nestGroup) {
+      this.buildPlayerNest();
+      this.nestGroup.visible = !this.isEditorSandboxActive && isLand;
+    }
+    if (this.causticRingMesh) {
+      this.causticRingMesh.visible = !this.isEditorSandboxActive && !isLand;
     }
 
+    const showAquaticProps = !this.isEditorSandboxActive && !isLand;
+    if (this.kelpStalksInstanced) {
+      this.kelpStalksInstanced.visible = showAquaticProps;
+    }
+    if (this.kelpBladesInstanced) {
+      this.kelpBladesInstanced.visible = showAquaticProps;
+    }
+    if (this.chloroplastCoreInstanced) {
+      this.chloroplastCoreInstanced.visible = showAquaticProps;
+    }
+    if (this.electricCoralInstanced) {
+      this.electricCoralInstanced.visible = showAquaticProps;
+    }
+    if (this.brainCoralInstanced) {
+      this.brainCoralInstanced.visible = showAquaticProps;
+    }
+    if (this.giantAnemoneInstanced) {
+      this.giantAnemoneInstanced.visible = showAquaticProps;
+    }
+    if (this.fossilShellsInstanced) {
+      this.fossilShellsInstanced.visible = showAquaticProps;
+    }
+    for (let i = 0; i < this.ventGroups.length; i++) {
+      this.ventGroups[i].visible = showAquaticProps;
+    }
+    for (let i = 0; i < this.ventAuraMeshes.length; i++) {
+      this.ventAuraMeshes[i].visible = showAquaticProps;
+    }
+    for (const s of this.abyssalSilhouettes) {
+      s.group.visible = showAquaticProps;
+    }
+    if (this.ventBubblesPoints) {
+      this.ventBubblesPoints.visible =
+        showAquaticProps && this.currentParticleQuality !== 'low';
+    }
+    const showLandProps = !this.isEditorSandboxActive && isLand;
+    if (this.continentChunksGroup) {
+      this.continentChunksGroup.visible = showLandProps;
+    }
+    if (this.lowPolyContinentProxyMesh) {
+      this.lowPolyContinentProxyMesh.visible = showLandProps;
+    }
+    if (this.oceanWaterMesh) {
+      this.oceanWaterMesh.visible = showLandProps;
+    }
+    if (this.treesTrunkInstanced) {
+      this.treesTrunkInstanced.visible = showLandProps;
+    }
+    if (this.treesFoliageInstanced) {
+      this.treesFoliageInstanced.visible = showLandProps;
+    }
+    if (this.bushesInstanced) {
+      this.bushesInstanced.visible = showLandProps;
+    }
+    if (this.fernsInstanced) {
+      this.fernsInstanced.visible = showLandProps;
+    }
+    if (this.rivalNestsInstanced) {
+      this.rivalNestsInstanced.visible = showLandProps;
+    }
+    for (const bush of this.fruitBushes) {
+      bush.bushGroup.visible = showLandProps;
+    }
+    if (this.rocksInstanced) {
+      this.rocksInstanced.visible = showAquaticProps;
+    }
+    if (this.rockCapsInstanced) {
+      this.rockCapsInstanced.visible = showAquaticProps;
+    }
+    if (this.seabedMesh) {
+      this.seabedMesh.visible = showAquaticProps;
+    }
+
+    this.rebuildTerrainForStage(stage);
+
     if (isLand) {
-      this.fogExp2.density = 0.0045;
-      this.seabedMat.color.setHex(0xfde68a);
+      this.fogExp2.density = 0.0016;
+      this.seabedMat.color.setHex(0xffffff);
+      this.bgColor.setHex(0x38bdf8);
+      this.fogExp2.color.setHex(0x7dd3fc);
+      this.hemiLight.color.setHex(0xfef08a);
       this.hemiLight.groundColor.setHex(0x3f6212);
       this.hemiLight.intensity = 1.45;
+      this.dirLight.color.setHex(0xfffbeb);
+      this.dirLight.intensity = 2.25;
       this.rimLight.color.setHex(0xfef08a);
       this.rimLight.intensity = 1.1;
     } else {
@@ -450,31 +671,64 @@ export class SceneEnvironment {
       this.hemiLight.groundColor.setHex(cfg.hemiGroundColor);
       this.hemiLight.intensity = 1.15;
       this.dirLight.color.setHex(cfg.dirLightColor);
+      this.dirLight.intensity = 2.1;
       this.rimLight.color.setHex(cfg.rimLightColor);
       this.rimLight.intensity = 0.85;
     }
   }
 
-  /**
-   * Dynamically applies the selected planet's visual biome palette (water, fog, lighting,
-   * seabed terrain vertex colors, rocks, and chloroplast trees) while keeping all creatures untouched.
-   */
-  public applyPlanetPalette(theme: PlanetTheme): void {
-    this.currentPlanetTheme = theme;
+  public buildPlayerNest(): void {
+    if (!this.nestGroup) return;
+    const nestBaseY = getLandHeightAt(0, 0);
+    this.nestGroup.position.set(0, nestBaseY - 0.12, 0);
+  }
+
+  private rebuildTerrainForStage(stage: EvolutionaryStage): void {
+    const isLand = stage === 'creature_stage';
     const cfg =
-      PLANET_THEME_PALETTES[theme] ?? PLANET_THEME_PALETTES.oceanic;
+      PLANET_THEME_PALETTES[this.currentPlanetTheme] ??
+      PLANET_THEME_PALETTES.oceanic;
 
-    if (this.currentStage !== 'creature_stage' && !this.isEditorSandboxActive) {
-      this.bgColor.setHex(cfg.waterColor);
-      this.fogExp2.color.setHex(cfg.fogColor);
-      this.hemiLight.color.setHex(cfg.hemiSkyColor);
-      this.hemiLight.groundColor.setHex(cfg.hemiGroundColor);
-      this.dirLight.color.setHex(cfg.dirLightColor);
-      this.rimLight.color.setHex(cfg.rimLightColor);
-    }
+    if (isLand) {
+      this.chunksInitialized = false;
+      this.updateContinentChunks(0, 0);
 
-    // 1. Update Seabed Vertex Colors to match the planet's deep/ridge/caustic palette
-    if (this.seabedMesh) {
+      // Sincronización matemática estricta de seabedMesh con getLandHeightAt
+      if (this.seabedMesh) {
+        this.seabedMesh.updateMatrixWorld(true);
+        const geo = this.seabedMesh.geometry as THREE.PlaneGeometry;
+        const posAttr = geo.attributes.position as THREE.BufferAttribute;
+        const colorAttr = geo.attributes.color as THREE.BufferAttribute;
+        const localVertex = new THREE.Vector3();
+
+        if (posAttr && colorAttr) {
+          for (let i = 0; i < posAttr.count; i++) {
+            localVertex.set(
+              posAttr.getX(i),
+              posAttr.getY(i),
+              posAttr.getZ(i)
+            );
+            localVertex.applyMatrix4(this.seabedMesh.matrixWorld);
+
+            const height = getLandHeightAt(localVertex.x, localVertex.z);
+            posAttr.setY(i, height);
+
+            this.computeContinentVertexColor(
+              localVertex.x,
+              localVertex.z,
+              height,
+              _color
+            );
+            colorAttr.setXYZ(i, _color.r, _color.g, _color.b);
+          }
+          posAttr.needsUpdate = true;
+          colorAttr.needsUpdate = true;
+          geo.computeVertexNormals();
+          geo.computeBoundingBox();
+          geo.computeBoundingSphere();
+        }
+      }
+    } else if (this.seabedMesh) {
       const geo = this.seabedMesh.geometry;
       const posAttr = geo.attributes.position as THREE.BufferAttribute;
       const colorAttr = geo.attributes.color as THREE.BufferAttribute;
@@ -488,8 +742,9 @@ export class SceneEnvironment {
 
         for (let i = 0; i < posAttr.count; i++) {
           const vx = posAttr.getX(i);
-          const vy = posAttr.getY(i);
           const vz = posAttr.getZ(i);
+          const vy = getGroundHeightAt(vx, vz);
+          posAttr.setY(i, vy);
 
           const heightNorm = THREE.MathUtils.clamp((vy + 8.5) / 10.5, 0, 1);
           _color.copy(_baseColorA).lerp(_baseColorB, heightNorm);
@@ -511,9 +766,103 @@ export class SceneEnvironment {
 
           colorAttr.setXYZ(i, _color.r, _color.g, _color.b);
         }
+        posAttr.needsUpdate = true;
         colorAttr.needsUpdate = true;
+        geo.computeVertexNormals();
+        geo.computeBoundingBox();
+        geo.computeBoundingSphere();
       }
     }
+
+    if (this.rocksInstanced && this.rockCapsInstanced) {
+      const rockCount = this.rocksInstanced.count;
+      for (let i = 0; i < rockCount; i++) {
+        const isRim = i >= 120;
+        const angle = (i / rockCount) * Math.PI * 2 + i * 1.618;
+        const radius = isRim
+          ? GAME_CONFIG.WORLD.ARENA_RADIUS + (i % 9) * 2.8
+          : 18 + ((i * 23) % (GAME_CONFIG.WORLD.ARENA_RADIUS - 24));
+        const effectiveRadius =
+          isLand && radius < 30 ? 30 + (i % 12) * 1.5 : radius;
+        const rx = Math.cos(angle) * effectiveRadius;
+        const rz = Math.sin(angle) * effectiveRadius;
+        const ry =
+          (isLand ? getLandHeightAt(rx, rz) : getGroundHeightAt(rx, rz)) - 0.3;
+
+        const scaleXZ = isRim ? 2.8 + (i % 5) * 0.85 : 1.0 + (i % 5) * 0.55;
+        const scaleY = isRim ? 3.2 + (i % 4) * 1.1 : 1.3 + (i % 4) * 0.85;
+
+        _dummy.position.set(rx, ry, rz);
+        _dummy.rotation.set(
+          ((i % 5) - 2) * 0.08,
+          (i * 1.1) % (Math.PI * 2),
+          ((i % 3) - 1) * 0.08
+        );
+        _dummy.scale.set(scaleXZ, scaleY, scaleXZ);
+        _dummy.updateMatrix();
+
+        this.rocksInstanced.setMatrixAt(i, _dummy.matrix);
+        this.rockCapsInstanced.setMatrixAt(i, _dummy.matrix);
+
+        const shade = 0.72 + (i % 5) * 0.08;
+        if (isLand) {
+          _color.setRGB(0.46 * shade, 0.42 * shade, 0.36 * shade);
+          this.rocksInstanced.setColorAt(i, _color);
+          _color.setRGB(0.35 * shade, 0.52 * shade, 0.24 * shade);
+          this.rockCapsInstanced.setColorAt(i, _color);
+        } else {
+          _baseColorA.setHex(cfg.seabedRidgeColor);
+          _baseColorB.setHex(cfg.floraStalkColor);
+          _color.copy(_baseColorA).multiplyScalar(shade * 1.15);
+          this.rocksInstanced.setColorAt(i, _color);
+          _color.copy(_baseColorB).multiplyScalar(shade * 0.95);
+          this.rockCapsInstanced.setColorAt(i, _color);
+        }
+      }
+      this.rocksInstanced.instanceMatrix.needsUpdate = true;
+      this.rockCapsInstanced.instanceMatrix.needsUpdate = true;
+      if (this.rocksInstanced.instanceColor) {
+        this.rocksInstanced.instanceColor.needsUpdate = true;
+      }
+      if (this.rockCapsInstanced.instanceColor) {
+        this.rockCapsInstanced.instanceColor.needsUpdate = true;
+      }
+    }
+
+    for (let i = 0; i < this.treeObstacleRefList.length; i++) {
+      const treeObs = this.treeObstacleRefList[i];
+      const pos = this.chloroplastTreePositions[i];
+      const scaleCfg = this.chloroplastTreeBaseScales[i];
+      if (!treeObs || !pos || !scaleCfg) continue;
+      if (isLand) {
+        treeObs.minY = -999;
+        treeObs.maxY = -990;
+      } else {
+        treeObs.minY = pos.y;
+        treeObs.maxY = pos.y + 11.8 * scaleCfg.scaleY * 0.88;
+      }
+    }
+  }
+
+  /**
+   * Dynamically applies the selected planet's visual biome palette (water, fog, lighting,
+   * seabed terrain vertex colors, rocks, and chloroplast trees) while keeping all creatures untouched.
+   */
+  public applyPlanetPalette(theme: PlanetTheme): void {
+    this.currentPlanetTheme = theme;
+    const cfg =
+      PLANET_THEME_PALETTES[theme] ?? PLANET_THEME_PALETTES.oceanic;
+
+    if (this.currentStage !== 'creature_stage' && !this.isEditorSandboxActive) {
+      this.bgColor.setHex(cfg.waterColor);
+      this.fogExp2.color.setHex(cfg.fogColor);
+      this.hemiLight.color.setHex(cfg.hemiSkyColor);
+      this.hemiLight.groundColor.setHex(cfg.hemiGroundColor);
+      this.dirLight.color.setHex(cfg.dirLightColor);
+      this.rimLight.color.setHex(cfg.rimLightColor);
+    }
+
+    this.rebuildTerrainForStage(this.currentStage);
 
     // 2. Update Rocks & Rock Caps colors to harmonize with the planet's seabed
     if (this.rockBaseMat && this.rockCapMat) {
@@ -655,26 +1004,53 @@ export class SceneEnvironment {
     const isLand = this.currentStage === 'creature_stage';
 
     // Toggle world terrain, flora, corals, vents, silhouettes & particles
-    this.seabedMesh.visible = showWorld;
-    this.rocksInstanced.visible = showWorld;
-    this.rockCapsInstanced.visible = showWorld;
-    this.kelpStalksInstanced.visible = showWorld;
-    this.kelpBladesInstanced.visible = showWorld;
-    if (this.chloroplastCoreInstanced) {
-      this.chloroplastCoreInstanced.visible = showWorld;
+    this.seabedMesh.visible = showWorld && !isLand;
+    if (this.continentChunksGroup) {
+      this.continentChunksGroup.visible = showWorld && isLand;
     }
-    this.electricCoralInstanced.visible = showWorld;
-    this.brainCoralInstanced.visible = showWorld;
-    this.giantAnemoneInstanced.visible = showWorld;
-    this.fossilShellsInstanced.visible = showWorld;
+    if (this.lowPolyContinentProxyMesh) {
+      this.lowPolyContinentProxyMesh.visible = showWorld && isLand;
+    }
+    if (this.oceanWaterMesh) {
+      this.oceanWaterMesh.visible = showWorld && isLand;
+    }
+    if (this.treesTrunkInstanced) {
+      this.treesTrunkInstanced.visible = showWorld && isLand;
+    }
+    if (this.treesFoliageInstanced) {
+      this.treesFoliageInstanced.visible = showWorld && isLand;
+    }
+    if (this.bushesInstanced) {
+      this.bushesInstanced.visible = showWorld && isLand;
+    }
+    if (this.fernsInstanced) {
+      this.fernsInstanced.visible = showWorld && isLand;
+    }
+    if (this.rivalNestsInstanced) {
+      this.rivalNestsInstanced.visible = showWorld && isLand;
+    }
+    for (const bush of this.fruitBushes) {
+      bush.bushGroup.visible = showWorld && isLand;
+    }
+    this.rocksInstanced.visible = showWorld && !isLand;
+    this.rockCapsInstanced.visible = showWorld && !isLand;
+    this.kelpStalksInstanced.visible = showWorld && !isLand;
+    this.kelpBladesInstanced.visible = showWorld && !isLand;
+    if (this.chloroplastCoreInstanced) {
+      this.chloroplastCoreInstanced.visible = showWorld && !isLand;
+    }
+    this.electricCoralInstanced.visible = showWorld && !isLand;
+    this.brainCoralInstanced.visible = showWorld && !isLand;
+    this.giantAnemoneInstanced.visible = showWorld && !isLand;
+    this.fossilShellsInstanced.visible = showWorld && !isLand;
     this.causticRingMesh.visible = showWorld && !isLand;
     this.nestGroup.visible = showWorld && isLand;
 
     for (let i = 0; i < this.ventGroups.length; i++) {
-      this.ventGroups[i].visible = showWorld;
+      this.ventGroups[i].visible = showWorld && !isLand;
     }
     for (let i = 0; i < this.ventAuraMeshes.length; i++) {
-      this.ventAuraMeshes[i].visible = showWorld;
+      this.ventAuraMeshes[i].visible = showWorld && !isLand;
     }
     for (let i = 0; i < this.abyssalSilhouettes.length; i++) {
       this.abyssalSilhouettes[i].group.visible = showWorld && !isLand;
@@ -683,7 +1059,7 @@ export class SceneEnvironment {
     this.planktonPoints.visible =
       showWorld && this.currentParticleQuality !== 'low';
     this.ventBubblesPoints.visible =
-      showWorld && this.currentParticleQuality !== 'low';
+      showWorld && !isLand && this.currentParticleQuality !== 'low';
 
     // Toggle 3D Petri Dish / Coastal Nest Sandbox & 3-Point Studio Lighting Rig
     this.sandboxGroup.visible = active;
@@ -830,6 +1206,8 @@ export class SceneEnvironment {
 
     geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
     geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    geometry.computeBoundingSphere();
 
     this.seabedMat = new THREE.MeshStandardMaterial({
       vertexColors: true,
@@ -1658,28 +2036,31 @@ export class SceneEnvironment {
 
   private initSpeciesNest(): void {
     this.nestGroup = new THREE.Group();
-    this.nestGroup.position.set(0, GAME_CONFIG.WORLD.SWIM_PLANE_Y - 1.15, 0);
+    const nestBaseY = getLandHeightAt(0, 0);
+    this.nestGroup.position.set(0, nestBaseY - 0.12, 0);
     this.nestGroup.visible = false;
 
-    const moundGeo = new THREE.CylinderGeometry(4.4, 5.6, 0.55, 28);
+    const moundGeo = new THREE.CylinderGeometry(4.5, 5.6, 0.55, 32);
     const moundMat = new THREE.MeshStandardMaterial({
       color: 0x3f6212,
       emissive: 0x14532d,
-      emissiveIntensity: 0.35,
-      roughness: 0.8,
+      emissiveIntensity: 0.25,
+      roughness: 0.85,
     });
     const moundMesh = new THREE.Mesh(moundGeo, moundMat);
     moundMesh.receiveShadow = true;
     this.nestGroup.add(moundMesh);
 
-    const nestRimGeo = new THREE.TorusGeometry(4.5, 0.55, 12, 32);
+    const nestRimGeo = new THREE.TorusGeometry(4.5, 0.58, 12, 32);
     nestRimGeo.rotateX(Math.PI / 2);
     const nestRimMat = new THREE.MeshStandardMaterial({
-      color: 0xa16207,
-      roughness: 0.85,
+      color: 0x78350f,
+      roughness: 0.88,
     });
     const nestRimMesh = new THREE.Mesh(nestRimGeo, nestRimMat);
-    nestRimMesh.position.y = 0.25;
+    nestRimMesh.position.y = 0.28;
+    nestRimMesh.castShadow = true;
+    nestRimMesh.receiveShadow = true;
     this.nestGroup.add(nestRimMesh);
 
     const stoneGeo = new THREE.DodecahedronGeometry(0.68, 1);
@@ -1694,16 +2075,18 @@ export class SceneEnvironment {
       stone.position.set(Math.cos(angle) * 4.8, 0.42, Math.sin(angle) * 4.8);
       stone.scale.set(1.2, 0.85 + (i % 3) * 0.2, 1.1);
       stone.rotation.y = angle;
+      stone.castShadow = true;
+      stone.receiveShadow = true;
       this.nestGroup.add(stone);
     }
 
-    const eggGeo = new THREE.SphereGeometry(0.46, 14, 14);
-    eggGeo.scale(0.85, 1.28, 0.85);
+    const eggGeo = new THREE.SphereGeometry(0.46, 16, 16);
+    eggGeo.scale(0.85, 1.35, 0.85);
     const eggMat = new THREE.MeshStandardMaterial({
-      color: 0xfef08a,
+      color: 0xfef3c7,
       emissive: 0xf59e0b,
-      emissiveIntensity: 0.85,
-      roughness: 0.25,
+      emissiveIntensity: 0.55,
+      roughness: 0.28,
     });
     const eggOffsets: [number, number][] = [
       [-0.65, -0.4],
@@ -1712,7 +2095,8 @@ export class SceneEnvironment {
     ];
     for (const [ex, ez] of eggOffsets) {
       const egg = new THREE.Mesh(eggGeo, eggMat);
-      egg.position.set(ex, 0.55, ez);
+      egg.position.set(ex, 0.58, ez);
+      egg.castShadow = true;
       this.nestGroup.add(egg);
       this.nestEggs.push(egg);
     }
@@ -1746,6 +2130,786 @@ export class SceneEnvironment {
       eggMat,
       this.nestAuraMat
     );
+  }
+
+  /**
+   * Initializes the 2,400m Spore Continent Chunk System (LOD + Frustum Culling),
+   * the Horizon Low-Poly Proxy, the Ocean Water Plane at Y = 0, and the 3D Sea Leviathan.
+   */
+  private initContinentChunkSystem(): void {
+    this.continentChunksGroup = new THREE.Group();
+    this.continentChunksGroup.visible = false;
+    this.scene.add(this.continentChunksGroup);
+
+    const r = CONTINENT_CONFIG.VISIBLE_CHUNK_RADIUS;
+    const gridDim = r * 2 + 1; // 9x9 = 81 pooled terrain chunks
+    const totalChunks = gridDim * gridDim;
+    const chunkSize = CONTINENT_CONFIG.CHUNK_SIZE;
+
+    for (let i = 0; i < totalChunks; i++) {
+      const geo = new THREE.PlaneGeometry(chunkSize, chunkSize, 48, 48);
+      geo.rotateX(-Math.PI / 2);
+      const posAttr = geo.attributes.position as THREE.BufferAttribute;
+      const colors = new Float32Array(posAttr.count * 3);
+      geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+      const mesh = new THREE.Mesh(geo, this.seabedMat);
+      mesh.receiveShadow = true;
+      mesh.frustumCulled = false; // Managed explicitly via custom chunk Frustum Culling
+      this.continentChunksGroup.add(mesh);
+      this.disposableGeometries.push(geo);
+
+      this.terrainChunks.push({
+        chunkX: 99999,
+        chunkZ: 99999,
+        mesh,
+        boundingBox: new THREE.Box3(),
+        assigned: false,
+      });
+    }
+
+    // Low-poly Horizon Proxy Mesh (3400m x 3400m) depressed well below valley floors so coarse triangles never poke above high-detail chunks
+    const proxyGeo = new THREE.PlaneGeometry(3400, 3400, 64, 64);
+    proxyGeo.rotateX(-Math.PI / 2);
+    const proxyPos = proxyGeo.attributes.position as THREE.BufferAttribute;
+    const proxyColors = new Float32Array(proxyPos.count * 3);
+    for (let i = 0; i < proxyPos.count; i++) {
+      const vx = proxyPos.getX(i);
+      const vz = proxyPos.getZ(i);
+      const rawY = getLandHeightAt(vx, vz);
+      // Offset down by -18m so coarse chords across valleys never clip above the true terrain chunks
+      const vy = rawY - 18.0;
+      proxyPos.setY(i, vy);
+      this.computeContinentVertexColor(vx, vz, rawY, _color);
+      proxyColors[i * 3] = _color.r;
+      proxyColors[i * 3 + 1] = _color.g;
+      proxyColors[i * 3 + 2] = _color.b;
+    }
+    proxyGeo.setAttribute('color', new THREE.BufferAttribute(proxyColors, 3));
+    proxyGeo.computeVertexNormals();
+    proxyGeo.computeBoundingBox();
+    proxyGeo.computeBoundingSphere();
+
+    this.lowPolyContinentProxyMesh = new THREE.Mesh(proxyGeo, this.seabedMat);
+    this.lowPolyContinentProxyMesh.visible = false;
+    this.scene.add(this.lowPolyContinentProxyMesh);
+    this.disposableGeometries.push(proxyGeo);
+
+    // Planetary Ocean Surface Plane at Y = 0.0 surrounding the 1,200m radius continent
+    const oceanGeo = new THREE.PlaneGeometry(3800, 3800, 28, 28);
+    oceanGeo.rotateX(-Math.PI / 2);
+    this.oceanWaterMat = new THREE.MeshStandardMaterial({
+      color: 0x0284c7,
+      emissive: 0x0369a1,
+      emissiveIntensity: 0.28,
+      roughness: 0.16,
+      metalness: 0.18,
+      transparent: true,
+      opacity: 0.78,
+    });
+    this.oceanWaterMesh = new THREE.Mesh(oceanGeo, this.oceanWaterMat);
+    this.oceanWaterMesh.position.y = 0.0;
+    this.oceanWaterMesh.visible = false;
+    this.scene.add(this.oceanWaterMesh);
+    this.disposableGeometries.push(oceanGeo);
+    this.disposableMaterials.push(this.oceanWaterMat);
+
+    // Colossal 3D Sea Leviathan (Spore-style Deep Ocean Guardian)
+    this.leviathanGroup = new THREE.Group();
+    this.leviathanGroup.visible = false;
+
+    const leviSkinMat = new THREE.MeshStandardMaterial({
+      color: 0x0f172a,
+      emissive: 0x082f49,
+      emissiveIntensity: 0.45,
+      roughness: 0.35,
+      metalness: 0.25,
+    });
+    const leviEyeMat = new THREE.MeshBasicMaterial({
+      color: 0xf43f5e,
+    });
+    const leviToothMat = new THREE.MeshStandardMaterial({
+      color: 0xfef3c7,
+      roughness: 0.25,
+    });
+    const splashMat = new THREE.MeshBasicMaterial({
+      color: 0xe0f2fe,
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+
+    const headGeo = new THREE.ConeGeometry(4.2, 11.5, 14);
+    headGeo.rotateX(Math.PI * 0.18);
+    headGeo.translate(0, 3.5, 0);
+    const headMesh = new THREE.Mesh(headGeo, leviSkinMat);
+    this.leviathanGroup.add(headMesh);
+
+    const jawGeo = new THREE.ConeGeometry(3.4, 8.5, 12);
+    jawGeo.rotateX(-Math.PI * 0.22);
+    jawGeo.translate(0, 2.2, 1.4);
+    this.leviathanJawMesh = new THREE.Mesh(jawGeo, leviSkinMat);
+    this.leviathanGroup.add(this.leviathanJawMesh);
+
+    const eyeGeo = new THREE.SphereGeometry(0.65, 12, 10);
+    for (const side of [-1, 1]) {
+      const eye = new THREE.Mesh(eyeGeo, leviEyeMat);
+      eye.position.set(side * 2.4, 5.2, 1.8);
+      this.leviathanGroup.add(eye);
+    }
+
+    const fangGeo = new THREE.ConeGeometry(0.35, 1.6, 6);
+    for (let f = 0; f < 8; f++) {
+      const ang = (f / 8) * Math.PI * 2;
+      const fang = new THREE.Mesh(fangGeo, leviToothMat);
+      fang.position.set(Math.cos(ang) * 2.6, 4.0, Math.sin(ang) * 2.6 + 0.6);
+      this.leviathanGroup.add(fang);
+    }
+
+    const splashGeo = new THREE.RingGeometry(3.5, 9.5, 32);
+    splashGeo.rotateX(-Math.PI / 2);
+    this.leviathanSplashRing = new THREE.Mesh(splashGeo, splashMat);
+    this.leviathanSplashRing.position.y = 0.25;
+    this.leviathanGroup.add(this.leviathanSplashRing);
+
+    this.scene.add(this.leviathanGroup);
+    this.disposableGeometries.push(headGeo, jawGeo, eyeGeo, fangGeo, splashGeo);
+    this.disposableMaterials.push(
+      leviSkinMat,
+      leviEyeMat,
+      leviToothMat,
+      splashMat
+    );
+  }
+
+  private computeContinentVertexColor(
+    vx: number,
+    vz: number,
+    vy: number,
+    outColor: THREE.Color
+  ): void {
+    const dist = Math.sqrt(vx * vx + vz * vz);
+    // Nest central sanctuary (< 40m)
+    if (dist < 40) {
+      outColor.setRGB(0.32, 0.54, 0.14);
+      return;
+    }
+    // Deep ocean abyssal trench (< -4.0m)
+    if (vy < -4.0) {
+      const depthNorm = THREE.MathUtils.clamp((-vy - 4.0) / 18.0, 0, 1);
+      outColor.setRGB(
+        THREE.MathUtils.lerp(0.05, 0.015, depthNorm),
+        THREE.MathUtils.lerp(0.28, 0.08, depthNorm),
+        THREE.MathUtils.lerp(0.42, 0.18, depthNorm)
+      );
+      return;
+    }
+    // Golden sandy beach & shallow shoreline (-4.0m .. +1.6m)
+    if (vy < 1.6 || dist > CONTINENT_CONFIG.CONTINENT_RADIUS - 75) {
+      const sandNorm = THREE.MathUtils.clamp((vy + 4.0) / 5.6, 0, 1);
+      outColor.setRGB(
+        THREE.MathUtils.lerp(0.12, 0.84, sandNorm),
+        THREE.MathUtils.lerp(0.45, 0.72, sandNorm),
+        THREE.MathUtils.lerp(0.55, 0.42, sandNorm)
+      );
+      return;
+    }
+    // Verdant continental valleys & plains (1.6m .. 14.0m)
+    if (vy < 14.0) {
+      const hillNorm = THREE.MathUtils.clamp((vy - 1.6) / 12.4, 0, 1);
+      outColor.setRGB(
+        THREE.MathUtils.lerp(0.24, 0.48, hillNorm),
+        THREE.MathUtils.lerp(0.46, 0.36, hillNorm),
+        THREE.MathUtils.lerp(0.11, 0.14, hillNorm)
+      );
+      return;
+    }
+    // High mountain slate & snow peaks (> 14.0m)
+    const peakNorm = THREE.MathUtils.clamp((vy - 14.0) / 22.0, 0, 1);
+    if (peakNorm < 0.65) {
+      const t = peakNorm / 0.65;
+      outColor.setRGB(
+        THREE.MathUtils.lerp(0.48, 0.38, t),
+        THREE.MathUtils.lerp(0.36, 0.36, t),
+        THREE.MathUtils.lerp(0.14, 0.35, t)
+      );
+    } else {
+      const t = (peakNorm - 0.65) / 0.35;
+      outColor.setRGB(
+        THREE.MathUtils.lerp(0.38, 0.92, t),
+        THREE.MathUtils.lerp(0.36, 0.94, t),
+        THREE.MathUtils.lerp(0.35, 0.96, t)
+      );
+    }
+  }
+
+  private populateTerrainChunk(
+    chunk: TerrainChunk,
+    chunkX: number,
+    chunkZ: number
+  ): void {
+    chunk.chunkX = chunkX;
+    chunk.chunkZ = chunkZ;
+    chunk.assigned = true;
+
+    const chunkSize = CONTINENT_CONFIG.CHUNK_SIZE;
+    const worldCenterX = chunkX * chunkSize;
+    const worldCenterZ = chunkZ * chunkSize;
+
+    chunk.mesh.position.set(worldCenterX, 0, worldCenterZ);
+    chunk.mesh.updateMatrixWorld(true);
+
+    const geo = chunk.mesh.geometry;
+    const posAttr = geo.attributes.position as THREE.BufferAttribute;
+    const colorAttr = geo.attributes.color as THREE.BufferAttribute;
+    const localVertex = new THREE.Vector3();
+
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    for (let i = 0; i < posAttr.count; i++) {
+      localVertex.set(posAttr.getX(i), posAttr.getY(i), posAttr.getZ(i));
+      localVertex.applyMatrix4(chunk.mesh.matrixWorld);
+
+      const wx = localVertex.x;
+      const wz = localVertex.z;
+      const wy = getLandHeightAt(wx, wz);
+
+      posAttr.setY(i, wy);
+      if (wy < minY) minY = wy;
+      if (wy > maxY) maxY = wy;
+
+      this.computeContinentVertexColor(wx, wz, wy, _color);
+      colorAttr.setXYZ(i, _color.r, _color.g, _color.b);
+    }
+
+    posAttr.needsUpdate = true;
+    colorAttr.needsUpdate = true;
+    geo.computeVertexNormals();
+    geo.computeBoundingBox();
+    geo.computeBoundingSphere();
+
+    const half = chunkSize * 0.5;
+    chunk.boundingBox.min.set(
+      worldCenterX - half,
+      minY - 2.0,
+      worldCenterZ - half
+    );
+    chunk.boundingBox.max.set(
+      worldCenterX + half,
+      maxY + 4.0,
+      worldCenterZ + half
+    );
+  }
+
+  /**
+   * Returns the active terrain chunk mesh directly underneath (x, z) for vertical raycasting,
+   * or falls back to continentChunksGroup / seabedMesh.
+   */
+  public getTerrainMeshAt(x: number, z: number): THREE.Object3D {
+    const chunkSize = CONTINENT_CONFIG.CHUNK_SIZE;
+    const cx = Math.round(x / chunkSize);
+    const cz = Math.round(z / chunkSize);
+    for (let i = 0; i < this.terrainChunks.length; i++) {
+      const c = this.terrainChunks[i];
+      if (c.assigned && c.chunkX === cx && c.chunkZ === cz && c.mesh.visible) {
+        return c.mesh;
+      }
+    }
+    return this.continentChunksGroup?.visible
+      ? this.continentChunksGroup
+      : this.seabedMesh;
+  }
+
+  /**
+   * Updates the 9x9 grid of 128x128m continent terrain chunks around the player
+   * and performs camera Frustum Culling so chunks behind the camera are skipped.
+   */
+  public updateContinentChunks(
+    playerX: number,
+    playerZ: number,
+    camera?: THREE.Camera
+  ): void {
+    if (this.currentStage !== 'creature_stage' || this.isEditorSandboxActive) {
+      return;
+    }
+
+    const chunkSize = CONTINENT_CONFIG.CHUNK_SIZE;
+    const r = CONTINENT_CONFIG.VISIBLE_CHUNK_RADIUS;
+    const centerChunkX = Math.round(playerX / chunkSize);
+    const centerChunkZ = Math.round(playerZ / chunkSize);
+
+    if (
+      !this.chunksInitialized ||
+      centerChunkX !== this.lastChunkCenterX ||
+      centerChunkZ !== this.lastChunkCenterZ
+    ) {
+      this.lastChunkCenterX = centerChunkX;
+      this.lastChunkCenterZ = centerChunkZ;
+      this.chunksInitialized = true;
+
+      // Mark chunks outside the active (2R+1)x(2R+1) window as free for recycling
+      for (let i = 0; i < this.terrainChunks.length; i++) {
+        const c = this.terrainChunks[i];
+        if (
+          Math.abs(c.chunkX - centerChunkX) > r ||
+          Math.abs(c.chunkZ - centerChunkZ) > r
+        ) {
+          c.assigned = false;
+        }
+      }
+
+      let freeSearchIdx = 0;
+      for (let dz = -r; dz <= r; dz++) {
+        for (let dx = -r; dx <= r; dx++) {
+          const targetCX = centerChunkX + dx;
+          const targetCZ = centerChunkZ + dz;
+
+          let alreadyLoaded = false;
+          for (let i = 0; i < this.terrainChunks.length; i++) {
+            const c = this.terrainChunks[i];
+            if (
+              c.assigned &&
+              c.chunkX === targetCX &&
+              c.chunkZ === targetCZ
+            ) {
+              alreadyLoaded = true;
+              break;
+            }
+          }
+
+          if (!alreadyLoaded) {
+            while (
+              freeSearchIdx < this.terrainChunks.length &&
+              this.terrainChunks[freeSearchIdx].assigned
+            ) {
+              freeSearchIdx++;
+            }
+            if (freeSearchIdx < this.terrainChunks.length) {
+              this.populateTerrainChunk(
+                this.terrainChunks[freeSearchIdx],
+                targetCX,
+                targetCZ
+              );
+              freeSearchIdx++;
+            }
+          }
+        }
+      }
+    }
+
+    // Frustum Culling: only render chunks inside the camera frustum (plus immediate 3x3 around player for shadows)
+    if (camera) {
+      camera.updateMatrixWorld();
+      _projScreenMatrix.multiplyMatrices(
+        camera.projectionMatrix,
+        camera.matrixWorldInverse
+      );
+      _frustum.setFromProjectionMatrix(_projScreenMatrix);
+
+      for (let i = 0; i < this.terrainChunks.length; i++) {
+        const chunk = this.terrainChunks[i];
+        if (!chunk.assigned) {
+          chunk.mesh.visible = false;
+          continue;
+        }
+        const isImmediateNeighbor =
+          Math.abs(chunk.chunkX - centerChunkX) <= 1 &&
+          Math.abs(chunk.chunkZ - centerChunkZ) <= 1;
+        chunk.mesh.visible =
+          isImmediateNeighbor || _frustum.intersectsBox(chunk.boundingBox);
+      }
+    }
+  }
+
+  /**
+   * Triggers the visual emergence of the colossal 3D Sea Leviathan ahead of the player in deep water.
+   */
+  public triggerLeviathanVisual(playerPos: THREE.Vector3): void {
+    if (!this.leviathanGroup) return;
+    const dist = Math.hypot(playerPos.x, playerPos.z);
+    const dirX = dist > 0.01 ? playerPos.x / dist : 0;
+    const dirZ = dist > 0.01 ? playerPos.z / dist : 1;
+
+    // Emerge slightly seaward of the player, facing inward toward the player and shore
+    this.leviathanOrigin.set(
+      playerPos.x + dirX * 14.0,
+      -2.5,
+      playerPos.z + dirZ * 14.0
+    );
+    this.leviathanGroup.position.copy(this.leviathanOrigin);
+    this.leviathanGroup.lookAt(playerPos.x, 1.5, playerPos.z);
+    this.leviathanGroup.visible = true;
+    this.leviathanBreachTimer = 1.65;
+  }
+
+  /**
+   * Initializes macroscopic continental vegetation (trees with solid trunk colliders,
+   * bushes, giant ferns, and rival species nests) for `creature_stage` using InstancedMesh.
+   */
+  private initContinentalFlora(): void {
+    const TREE_COUNT = 600;
+    const BUSH_COUNT = 800;
+    const FERN_COUNT = 400;
+    const RIVAL_NEST_COUNT = 12;
+
+    // 1. Geometría de Tronco y Copa de Árbol Continental
+    const trunkGeo = new THREE.CylinderGeometry(0.8, 1.4, 8.0, 8);
+    trunkGeo.translate(0, 4.0, 0);
+    const barkMat = new THREE.MeshStandardMaterial({
+      color: 0x5c4033,
+      roughness: 0.92,
+      metalness: 0.04,
+    });
+
+    const foliageGeo = new THREE.DodecahedronGeometry(4.5, 1);
+    foliageGeo.translate(0, 8.5, 0);
+    const foliageMat = new THREE.MeshStandardMaterial({
+      color: 0x2d6a4f,
+      roughness: 0.78,
+      metalness: 0.05,
+    });
+
+    this.treesTrunkInstanced = new THREE.InstancedMesh(
+      trunkGeo,
+      barkMat,
+      TREE_COUNT
+    );
+    this.treesFoliageInstanced = new THREE.InstancedMesh(
+      foliageGeo,
+      foliageMat,
+      TREE_COUNT
+    );
+    this.treesTrunkInstanced.castShadow = true;
+    this.treesTrunkInstanced.receiveShadow = true;
+    this.treesFoliageInstanced.castShadow = true;
+    this.treesFoliageInstanced.receiveShadow = true;
+    this.treesTrunkInstanced.visible = false;
+    this.treesFoliageInstanced.visible = false;
+
+    this.treeColliders = [];
+
+    let placedTrees = 0;
+    let seed = 137;
+    const pseudoRand = () => {
+      seed = (seed * 16807) % 2147483647;
+      return (seed - 1) / 2147483646;
+    };
+
+    for (
+      let attempt = 0;
+      attempt < TREE_COUNT * 4 && placedTrees < TREE_COUNT;
+      attempt++
+    ) {
+      // Distribuir en anillos fuera del Nido Central (Radio > 38m hasta la costa < 980m)
+      const r = 38 + Math.pow(pseudoRand(), 0.75) * 940;
+      const theta = pseudoRand() * Math.PI * 2;
+      const x = Math.cos(theta) * r;
+      const z = Math.sin(theta) * r;
+      const y = getLandHeightAt(x, z);
+
+      // Solo plantar en tierra firme emergida (evitar el océano y picos nevados extremos)
+      if (y <= 0.65 || y >= 24.0) continue;
+
+      const scale = 0.8 + pseudoRand() * 0.7;
+      _dummy.position.set(x, y - 0.35, z);
+      _dummy.rotation.set(
+        (pseudoRand() - 0.5) * 0.08,
+        pseudoRand() * Math.PI * 2,
+        (pseudoRand() - 0.5) * 0.08
+      );
+      _dummy.scale.set(scale, scale * (0.9 + pseudoRand() * 0.25), scale);
+      _dummy.updateMatrix();
+
+      this.treesTrunkInstanced.setMatrixAt(placedTrees, _dummy.matrix);
+      this.treesFoliageInstanced.setMatrixAt(placedTrees, _dummy.matrix);
+
+      // Variación cromática orgánica de corteza y follaje
+      const barkShade = 0.82 + (placedTrees % 5) * 0.06;
+      _color.setRGB(0.36 * barkShade, 0.25 * barkShade, 0.18 * barkShade);
+      this.treesTrunkInstanced.setColorAt(placedTrees, _color);
+
+      const leafHue = 0.28 + ((placedTrees % 7) - 3) * 0.018;
+      const leafLight = 0.28 + (placedTrees % 4) * 0.045;
+      _color.setHSL(leafHue, 0.58, leafLight);
+      this.treesFoliageInstanced.setColorAt(placedTrees, _color);
+
+      // Registrar colisionador de tronco (radio 1.2m escalado) para que las criaturas no lo atraviesen
+      const trunkRadius = 1.2 * scale;
+      this.treeColliders.push({ x, z, radius: trunkRadius });
+      this.registerLandObstacle(x, z, y - 2.0, y + 12.0 * scale, trunkRadius);
+      placedTrees++;
+    }
+
+    this.treesTrunkInstanced.count = placedTrees;
+    this.treesFoliageInstanced.count = placedTrees;
+    this.treesTrunkInstanced.instanceMatrix.needsUpdate = true;
+    this.treesFoliageInstanced.instanceMatrix.needsUpdate = true;
+    if (this.treesTrunkInstanced.instanceColor) {
+      this.treesTrunkInstanced.instanceColor.needsUpdate = true;
+    }
+    if (this.treesFoliageInstanced.instanceColor) {
+      this.treesFoliageInstanced.instanceColor.needsUpdate = true;
+    }
+    this.treesTrunkInstanced.computeBoundingSphere();
+    this.treesFoliageInstanced.computeBoundingSphere();
+    this.scene.add(this.treesTrunkInstanced);
+    this.scene.add(this.treesFoliageInstanced);
+
+    // 2. Arbustos Continentales y Helechos Prehistóricos
+    const bushGeo = new THREE.DodecahedronGeometry(1.35, 1);
+    bushGeo.scale(1.25, 0.82, 1.25);
+    bushGeo.translate(0, 0.75, 0);
+    const bushMat = new THREE.MeshStandardMaterial({
+      color: 0x3f8f4e,
+      roughness: 0.82,
+      metalness: 0.04,
+    });
+
+    this.bushesInstanced = new THREE.InstancedMesh(
+      bushGeo,
+      bushMat,
+      BUSH_COUNT
+    );
+    this.bushesInstanced.castShadow = true;
+    this.bushesInstanced.receiveShadow = true;
+    this.bushesInstanced.visible = false;
+
+    let placedBushes = 0;
+    for (
+      let attempt = 0;
+      attempt < BUSH_COUNT * 3 && placedBushes < BUSH_COUNT;
+      attempt++
+    ) {
+      const r = 28 + Math.pow(pseudoRand(), 0.78) * 960;
+      const theta = pseudoRand() * Math.PI * 2;
+      const x = Math.cos(theta) * r;
+      const z = Math.sin(theta) * r;
+      const y = getLandHeightAt(x, z);
+      if (y <= 0.5 || y >= 20.0) continue;
+
+      const s = 0.65 + pseudoRand() * 0.85;
+      _dummy.position.set(x, y - 0.15, z);
+      _dummy.rotation.set(0, pseudoRand() * Math.PI * 2, 0);
+      _dummy.scale.set(s, s * (0.85 + pseudoRand() * 0.3), s);
+      _dummy.updateMatrix();
+      this.bushesInstanced.setMatrixAt(placedBushes, _dummy.matrix);
+
+      const bushHue = 0.26 + ((placedBushes % 6) - 2.5) * 0.02;
+      _color.setHSL(bushHue, 0.62, 0.32 + (placedBushes % 4) * 0.04);
+      this.bushesInstanced.setColorAt(placedBushes, _color);
+      placedBushes++;
+    }
+    this.bushesInstanced.count = placedBushes;
+    this.bushesInstanced.instanceMatrix.needsUpdate = true;
+    if (this.bushesInstanced.instanceColor) {
+      this.bushesInstanced.instanceColor.needsUpdate = true;
+    }
+    this.bushesInstanced.computeBoundingSphere();
+    this.scene.add(this.bushesInstanced);
+
+    const fernGeo = new THREE.ConeGeometry(1.65, 2.6, 7);
+    fernGeo.scale(1.3, 0.55, 1.3);
+    fernGeo.translate(0, 0.65, 0);
+    const fernMat = new THREE.MeshStandardMaterial({
+      color: 0x52b788,
+      roughness: 0.72,
+      metalness: 0.06,
+    });
+
+    this.fernsInstanced = new THREE.InstancedMesh(fernGeo, fernMat, FERN_COUNT);
+    this.fernsInstanced.castShadow = true;
+    this.fernsInstanced.receiveShadow = true;
+    this.fernsInstanced.visible = false;
+
+    let placedFerns = 0;
+    for (
+      let attempt = 0;
+      attempt < FERN_COUNT * 3 && placedFerns < FERN_COUNT;
+      attempt++
+    ) {
+      const r = 24 + Math.pow(pseudoRand(), 0.75) * 920;
+      const theta = pseudoRand() * Math.PI * 2;
+      const x = Math.cos(theta) * r;
+      const z = Math.sin(theta) * r;
+      const y = getLandHeightAt(x, z);
+      if (y <= 0.5 || y >= 16.0) continue;
+
+      const s = 0.75 + pseudoRand() * 0.9;
+      _dummy.position.set(x, y - 0.1, z);
+      _dummy.rotation.set(
+        (pseudoRand() - 0.5) * 0.15,
+        pseudoRand() * Math.PI * 2,
+        (pseudoRand() - 0.5) * 0.15
+      );
+      _dummy.scale.set(s, s, s);
+      _dummy.updateMatrix();
+      this.fernsInstanced.setMatrixAt(placedFerns, _dummy.matrix);
+
+      _color.setHSL(
+        0.33 + (placedFerns % 5) * 0.015,
+        0.68,
+        0.36 + (placedFerns % 3) * 0.05
+      );
+      this.fernsInstanced.setColorAt(placedFerns, _color);
+      placedFerns++;
+    }
+    this.fernsInstanced.count = placedFerns;
+    this.fernsInstanced.instanceMatrix.needsUpdate = true;
+    if (this.fernsInstanced.instanceColor) {
+      this.fernsInstanced.instanceColor.needsUpdate = true;
+    }
+    this.fernsInstanced.computeBoundingSphere();
+    this.scene.add(this.fernsInstanced);
+
+    // 3. Nidos Secundarios de Especies Rivales repartidos por el continente
+    const rivalNestGeo = new THREE.TorusGeometry(4.2, 0.75, 10, 28);
+    rivalNestGeo.rotateX(Math.PI / 2);
+    rivalNestGeo.scale(1, 0.55, 1);
+    rivalNestGeo.translate(0, 0.25, 0);
+    const rivalNestMat = new THREE.MeshStandardMaterial({
+      color: 0x78350f,
+      roughness: 0.9,
+      metalness: 0.05,
+    });
+
+    this.rivalNestsInstanced = new THREE.InstancedMesh(
+      rivalNestGeo,
+      rivalNestMat,
+      RIVAL_NEST_COUNT
+    );
+    this.rivalNestsInstanced.receiveShadow = true;
+    this.rivalNestsInstanced.visible = false;
+    this.rivalNestPositions.length = 0;
+
+    for (let n = 0; n < RIVAL_NEST_COUNT; n++) {
+      const baseAngle = (n / RIVAL_NEST_COUNT) * Math.PI * 2 + 0.35;
+      const ringRadius = n < 6 ? 85 + (n % 3) * 42 : 220 + ((n - 6) % 6) * 75;
+      let nx = Math.cos(baseAngle) * ringRadius;
+      let nz = Math.sin(baseAngle) * ringRadius;
+      let ny = getLandHeightAt(nx, nz);
+
+      // Asegurar que cada nido rival esté sobre tierra firme emergida
+      if (ny < 0.8) {
+        nx = Math.cos(baseAngle) * 95;
+        nz = Math.sin(baseAngle) * 95;
+        ny = Math.max(0.8, getLandHeightAt(nx, nz));
+      }
+
+      this.rivalNestPositions.push(new THREE.Vector3(nx, ny, nz));
+      _dummy.position.set(nx, ny - 0.1, nz);
+      _dummy.rotation.set(0, baseAngle, 0);
+      _dummy.scale.setScalar(1.0);
+      _dummy.updateMatrix();
+      this.rivalNestsInstanced.setMatrixAt(n, _dummy.matrix);
+    }
+    this.rivalNestsInstanced.instanceMatrix.needsUpdate = true;
+    this.rivalNestsInstanced.computeBoundingSphere();
+    this.scene.add(this.rivalNestsInstanced);
+
+    this.disposableGeometries.push(
+      trunkGeo,
+      foliageGeo,
+      bushGeo,
+      fernGeo,
+      rivalNestGeo
+    );
+    this.disposableMaterials.push(
+      barkMat,
+      foliageMat,
+      bushMat,
+      fernMat,
+      rivalNestMat
+    );
+  }
+
+  public initFruitBushes(): void {
+    const BUSH_COUNT = 85;
+    const fruitGeo = new THREE.SphereGeometry(0.35, 12, 12);
+    const fruitMat = new THREE.MeshStandardMaterial({
+      color: 0x22c55e, // Verde brillante bioluminiscente
+      emissive: 0x15803d,
+      emissiveIntensity: 0.6,
+      roughness: 0.3,
+    });
+
+    const bushFoliageGeo = new THREE.DodecahedronGeometry(1.6, 1);
+    const bushMat = new THREE.MeshStandardMaterial({
+      color: 0x14532d,
+      roughness: 0.8,
+    });
+
+    this.disposableGeometries.push(fruitGeo, bushFoliageGeo);
+    this.disposableMaterials.push(fruitMat, bushMat);
+
+    for (let i = 0; i < BUSH_COUNT; i++) {
+      // Colocar primeros arbustos cerca de la llanura del nido (30m - 120m) y el resto por todo el continente
+      const angle =
+        i < 16
+          ? (i / 16) * Math.PI * 2 + (i % 3) * 0.15
+          : Math.random() * Math.PI * 2;
+      const dist =
+        i < 16
+          ? 30 + (i % 4) * 18 + Math.random() * 12
+          : 30 + Math.random() * 900; // Entre el nido y el borde continental
+      const x = Math.cos(angle) * dist;
+      const z = Math.sin(angle) * dist;
+      const y = getLandHeightAt(x, z);
+
+      if (y > 0.5) {
+        const bushGroup = new THREE.Group();
+        bushGroup.position.set(x, y + 0.8, z);
+        bushGroup.visible =
+          !this.isEditorSandboxActive &&
+          this.currentStage === 'creature_stage';
+
+        // Follaje del arbusto
+        const foliageMesh = new THREE.Mesh(bushFoliageGeo, bushMat);
+        foliageMesh.castShadow = true;
+        foliageMesh.receiveShadow = true;
+        bushGroup.add(foliageMesh);
+
+        // Añadir frutos accesibles por arbusto
+        const fruits: FruitNode[] = [];
+        const fruitOffsets = [
+          new THREE.Vector3(0.9, 0.4, 0.5),
+          new THREE.Vector3(-0.8, 0.3, -0.6),
+          new THREE.Vector3(0.3, 0.7, -0.8),
+          new THREE.Vector3(-0.5, 0.5, 0.8),
+        ];
+
+        fruitOffsets.forEach((offset) => {
+          const fruitMesh = new THREE.Mesh(fruitGeo, fruitMat);
+          fruitMesh.position.copy(offset);
+          bushGroup.add(fruitMesh);
+          fruits.push({ mesh: fruitMesh, isHarvested: false, respawnTimer: 0 });
+        });
+
+        this.scene.add(bushGroup);
+        this.fruitBushes.push({
+          position: bushGroup.position,
+          bushGroup,
+          fruits,
+        });
+      }
+    }
+  }
+
+  public updateFruitBushes(dt: number): void {
+    // Regenerar frutos consumidos tras 45 segundos
+    for (const bush of this.fruitBushes) {
+      for (const fruit of bush.fruits) {
+        if (fruit.isHarvested) {
+          fruit.respawnTimer -= dt;
+          if (fruit.respawnTimer <= 0) {
+            fruit.isHarvested = false;
+            fruit.mesh.visible = true;
+            fruit.mesh.scale.set(1, 1, 1);
+          }
+        }
+      }
+    }
   }
 
   /**
@@ -1961,7 +3125,8 @@ export class SceneEnvironment {
     elapsedTime: number,
     delta: number,
     playerX = 0,
-    playerZ = 0
+    playerZ = 0,
+    camera?: THREE.Camera
   ): void {
     // When in 3D Editor Sandbox Mode, keep the clean Petri Dish or Coastal Nest ambiance and animate only the subtle reticle
     if (this.isEditorSandboxActive) {
@@ -2005,27 +3170,53 @@ export class SceneEnvironment {
     let targetHemiB = _baseColorB.b;
 
     if (this.currentStage === 'creature_stage') {
-      targetBgR = 0.12;
-      targetBgG = 0.48;
-      targetBgB = 0.68;
-      targetHemiR = 0.99;
-      targetHemiG = 0.94;
-      targetHemiB = 0.54;
+      const distFromCenter = Math.hypot(playerX, playerZ);
+      const abyssBlend = THREE.MathUtils.smoothstep(
+        distFromCenter,
+        CONTINENT_CONFIG.CONTINENT_RADIUS,
+        CONTINENT_CONFIG.OCEAN_ABYSS_LIMIT
+      );
+      // Sky transitions from bright continental azure to ominous storm-teal near the Leviathan's abyss
+      targetBgR = THREE.MathUtils.lerp(0.32, 0.04, abyssBlend);
+      targetBgG = THREE.MathUtils.lerp(0.72, 0.22, abyssBlend);
+      targetBgB = THREE.MathUtils.lerp(0.94, 0.34, abyssBlend);
+      targetHemiR = THREE.MathUtils.lerp(0.99, 0.38, abyssBlend);
+      targetHemiG = THREE.MathUtils.lerp(0.95, 0.68, abyssBlend);
+      targetHemiB = THREE.MathUtils.lerp(0.62, 0.78, abyssBlend);
 
-      if (biome.id === 'fosa_termal') {
-        targetBgR = 0.22;
-        targetBgG = 0.42;
-        targetBgB = 0.55;
-      } else if (biome.id === 'arrecife_abisal') {
-        targetBgR = 0.1;
-        targetBgG = 0.52;
-        targetBgB = 0.58;
+      this.updateContinentChunks(playerX, playerZ, camera);
+      this.updateFruitBushes(delta);
+
+      if (this.oceanWaterMesh) {
+        this.oceanWaterMesh.position.y = Math.sin(elapsedTime * 1.6) * 0.14;
+      }
+
+      if (this.leviathanBreachTimer > 0 && this.leviathanGroup) {
+        this.leviathanBreachTimer = Math.max(
+          0,
+          this.leviathanBreachTimer - delta
+        );
+        const progress = 1.0 - this.leviathanBreachTimer / 1.65;
+        const arcY = Math.sin(progress * Math.PI) * 11.5 - 3.5;
+        this.leviathanGroup.position.y = arcY;
+        if (this.leviathanJawMesh) {
+          this.leviathanJawMesh.rotation.x =
+            0.35 + Math.sin(progress * Math.PI * 3.0) * 0.28;
+        }
+        if (this.leviathanSplashRing) {
+          const splashScale = 1.0 + progress * 2.4;
+          this.leviathanSplashRing.scale.setScalar(splashScale);
+          this.leviathanSplashRing.position.y = -arcY + 0.25;
+        }
+        if (this.leviathanBreachTimer <= 0) {
+          this.leviathanGroup.visible = false;
+        }
       }
 
       this.nestAuraMat.opacity = 0.22 + Math.sin(elapsedTime * 3.2) * 0.1;
       for (let e = 0; e < this.nestEggs.length; e++) {
         const pulse = 1.0 + Math.sin(elapsedTime * 3.5 + e) * 0.06;
-        this.nestEggs[e].scale.set(0.85 * pulse, 1.28 * pulse, 0.85 * pulse);
+        this.nestEggs[e].scale.set(0.85 * pulse, 1.35 * pulse, 0.85 * pulse);
       }
     } else if (biome.id === 'fosa_termal') {
       // Blend planet's base water & sky tint with a subtle thermal amber warmth
@@ -2053,7 +3244,7 @@ export class SceneEnvironment {
 
     const baseFogDensity =
       this.currentStage === 'creature_stage'
-        ? 0.0045
+        ? 0.0016
         : GAME_CONFIG.WORLD.FOG_DENSITY * this.stageFogFactor;
     this.fogExp2.density = THREE.MathUtils.damp(
       this.fogExp2.density,
@@ -2178,11 +3369,212 @@ export class SceneEnvironment {
       posAttr.setXY(i, px, py);
     }
     posAttr.needsUpdate = true;
+
+    // 6. Animate Mating Call Sonar Ping Waves (MatingPingWave)
+    for (let i = this.sonarPingWaves.length - 1; i >= 0; i--) {
+      const w = this.sonarPingWaves[i];
+      w.elapsed += delta;
+      if (w.elapsed < 0) continue;
+      if (w.elapsed >= w.duration) {
+        w.mesh.removeFromParent();
+        w.mat.dispose();
+        this.sonarPingWaves.splice(i, 1);
+        continue;
+      }
+      w.mesh.visible = true;
+      const t = w.elapsed / w.duration;
+      const radius = 0.8 + t * w.maxRadius;
+      w.mesh.scale.setScalar(radius);
+      w.mat.opacity = Math.pow(1.0 - t, 1.4) * 0.85;
+    }
+
+    // 7. Animate Egg Hatching Cell Burst FX Particles
+    for (let i = this.cellBurstParticles.length - 1; i >= 0; i--) {
+      const p = this.cellBurstParticles[i];
+      p.elapsed += delta;
+      if (p.elapsed >= p.duration) {
+        p.mesh.removeFromParent();
+        p.mat.dispose();
+        this.cellBurstParticles.splice(i, 1);
+        continue;
+      }
+      const t = p.elapsed / p.duration;
+      p.mesh.position.addScaledVector(p.velocity, delta);
+      p.velocity.multiplyScalar(Math.max(0, 1.0 - delta * 3.2));
+      p.mesh.scale.setScalar((1.0 - t * 0.6) * p.baseScale);
+      p.mat.opacity = (1.0 - t) * 0.92;
+    }
+  }
+
+  private readonly sonarPingWaves: {
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    elapsed: number;
+    duration: number;
+    maxRadius: number;
+  }[] = [];
+  private sonarRingSharedGeo: THREE.RingGeometry | null = null;
+
+  private readonly cellBurstParticles: {
+    mesh: THREE.Mesh;
+    mat: THREE.MeshBasicMaterial;
+    velocity: THREE.Vector3;
+    elapsed: number;
+    duration: number;
+    baseScale: number;
+  }[] = [];
+  private burstParticleSharedGeo: THREE.SphereGeometry | null = null;
+
+  /**
+   * Emite ondas acústicas bioluminiscentes en círculos expansivos (MatingPingWave)
+   * durante el llamado de cortejo o el eco de respuesta de la pareja.
+   */
+  public spawnSonarPing(origin: THREE.Vector3, colorHex = 0x38bdf8): void {
+    if (!this.sonarRingSharedGeo) {
+      this.sonarRingSharedGeo = new THREE.RingGeometry(0.88, 1.0, 48);
+      this.sonarRingSharedGeo.rotateX(-Math.PI / 2);
+      this.disposableGeometries.push(this.sonarRingSharedGeo);
+    }
+
+    // Emitir 3 anillos concéntricos escalonados
+    for (let ringIdx = 0; ringIdx < 3; ringIdx++) {
+      const mat = new THREE.MeshBasicMaterial({
+        color: colorHex,
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const mesh = new THREE.Mesh(this.sonarRingSharedGeo, mat);
+      mesh.position.set(
+        origin.x,
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y + 0.08,
+        origin.z
+      );
+      mesh.scale.setScalar(0.8);
+      mesh.visible = ringIdx === 0;
+      this.scene.add(mesh);
+
+      this.sonarPingWaves.push({
+        mesh,
+        mat,
+        elapsed: -ringIdx * 0.22,
+        duration: 1.45,
+        maxRadius: 22.0 + ringIdx * 4.0,
+      });
+    }
+  }
+
+  /**
+   * Estallido bioluminiscente de fragmentos de membrana al eclosionar el huevo primordial.
+   */
+  public spawnCellBurstFX(origin: THREE.Vector3, colorStr = '#22d3ee'): void {
+    if (!this.burstParticleSharedGeo) {
+      this.burstParticleSharedGeo = new THREE.SphereGeometry(0.18, 10, 8);
+      this.disposableGeometries.push(this.burstParticleSharedGeo);
+    }
+
+    const baseColor = new THREE.Color(colorStr);
+    this.spawnSonarPing(origin, baseColor.getHex());
+
+    const count = 26;
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.25;
+      const speed = 4.5 + Math.random() * 8.5;
+      const vy = (Math.random() - 0.3) * 3.5;
+
+      const mat = new THREE.MeshBasicMaterial({
+        color: i % 2 === 0 ? baseColor : new THREE.Color(0xa5f3fc),
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const mesh = new THREE.Mesh(this.burstParticleSharedGeo, mat);
+      mesh.position.copy(origin);
+      const baseScale = 0.65 + Math.random() * 0.95;
+      mesh.scale.setScalar(baseScale);
+      this.scene.add(mesh);
+
+      this.cellBurstParticles.push({
+        mesh,
+        mat,
+        velocity: new THREE.Vector3(
+          Math.cos(angle) * speed,
+          vy,
+          Math.sin(angle) * speed
+        ),
+        elapsed: 0,
+        duration: 0.75 + Math.random() * 0.35,
+        baseScale,
+      });
+    }
+  }
+
+  /**
+   * Emite un destello bioluminiscente de unión y partículas ascendentes de cortejo
+   * cuando el jugador y su pareja nadan juntos hacia el Taller Evolutivo.
+   */
+  public spawnMatingHeartsOrGlow(
+    origin: THREE.Vector3,
+    colorStr = '#38bdf8'
+  ): void {
+    if (!this.burstParticleSharedGeo) {
+      this.burstParticleSharedGeo = new THREE.SphereGeometry(0.18, 10, 8);
+      this.disposableGeometries.push(this.burstParticleSharedGeo);
+    }
+
+    const baseColor = new THREE.Color(colorStr);
+    const pinkGlow = new THREE.Color(0xf472b6);
+    this.spawnSonarPing(origin, baseColor.getHex());
+
+    const count = 22;
+    for (let i = 0; i < count; i++) {
+      const angle = (i / count) * Math.PI * 2 + (Math.random() - 0.5) * 0.3;
+      const speed = 2.2 + Math.random() * 4.5;
+      const vy = 1.5 + Math.random() * 2.8;
+
+      const mat = new THREE.MeshBasicMaterial({
+        color: i % 2 === 0 ? baseColor : pinkGlow,
+        transparent: true,
+        opacity: 0.95,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const mesh = new THREE.Mesh(this.burstParticleSharedGeo, mat);
+      mesh.position.copy(origin);
+      const baseScale = 0.75 + Math.random() * 0.85;
+      mesh.scale.setScalar(baseScale);
+      this.scene.add(mesh);
+
+      this.cellBurstParticles.push({
+        mesh,
+        mat,
+        velocity: new THREE.Vector3(
+          Math.cos(angle) * speed,
+          vy,
+          Math.sin(angle) * speed
+        ),
+        elapsed: 0,
+        duration: 1.15 + Math.random() * 0.35,
+        baseScale,
+      });
+    }
   }
 
   public dispose(): void {
+
     if (this.envTexture) {
       this.envTexture.dispose();
+    }
+    for (const w of this.sonarPingWaves) {
+      w.mesh.removeFromParent();
+      w.mat.dispose();
+    }
+    for (const p of this.cellBurstParticles) {
+      p.mesh.removeFromParent();
+      p.mat.dispose();
     }
     for (const geo of this.disposableGeometries) {
       geo.dispose();
@@ -2192,3 +3584,4 @@ export class SceneEnvironment {
     }
   }
 }
+

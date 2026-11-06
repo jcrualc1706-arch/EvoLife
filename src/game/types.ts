@@ -598,6 +598,31 @@ export interface BrainCinematicState {
   synapseCount?: number;
 }
 
+export interface StageEvolutionHistory {
+  stageTimeSeconds: number;
+  microbesKilled: number;
+  plantsEaten: number;
+  meatsEaten: number;
+  partsDiscoveredCount: number;
+  editorVisitsCount: number;
+  finalCellSnapshotUrl?: string;
+  earnedTrait: 'carnivore' | 'herbivore' | 'omnivore';
+}
+
+export type TutorialStep =
+  | 'movement' // Probar impulso y giro
+  | 'camera' // Probar zoom/orientación
+  | 'vital_signs' // Observar barra de vida y energía
+  | 'feed_first_time' // Comer primer plancton o despojo
+  | 'evolve_key' // Conocer la tecla E de mutación
+  | 'completed';
+
+export interface TutorialState {
+  isActive: boolean;
+  currentStep: TutorialStep;
+  progress: number; // Porcentaje de acción cumplida
+}
+
 export type EditorPreviewAction = 'idle' | 'walk' | 'run' | 'attack' | 'social';
 
 export interface GameUISnapshot {
@@ -605,7 +630,7 @@ export interface GameUISnapshot {
   hasSavedGame: boolean;
   activeSlotId: number;
   selectedMenuSlotId: number | null;
-  hoveredMenuSlotId: number | null;
+  hoveredMenuSlotId: null | number;
   planetSlots: PlanetSlotMetadata[];
   settings: GameSettings;
   stats: PlayerStats;
@@ -633,6 +658,9 @@ export interface GameUISnapshot {
   planetaryTransition?: PlanetaryTransitionState;
   introCinematic?: IntroCinematicState;
   brainCinematic?: BrainCinematicState;
+  isEvolutionSummaryOpen?: boolean;
+  stageEvolutionHistory?: StageEvolutionHistory;
+  tutorialState?: TutorialState;
   autosaveNotificationVisible?: boolean;
   deathCauseDescription?: string;
   isGodModeActive?: boolean;

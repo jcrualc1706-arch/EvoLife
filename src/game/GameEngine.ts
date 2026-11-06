@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { audioManager } from './AudioManager';
+import { AmbientAudioManager, audioManager } from './AudioManager';
 import { CameraController } from './CameraController';
 import { GAME_CONFIG } from './config';
 import {
@@ -21,15 +21,22 @@ import { FoodManager } from './FoodManager';
 import { FossilMeteorManager } from './FossilMeteorManager';
 import { InputController } from './InputController';
 import { IntroCinematicController } from './IntroCinematicController';
+import { MatingSequence } from './MatingSequence';
 import { PlayerCell } from './PlayerCell';
-import { PredatorManager } from './PredatorManager';
+import { KinCellEntity, PredatorManager } from './PredatorManager';
+
 import {
   PLANET_CATALOG,
   SaveSystem,
   SlotSavePayload,
 } from './SaveSystem';
-import { SceneEnvironment } from './SceneEnvironment';
+import {
+  CONTINENT_CONFIG,
+  SceneEnvironment,
+  getLandHeightAt,
+} from './SceneEnvironment';
 import { SolarSystemView } from './SolarSystemView';
+import { TutorialManager } from './TutorialManager';
 import {
   BrainCinematicState,
   CellBodyShape,
@@ -69,6 +76,7 @@ import {
   PredatorBehaviorState,
   SpeciesType,
   SpineVertebraNode,
+  StageEvolutionHistory,
   UnlockedBannerNotification,
   createDefaultBodySegments,
   createDefaultSpineNodes,
@@ -98,9 +106,11 @@ export class GameEngine {
   private readonly foodManager: FoodManager;
   private readonly fossilMeteorManager: FossilMeteorManager;
   private readonly predatorManager: PredatorManager;
+  private readonly matingSequence: MatingSequence;
   private readonly inputController: InputController;
   private readonly introCinematicController: IntroCinematicController;
   private readonly timer: THREE.Timer;
+
 
   private status: GameStatus = 'menu';
   private activeSlotId = 1;
@@ -130,6 +140,8 @@ export class GameEngine {
 
   // 3D Spore Workshop Interactive Raycasting & Drag State
   private readonly raycaster = new THREE.Raycaster();
+  private readonly terrainRaycaster: THREE.Raycaster = new THREE.Raycaster();
+  private readonly rayDownVector: THREE.Vector3 = new THREE.Vector3(0, -1, 0);
   private readonly pointerNdc = new THREE.Vector2();
   private readonly editorPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
   private readonly planeHitPoint = new THREE.Vector3();
@@ -163,8 +175,12 @@ export class GameEngine {
   private acidSpitCooldownTimer = 0;
   private socializeCooldownTimer = 0;
   private matingCallTimer = 0;
+  public isMatingCallActive = false;
+  public activeMate: KinCellEntity | null = null;
+  private mateEchoPingTimer = 0;
   private wasAbilityPressed = false;
   private wasSocializePressed = false;
+
   private stillnessTimer = 0;
   private suctionDrainAccumulator = 0;
   private currentBiomeName = 'Pradera Bioluminiscente';
@@ -194,6 +210,25 @@ export class GameEngine {
   // DevTools / Debug Suite State
   public isGodModeActive = false;
   public isAIFrozen = false;
+
+  // Resumen de Transición Evolutiva (Estilo Timeline de Spore)
+  public isEvolutionSummaryOpen = false;
+  public stageHistory: StageEvolutionHistory = {
+    stageTimeSeconds: 0,
+    microbesKilled: 0,
+    plantsEaten: 0,
+    meatsEaten: 0,
+    partsDiscoveredCount: 0,
+    editorVisitsCount: 0,
+    finalCellSnapshotUrl: undefined,
+    earnedTrait: 'omnivore',
+  };
+
+  // Gestor del Tutorial Interactivo Pos-Meteorito
+  public readonly tutorialManager = new TutorialManager();
+
+  // Gestor de Audio Ambiental ('burbujeo' y 'corrientes' según profundidad y actividad)
+  public readonly ambientAudioManager = new AmbientAudioManager(audioManager);
 
   private readonly onUISnapshot: (snapshot: GameUISnapshot) => void;
   private readonly boundResize: () => void;
@@ -251,16 +286,24 @@ export class GameEngine {
     this.environment = new SceneEnvironment(this.renderer);
     this.player = new PlayerCell(this.environment.scene);
     this.cameraController = new CameraController(width / Math.max(height, 1));
+    this.cameraController.initMouseListeners(this.renderer.domElement);
     this.foodManager = new FoodManager(this.environment.scene);
     this.foodManager.setObstacleQuery((x, z, r) =>
       this.environment.getNearbyObstacles(x, z, r)
     );
     this.fossilMeteorManager = new FossilMeteorManager(this.environment.scene);
     this.predatorManager = new PredatorManager(this.environment.scene);
+    this.predatorManager.setPlayerCellRef(this.player);
     this.predatorManager.setObstacleQuery((x, z, r) =>
       this.environment.getNearbyObstacles(x, z, r)
     );
+    this.matingSequence = new MatingSequence(
+      this.environment.scene,
+      this.cameraController,
+      this.environment
+    );
     this.inputController = new InputController(
+
       () => this.togglePause(),
       () => this.toggleEditor()
     );
@@ -410,6 +453,7 @@ export class GameEngine {
     this.player.setGrowthStage(stage);
     this.environment.setGrowthStageDepthLayer(stage);
     this.predatorManager.setPlayerGrowthStage(stage);
+    this.predatorManager.refreshAllKinClones(this.player);
     this.foodManager.setChloroplastTreeLocations(
       this.environment.getChloroplastTreePositions(activeRadius),
       activeRadius
@@ -418,6 +462,7 @@ export class GameEngine {
       this.foodManager.resetAll();
     }
   }
+
 
   public get playerCell(): PlayerCell {
     return this.player;
@@ -812,6 +857,9 @@ export class GameEngine {
       this.stats.placedOrgans,
       this.selectedPlacedInstanceId
     );
+    if (this.predatorManager) {
+      this.predatorManager.refreshAllKinClones(this.player);
+    }
   }
 
   public discoverAdaptation(
@@ -1261,6 +1309,7 @@ export class GameEngine {
       this.syncActivePlanetPalette(slotId);
       this.environment.setStageEnvironment(validEvoStage);
       this.predatorManager.setStageMode(validEvoStage);
+      this.foodManager.setStageMode(validEvoStage);
       this.introCinematicController?.setMonumentCoreTheme(this.stats.colorTheme);
       this.introCinematicController?.setPermanentMonumentVisible(
         validEvoStage === 'cell_stage'
@@ -1286,8 +1335,19 @@ export class GameEngine {
         }
       } else {
         this.player.position.x = 0;
-        this.player.position.z = 0;
+        this.player.position.z = validEvoStage === 'creature_stage' ? 5.2 : 0;
       }
+      this.player.position.y =
+        validEvoStage === 'creature_stage'
+          ? getLandHeightAt(this.player.position.x, this.player.position.z) +
+            this.player.getGroundOffset()
+          : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
+      this.player.group.position.copy(this.player.position);
+      this.cameraController.resetImmediate(
+        this.player.position,
+        this.player.headingAngle,
+        validEvoStage === 'creature_stage'
+      );
       this.evaluateQuests(true);
       this.setEventMessage('Partida evolutiva restaurada automáticamente');
     } catch {
@@ -1464,6 +1524,26 @@ export class GameEngine {
     this.completeIntroCinematic(true);
   }
 
+  public syncTutorialUI(): void {
+    this.emitUISnapshot();
+  }
+
+  public onMeteorCinematicFinished(): void {
+    this.tutorialManager.startAfterMeteor();
+    this.syncTutorialUI();
+  }
+
+  public advanceTutorialFromVitals(): void {
+    if (this.tutorialManager.acknowledgeVitalSigns()) {
+      this.syncTutorialUI();
+    }
+  }
+
+  public skipTutorial(): void {
+    this.tutorialManager.completeTutorial();
+    this.syncTutorialUI();
+  }
+
   private completeIntroCinematic(skipped = false): void {
     this.introCinematicController.finishAndCleanUp(this.player.group);
     this.solarSystemView.restoreAfterIntroCinematic(this.planetSlots);
@@ -1487,7 +1567,7 @@ export class GameEngine {
         ? `¡Génesis completada en ${planetName}! ${this.stats.speciesName} emerge junto al meteorito de origen`
         : `¡Eclosión completada en ${planetName}! ${this.stats.speciesName} despierta en el océano primigenio`
     );
-    this.emitUISnapshot();
+    this.onMeteorCinematicFinished();
   }
 
   public saveAndExitToMenu(): void {
@@ -1587,9 +1667,21 @@ export class GameEngine {
     this.status = 'playing';
     this.matingCallTimer = 0;
     this.autosaveAccumulator = 0;
+    if (this.stats.evolutionaryStage === 'creature_stage') {
+      this.player.position.set(
+        0,
+        getLandHeightAt(0, 0) + this.player.getGroundOffset(),
+        0
+      );
+      this.player.headingAngle = 0;
+      this.player.mesh.rotation.y = 0; // Mirando hacia adelante (polo norte/eje Z)
+      this.player.group.position.copy(this.player.position);
+      this.cameraController.syncWithPlayerHeading(this.player.mesh.rotation.y);
+    }
     this.cameraController.resetImmediate(
       this.player.position,
-      this.player.headingAngle
+      this.player.headingAngle,
+      this.stats.evolutionaryStage === 'creature_stage'
     );
     this.inputController.resetInputs();
     this.timer.update();
@@ -3878,6 +3970,12 @@ export class GameEngine {
     }
 
     if (this.status === 'playing') {
+      if (e.deltaY !== 0) {
+        this.cameraController.zoomGameplayCamera(e.deltaY > 0 ? 0.08 : -0.08);
+        if (this.tutorialManager.recordCameraZoom()) {
+          this.syncTutorialUI();
+        }
+      }
       return;
     }
 
@@ -4100,11 +4198,62 @@ export class GameEngine {
    * Starts the 3D Spore Brain Evolution Sequence ('brain_cinematic') when transitioning
    * from Stage 5 Cell Stage to the Terrestrial Creature Stage.
    */
+  public syncUISnapshot(): void {
+    this.emitUISnapshot();
+  }
+
+  public triggerEvolutionToCreatureStage(): void {
+    if (this.stats.evolutionaryStage === 'creature_stage') {
+      this.closeEditor();
+      return;
+    }
+
+    // 1. Renderizar un frame limpio de la célula y obtener la captura tridimensional antes del cambio
+    this.predatorManager.setEcosystemVisible(false, this.player.position);
+    this.foodManager.setEcosystemVisible(false);
+    this.fossilMeteorManager.setEcosystemVisible(false);
+    this.player.hideMateCell();
+    this.renderer.render(this.environment.scene, this.cameraController.camera);
+    let snapshotDataUrl: string | undefined;
+    try {
+      snapshotDataUrl = this.renderer.domElement.toDataURL('image/webp');
+    } catch {
+      snapshotDataUrl = undefined;
+    }
+
+    // 2. Determinar el rasgo predominante según el conteo de alimentación
+    const trait: DietType =
+      this.stageHistory.meatsEaten > this.stageHistory.plantsEaten * 1.5
+        ? 'carnivore'
+        : this.stageHistory.plantsEaten > this.stageHistory.meatsEaten * 1.5
+        ? 'herbivore'
+        : 'omnivore';
+
+    this.stageHistory.stageTimeSeconds = Math.max(
+      1,
+      Math.round(this.stats.survivalTime)
+    );
+    this.stageHistory.partsDiscoveredCount = this.discoveredAdaptationIds.size;
+    this.stageHistory.finalCellSnapshotUrl = snapshotDataUrl;
+    this.stageHistory.earnedTrait = trait;
+
+    // 3. Abrir modal de resumen estilo Timeline de Spore
+    this.isEvolutionSummaryOpen = true;
+    this.inputController.resetInputs();
+    this.syncUISnapshot();
+  }
+
   public evolveToCreatureStage(): void {
     if (this.stats.evolutionaryStage === 'creature_stage') {
       this.closeEditor();
       return;
     }
+    this.triggerEvolutionToCreatureStage();
+  }
+
+  public proceedFromSummaryToLand(): void {
+    this.isEvolutionSummaryOpen = false;
+    this.stats.diet = this.stageHistory.earnedTrait;
 
     // Freeze ocean predators/food and close Petri dish overlay so the camera can zoom into the cell's head
     this.setEditorSandboxIsolation(false);
@@ -4148,6 +4297,7 @@ export class GameEngine {
   private completeBrainCinematic(skipped = false): void {
     this.player.setBrainCinematicActive(false);
     this.brainCinematicState = undefined;
+    this.isEvolutionSummaryOpen = false;
 
     this.stats.evolutionaryStage = 'creature_stage';
     this.stats.growthStage = 5;
@@ -4178,11 +4328,6 @@ export class GameEngine {
       }
     }
 
-    // Note (Spore Early Creature Creator): Do NOT force-equip starter limbs automatically.
-    // The player keeps their compatible cellular parts (mouths, eyes, spikes, poison, electric)
-    // and receives the refunded microbial DNA + 90 ADN bonus so they can freely attach legs
-    // from the palette or confirm a legless crawling creature (slug mode).
-
     // Set an arched terrestrial spine posture with 6 vertebrae
     this.stats.spineLength = Math.max(1.25, this.stats.spineLength);
     this.stats.spineSegments = 2;
@@ -4198,7 +4343,6 @@ export class GameEngine {
     );
 
     this.syncWorldStageScale(5, false);
-    this.player.position.set(0, 0, 5.2);
     this.player.applyMorphology(
       this.stats.bodyShape,
       this.stats.colorTheme,
@@ -4212,12 +4356,22 @@ export class GameEngine {
       this.stats.creatureMorphology
     );
     this.syncCatalogAndOrganismState();
+    this.player.position.set(
+      0,
+      getLandHeightAt(0, 0) + this.player.getGroundOffset(),
+      0
+    );
+    this.player.headingAngle = 0;
+    this.player.mesh.rotation.y = 0; // Mirando hacia adelante (polo norte/eje Z)
+    this.player.group.position.copy(this.player.position);
+    this.cameraController.syncWithPlayerHeading(this.player.mesh.rotation.y);
     this.stats.health = this.stats.maxHealth;
     this.stats.energy = this.stats.maxEnergy;
     this.stats.isStarving = false;
 
     this.environment.setStageEnvironment('creature_stage');
     this.predatorManager.setStageMode('creature_stage');
+    this.foodManager.setStageMode('creature_stage');
     this.introCinematicController?.setPermanentMonumentVisible(false);
     this.currentBiomeName = 'Nido Costero Terrestre (Taller de Criatura)';
 
@@ -4323,7 +4477,13 @@ export class GameEngine {
       return;
     }
 
-    // Isolate predators, food & hazards immediately when starting the mating call
+    // En fase celular (cell_stage), iniciar el Llamado de Cortejo a Distancia (Estilo Spore)
+    if (this.stats.evolutionaryStage === 'cell_stage') {
+      this.triggerMatingCall();
+      return;
+    }
+
+    // En fase terrestre (creature_stage), transición hacia el nido costero
     this.predatorManager.setEcosystemVisible(false, this.player.position);
     this.foodManager.setEcosystemVisible(false);
     this.fossilMeteorManager.setEcosystemVisible(false);
@@ -4331,13 +4491,74 @@ export class GameEngine {
     this.nearestPredatorDistance = 999;
     this.stats.damageFlashTime = 0;
 
+    if (
+      this.tutorialManager.isActive &&
+      this.tutorialManager.currentStep === 'evolve_key'
+    ) {
+      this.tutorialManager.completeTutorial();
+    }
+
     this.matingCallTimer = 0.85;
     this.player.startMatingCall();
     audioManager.playMenuOpenClose();
     this.setEventMessage(
-      this.stats.evolutionaryStage === 'creature_stage'
-        ? 'Llamada de apareamiento terrestre: Pareja acudiendo al nido...'
-        : 'Llamada de apareamiento: Pareja celular acudiendo...'
+      'Llamada de apareamiento terrestre: Pareja acudiendo al nido...'
+    );
+    this.emitUISnapshot();
+  }
+
+  /**
+   * Llamado de Cortejo a Distancia (Mating Call / Quimiotaxis) en cell_stage:
+   * Emite ondas acústicas bioluminiscentes y activa un congénere receptivo a media distancia (~55m).
+   */
+  public triggerMatingCall(): void {
+    if (
+      this.status !== 'playing' ||
+      this.matingSequence.isDancing ||
+      this.matingSequence.isHatching
+    ) {
+      return;
+    }
+
+    if (
+      this.tutorialManager.isActive &&
+      this.tutorialManager.currentStep === 'evolve_key'
+    ) {
+      this.tutorialManager.completeTutorial();
+    }
+
+    // 1. Emitir onda sónica concéntrica desde la posición del jugador
+    this.environment.spawnSonarPing(this.player.position, 0x38bdf8);
+    audioManager.playSFX('mating_call_emit');
+
+    // 2. Si aún no hay pareja activa receptiva, activar o generar un congénere a ~55 metros
+    if (!this.isMatingCallActive || !this.activeMate) {
+      this.isMatingCallActive = true;
+      const angle = Math.random() * Math.PI * 2;
+      const distance = 55.0;
+      const maxR = Math.max(45, (this.stats.activeArenaRadius ?? 110) - 14);
+      let mx = this.player.position.x + Math.cos(angle) * distance;
+      let mz = this.player.position.z + Math.sin(angle) * distance;
+      const r = Math.hypot(mx, mz);
+      if (r > maxR) {
+        mx = (mx / r) * maxR;
+        mz = (mz / r) * maxR;
+      }
+      const matePos = new THREE.Vector3(
+        mx,
+        GAME_CONFIG.WORLD.SWIM_PLANE_Y,
+        mz
+      );
+
+      this.activeMate = this.predatorManager.spawnReceptiveMate(
+        matePos,
+        this.stats
+      );
+      this.mateEchoPingTimer = 0.35;
+    }
+
+    this.setEventMessage(
+      'Congénere receptivo ha respondido a tu llamada. ¡Sigue la señal!'
     );
     this.emitUISnapshot();
   }
@@ -4349,6 +4570,8 @@ export class GameEngine {
       }
       this.status = 'playing';
       this.matingCallTimer = 0;
+      this.isMatingCallActive = false;
+      this.activeMate = null;
       this.draggingCatalogAdaptationId = null;
       this.repositioningInstanceId = null;
       this.draggingSpineArrow = null;
@@ -4374,12 +4597,61 @@ export class GameEngine {
       this.player.setEditorPreviewAction('idle');
       this.player.hideMateCell();
       this.cameraController.resetEditorOrbit();
+
+      // Reconstruir los clones de todas las células de tu especie en el mapa clonando al 100% la estructura actual del jugador
+      this.predatorManager.refreshAllKinClones(this.player);
+
+      if (this.stats.evolutionaryStage === 'creature_stage') {
+        this.player.controlsLocked = false;
+        this.player.mesh.visible = true;
+        const groundY = getLandHeightAt(
+          this.player.position.x,
+          this.player.position.z
+        );
+        this.player.position.y = groundY + this.player.getGroundOffset();
+        this.player.group.position.copy(this.player.position);
+        this.cameraController.syncWithPlayerHeading(this.player.mesh.rotation.y);
+        this.cameraController.resetImmediate(
+          this.player.position,
+          this.player.headingAngle,
+          true
+        );
+      } else if (this.matingSequence.eggMesh) {
+        // Cinemática de Eclosión del Huevo Primordial Pos-Taller (1.2s)
+        this.player.mesh.visible = false;
+        this.player.controlsLocked = true;
+        this.player.position.copy(this.matingSequence.eggPosition);
+        this.player.group.position.copy(this.player.position);
+
+        this.matingSequence.playHatchingSequence(
+          () => {
+            this.environment.spawnCellBurstFX(
+              this.matingSequence.eggPosition,
+              '#22d3ee'
+            );
+            this.player.mesh.visible = true;
+            this.player.playBirthAnimation();
+          },
+          () => {
+            this.player.controlsLocked = false;
+            this.setEventMessage(
+              '¡El huevo ha eclosionado! Una nueva generación emerge al caldo primigenio.'
+            );
+            this.emitUISnapshot();
+          }
+        );
+      } else {
+        this.player.controlsLocked = false;
+        this.player.mesh.visible = true;
+      }
+
       this.timer.update();
       this.saveToLocalStorage();
       audioManager.playMenuOpenClose();
       this.emitUISnapshot();
     }
   }
+
 
   public installOrganAtPosition(
     rawSlotId: string,
@@ -4689,6 +4961,7 @@ export class GameEngine {
     this.syncActivePlanetPalette(this.activeSlotId);
     this.environment.setStageEnvironment('cell_stage');
     this.predatorManager.setStageMode('cell_stage');
+    this.foodManager.setStageMode('cell_stage');
     this.introCinematicController?.setMonumentCoreTheme(this.stats.colorTheme);
     this.introCinematicController?.setPermanentMonumentVisible(true);
     this.player.reset();
@@ -4715,6 +4988,18 @@ export class GameEngine {
     );
     this.fossilMeteorManager.resetAll();
     this.predatorManager.resetAll();
+
+    this.isEvolutionSummaryOpen = false;
+    this.stageHistory = {
+      stageTimeSeconds: 0,
+      microbesKilled: 0,
+      plantsEaten: 0,
+      meatsEaten: 0,
+      partsDiscoveredCount: 0,
+      editorVisitsCount: 0,
+      finalCellSnapshotUrl: undefined,
+      earnedTrait: 'omnivore',
+    };
 
     this.timer.reset();
     this.timer.update();
@@ -4867,8 +5152,8 @@ export class GameEngine {
       this.syncWorldStageScale(5, false);
       this.environment.setStageEnvironment('creature_stage');
       this.predatorManager.setStageMode('creature_stage');
+      this.foodManager.setStageMode('creature_stage');
       this.introCinematicController?.setPermanentMonumentVisible(false);
-      this.player.position.set(0, 0, 5.2);
       this.player.applyMorphology(
         this.stats.bodyShape,
         this.stats.colorTheme,
@@ -4882,6 +5167,12 @@ export class GameEngine {
         this.stats.creatureMorphology
       );
       this.syncCatalogAndOrganismState();
+      this.player.position.set(
+        0,
+        getLandHeightAt(0, 5.2) + this.player.getGroundOffset(),
+        5.2
+      );
+      this.player.group.position.copy(this.player.position);
       this.currentBiomeName = 'Nido de la Especie (Regeneración Activa)';
       this.setEventMessage(
         'DevTools: Salto instantáneo a Fase de Criatura Terrestre (Nido Costero)'
@@ -4928,9 +5219,11 @@ export class GameEngine {
       this.environment.setStageEnvironment('cell_stage');
       this.syncWorldStageScale(growthStage, false);
       this.predatorManager.setStageMode('cell_stage');
+      this.foodManager.setStageMode('cell_stage');
       this.predatorManager.setPlayerGrowthStage(growthStage);
       this.introCinematicController?.setPermanentMonumentVisible(true);
       this.player.setGrowthStage(growthStage);
+      this.player.position.y = GAME_CONFIG.WORLD.SWIM_PLANE_Y;
       this.player.applyMorphology(
         this.stats.bodyShape,
         this.stats.colorTheme,
@@ -4956,7 +5249,8 @@ export class GameEngine {
     this.stats.isStarving = false;
     this.cameraController.resetImmediate(
       this.player.position,
-      this.player.headingAngle
+      this.player.headingAngle,
+      evolutionaryStage === 'creature_stage'
     );
     this.saveToLocalStorage();
     this.emitUISnapshot();
@@ -5010,10 +5304,16 @@ export class GameEngine {
     this.ensureActiveGameplayForDev();
     this.player.position.x = x;
     this.player.position.z = z;
+    this.player.position.y =
+      this.stats.evolutionaryStage === 'creature_stage'
+        ? getLandHeightAt(x, z) + this.player.getGroundOffset()
+        : GAME_CONFIG.WORLD.SWIM_PLANE_Y;
+    this.player.group.position.copy(this.player.position);
     this.player.currentSpeed = 0;
     this.cameraController.resetImmediate(
       this.player.position,
-      this.player.headingAngle
+      this.player.headingAngle,
+      this.stats.evolutionaryStage === 'creature_stage'
     );
     this.currentBiomeName =
       this.stats.evolutionaryStage === 'creature_stage'
@@ -5390,6 +5690,7 @@ export class GameEngine {
     // 3D Cosmic Orbital Solar System Save-Slot Menu ('menu')
     if (this.status === 'menu') {
       audioManager.transitionMusicTo('menu');
+      this.ambientAudioManager.silence(delta);
       this.elapsedActiveTime += delta;
       this.solarSystemView.update(delta, this.elapsedActiveTime);
       this.renderer.render(
@@ -5403,6 +5704,7 @@ export class GameEngine {
     // Secondary ocean environment simulation is frozen so 100% of GPU/CPU budget renders the Petri Dish creature at 60 FPS
     if (this.status === 'editing') {
       audioManager.transitionMusicTo('editor');
+      this.ambientAudioManager.silence(delta);
       this.elapsedActiveTime += delta;
       this.player.updateEditorIdle(delta, this.elapsedActiveTime);
       this.cameraController.update(
@@ -5411,6 +5713,14 @@ export class GameEngine {
         true,
         this.elapsedActiveTime
       );
+      this.renderer.render(
+        this.environment.scene,
+        this.cameraController.camera
+      );
+      return;
+    }
+
+    if (this.isEvolutionSummaryOpen) {
       this.renderer.render(
         this.environment.scene,
         this.cameraController.camera
@@ -5486,6 +5796,32 @@ export class GameEngine {
 
       const isCreatureStage =
         this.stats.evolutionaryStage === 'creature_stage';
+
+      // 0. Actualizar Cinemática de Cortejo / Unión Paralela (1.2s) o Eclosión Pos-Taller antes de mover al jugador
+      if (
+        this.matingSequence.isCinematicPlaying ||
+        this.matingSequence.isHatching
+      ) {
+        this.matingSequence.update(delta, this.elapsedActiveTime);
+        this.cameraController.update(
+          delta,
+          this.player,
+          false,
+          this.elapsedActiveTime
+        );
+        this.environment.update(
+          this.elapsedActiveTime,
+          delta,
+          this.player.position.x,
+          this.player.position.z,
+          this.cameraController.camera
+        );
+        this.renderer.render(
+          this.environment.scene,
+          this.cameraController.camera
+        );
+        return;
+      }
 
       const jawStacks = this.getStacks('mouth_jaw');
       const proboscisStacks = this.getStacks('mouth_proboscis');
@@ -5633,9 +5969,13 @@ export class GameEngine {
         this.inputController.updateHeldPointerWorldTarget();
       }
 
+      // 1. Posición tentativa antes de aplicar el movimiento
+      const prevX = this.player.position.x;
+      const prevZ = this.player.position.z;
+
       const nearbyPlayerObstacles = this.environment.getNearbyObstacles(
-        this.player.position.x,
-        this.player.position.z,
+        prevX,
+        prevZ,
         6.5
       );
       const moveResult = this.player.update(
@@ -5650,6 +5990,137 @@ export class GameEngine {
       );
       this.stats.isBoosting = moveResult.isBoosting;
       this.stats.speed = Math.abs(this.player.currentSpeed);
+      if (this.stats.speed > 0.1) {
+        if (this.tutorialManager.recordMovement(this.stats.speed * delta)) {
+          forceUIEmit = true;
+        }
+      }
+
+      if (isCreatureStage) {
+        const newX = this.player.position.x;
+        const newZ = this.player.position.z;
+
+        // 3. Evaluar la diferencia de elevación entre la posición actual y la siguiente
+        const currentGroundY = getLandHeightAt(prevX, prevZ);
+        const targetGroundY = getLandHeightAt(newX, newZ);
+        const slopeDelta = targetGroundY - currentGroundY;
+        const horizontalDist = Math.hypot(newX - prevX, newZ - prevZ);
+
+        // LÍMITE DE PENDIENTE ESCARPADA (Acantilado vertical impenetrable > 65 grados)
+        const MAX_SLOPE_RATIO = 2.25;
+
+        if (
+          horizontalDist > 0.001 &&
+          slopeDelta / horizontalDist > MAX_SLOPE_RATIO
+        ) {
+          // Intentar deslizamiento tangencial en X o Z antes de bloquear por completo
+          const distX = Math.abs(newX - prevX);
+          const distZ = Math.abs(newZ - prevZ);
+          const slopeX =
+            distX > 0.001
+              ? (getLandHeightAt(newX, prevZ) - currentGroundY) / distX
+              : Infinity;
+          const slopeZ =
+            distZ > 0.001
+              ? (getLandHeightAt(prevX, newZ) - currentGroundY) / distZ
+              : Infinity;
+
+          if (slopeX <= MAX_SLOPE_RATIO) {
+            this.player.position.x = newX;
+            this.player.position.z = prevZ;
+          } else if (slopeZ <= MAX_SLOPE_RATIO) {
+            this.player.position.x = prevX;
+            this.player.position.z = newZ;
+          } else {
+            this.player.position.x = prevX;
+            this.player.position.z = prevZ;
+            this.player.currentSpeed *= 0.25;
+          }
+        } else {
+          // Terreno transitable: permitir el movimiento
+          this.player.position.x = newX;
+          this.player.position.z = newZ;
+        }
+
+        // 4. BLOQUEO DE SUELO ESTRICTO (POST-ANIMACIÓN)
+        const px = this.player.position.x;
+        const pz = this.player.position.z;
+
+        // A) Cota matemática analítica directa (Garantía sin fallos de raycast)
+        const mathGroundY = getLandHeightAt(px, pz);
+
+        // B) Cota geométrica precisa con Raycaster contra el chunk visible y seabedMesh
+        let actualSurfaceY = mathGroundY;
+        const chunkMesh = this.environment.getTerrainMeshAt(px, pz);
+        const terrainMesh = this.environment.seabedMesh;
+
+        // Lanzar rayo desde 50 metros arriba para capturar cualquier pico de montaña
+        this.terrainRaycaster.set(
+          new THREE.Vector3(px, mathGroundY + 50.0, pz),
+          this.rayDownVector
+        );
+
+        if (chunkMesh) {
+          const chunkIntersections = this.terrainRaycaster.intersectObject(
+            chunkMesh,
+            true
+          );
+          if (chunkIntersections.length > 0) {
+            actualSurfaceY = Math.max(
+              actualSurfaceY,
+              chunkIntersections[0].point.y
+            );
+          }
+        }
+        if (terrainMesh && terrainMesh !== chunkMesh) {
+          const intersections = this.terrainRaycaster.intersectObject(
+            terrainMesh,
+            false
+          );
+          if (intersections.length > 0) {
+            actualSurfaceY = Math.max(actualSurfaceY, intersections[0].point.y);
+          }
+        }
+
+        const groundY = actualSurfaceY;
+        const rootClearance = this.player.getGroundOffset();
+        const targetRootY =
+          groundY + rootClearance + this.player.heightOffset;
+
+        // Asegurar que la base del torso no baje de la cota mínima antes de medir las extremidades
+        if (this.player.position.y < targetRootY) {
+          this.player.position.y = targetRootY;
+          this.player.isGrounded = true;
+          this.player.verticalVelocity = 0;
+        }
+
+        // Forzar actualización de matrices de mundo de la criatura para reflejar la rotación de hombros y caderas
+        this.player.mesh.updateMatrixWorld(true);
+
+        // Evaluar si alguna mano o pie ha bajado por debajo de la superficie del suelo
+        const lowestLimbY = this.player.getLowestLimbWorldY();
+
+        if (lowestLimbY < groundY) {
+          // Cuántos metros se ha metido la extremidad dentro de la tierra
+          const penetrationDepth = groundY - lowestLimbY;
+          // Elevar el torso exactamente esa distancia para que la extremidad descanse sobre la arena
+          this.player.position.y += penetrationDepth;
+          this.player.isGrounded = true;
+          this.player.verticalVelocity = 0;
+        } else if (
+          this.player.position.y > targetRootY &&
+          this.player.isGrounded
+        ) {
+          // Asegurar que si la criatura está flotando, descienda suavemente hacia el suelo
+          this.player.position.y = THREE.MathUtils.lerp(
+            this.player.position.y,
+            targetRootY,
+            Math.min(1.0, delta * 10.0)
+          );
+        }
+
+        this.player.mesh.updateMatrixWorld(true);
+      }
 
       // Camouflage Chromatophores: 80% translucency when still for >= 1.5s
       if (
@@ -5687,18 +6158,92 @@ export class GameEngine {
           this.player.position.z
         );
 
+      const currentBiome = this.environment.getBiomeAt(
+        this.player.position.x,
+        this.player.position.z
+      );
       const nextBiomeLabel = isCreatureStage
         ? nearSpeciesNest
           ? 'Nido de la Especie (Regeneración Activa)'
-          : 'Costa Terrestre Primigenia'
-        : this.environment.getBiomeAt(
-            this.player.position.x,
-            this.player.position.z
-          ).name;
+          : currentBiome.name
+        : currentBiome.name;
 
       if (nextBiomeLabel !== this.currentBiomeName) {
         this.currentBiomeName = nextBiomeLabel;
         forceUIEmit = true;
+      }
+
+      const isNearVentForAudio =
+        !isCreatureStage &&
+        this.environment.isNearThermalVent(
+          this.player.position.x,
+          this.player.position.z
+        );
+
+      this.ambientAudioManager.update({
+        delta,
+        x: this.player.position.x,
+        y: this.player.position.y,
+        z: this.player.position.z,
+        arenaRadius: this.stats.activeArenaRadius ?? 110,
+        growthStage: this.stats.growthStage,
+        biomeId: currentBiome.id,
+        isNearThermalVent: isNearVentForAudio,
+        isCreatureStage,
+        currentSpeed: this.player.currentSpeed,
+        isBoosting: moveResult.isBoosting,
+        inCombatAlert,
+        nearestPredatorDistance: this.nearestPredatorDistance,
+        isAbilityActive:
+          this.isMatingCallActive ||
+          this.electricCooldownTimer > 4.2 ||
+          this.poisonSpawnCooldownTimer > 2.8,
+      });
+
+      if (isCreatureStage) {
+        this.updateOceanBoundary(this.player.position, delta);
+      }
+
+      // 1A. Seguimiento de Pareja Receptiva durante el Llamado de Cortejo en cell_stage
+      if (
+        !isCreatureStage &&
+        this.isMatingCallActive &&
+        this.activeMate
+      ) {
+        this.mateEchoPingTimer -= delta;
+        if (this.mateEchoPingTimer <= 0) {
+          this.mateEchoPingTimer = 1.65;
+          this.environment.spawnSonarPing(this.activeMate.position, 0xf472b6);
+        }
+
+        const distToMate = this.player.position.distanceTo(
+          this.activeMate.position
+        );
+        if (distToMate < 2.5 && !this.matingSequence.isCinematicPlaying) {
+          this.isMatingCallActive = false;
+          const mateRef = this.activeMate;
+          this.matingSequence.playMatingEncounter(
+            this.player,
+            mateRef,
+            () => {
+              this.status = 'editing';
+              this.stageHistory.editorVisitsCount += 1;
+              if (this.matingSequence.eggMesh) {
+                this.matingSequence.eggMesh.visible = false;
+              }
+              this.setEditorSandboxIsolation(true);
+              this.cameraController.resetEditorOrbit();
+              this.player.hideMateCell();
+              this.player.setEditorMode(true);
+              this.inputController.resetInputs();
+              this.setEventMessage(
+                'Taller Evolutivo 3D activo: Modifica el ADN de la siguiente generación'
+              );
+              this.emitUISnapshot();
+            }
+          );
+          return;
+        }
       }
 
       // Check Mating Call courtship completion -> transition to isolated 3D Spore Workshop Sandbox
@@ -5707,6 +6252,7 @@ export class GameEngine {
         if (this.matingCallTimer <= 0) {
           this.matingCallTimer = 0;
           this.status = 'editing';
+          this.stageHistory.editorVisitsCount += 1;
           this.setEditorSandboxIsolation(true);
           this.cameraController.resetEditorOrbit();
           this.player.hideMateCell();
@@ -5734,7 +6280,8 @@ export class GameEngine {
           this.elapsedActiveTime,
           delta,
           this.player.position.x,
-          this.player.position.z
+          this.player.position.z,
+          this.cameraController.camera
         );
         this.renderer.render(
           this.environment.scene,
@@ -5769,12 +6316,11 @@ export class GameEngine {
             forceUIEmit = true;
           }
         } else {
-          this.setEventMessage(
-            'Evoluciona al Estadio de Criatura Terrestre para usar Canto Social (C)'
-          );
+          this.triggerMatingCall();
           forceUIEmit = true;
         }
       }
+
 
       const predatorClose =
         this.nearestPredatorDistance < 12.0 &&
@@ -6012,15 +6558,22 @@ export class GameEngine {
         }
       }
 
-      if (nearSpeciesNest) {
-        this.stats.health = Math.min(
-          this.stats.maxHealth,
-          this.stats.health + 6.0 * delta
+      // Curación pasiva dentro del Nido Central de la Especie (distToNest < 8.0m)
+      if (isCreatureStage) {
+        const distToNest = Math.hypot(
+          this.player.position.x,
+          this.player.position.z
         );
-        this.stats.energy = Math.min(
-          this.stats.maxEnergy,
-          this.stats.energy + 6.0 * delta
-        );
+        if (distToNest < 8.0 || nearSpeciesNest) {
+          this.stats.health = Math.min(
+            this.stats.maxHealth,
+            this.stats.health + 5.0 * delta
+          );
+          this.stats.energy = Math.min(
+            this.stats.maxEnergy,
+            this.stats.energy + 6.0 * delta
+          );
+        }
       }
 
       // 3. Starvation Consequence
@@ -6039,6 +6592,51 @@ export class GameEngine {
       }
 
       // 4. Update Food & Dropped Creature Genetic Nodules
+      if (isCreatureStage) {
+        this.environment.updateFruitBushes(delta);
+
+        const canEatPlants =
+          this.stats.diet === 'herbivore' ||
+          this.stats.diet === 'omnivore' ||
+          hasChloroplast;
+        if (canEatPlants) {
+          for (const bush of this.environment.fruitBushes) {
+            const distToBush = this.player.position.distanceTo(bush.position);
+            if (distToBush < 3.2) {
+              const availableFruit = bush.fruits.find((f) => !f.isHarvested);
+              if (availableFruit) {
+                availableFruit.isHarvested = true;
+                availableFruit.mesh.visible = false;
+                availableFruit.respawnTimer = 45.0; // 45 segundos en madurar de nuevo
+
+                this.stats.health = Math.min(
+                  this.stats.maxHealth,
+                  this.stats.health + 20
+                );
+                this.stats.energy = Math.min(
+                  this.stats.maxEnergy,
+                  this.stats.energy + 30
+                );
+                this.stats.foodEaten += 1;
+                const leveledUp = this.addAdn(15);
+                this.predatorManager.spawnFloatingText(
+                  '+15 ADN (Fruta)',
+                  this.player.position,
+                  '#22c55e'
+                );
+                if (!leveledUp) {
+                  this.setEventMessage(
+                    '+15 ADN (Fruta) · +20 Salud · +30 Energía'
+                  );
+                }
+                forceUIEmit = true;
+                break; // Recolecta 1 fruta por ciclo de contacto
+              }
+            }
+          }
+        }
+      }
+
       const foodResult = this.foodManager.update(
         delta,
         this.elapsedActiveTime,
@@ -6082,12 +6680,48 @@ export class GameEngine {
           this.stats.maxEnergy,
           this.stats.energy + finalEnergyGained
         );
+        this.stageHistory.plantsEaten += foodResult.plantsEaten;
+        this.stageHistory.meatsEaten += foodResult.meatEaten;
+
+        if (!isCreatureStage && foodResult.plantsEaten > 0) {
+          this.stats.health = Math.min(
+            this.stats.maxHealth,
+            this.stats.health + 4 * foodResult.plantsEaten
+          );
+        }
+        if (foodResult.meatEaten > 0) {
+          if (isCreatureStage) {
+            this.stats.health = Math.min(
+              this.stats.maxHealth,
+              this.stats.health + 35 * foodResult.meatEaten
+            );
+            this.predatorManager.spawnFloatingText(
+              '+25 ADN (Carne Fresca)',
+              this.player.position,
+              '#ef4444'
+            );
+          } else {
+            this.stats.health = Math.min(
+              this.stats.maxHealth,
+              this.stats.health + 12 * foodResult.meatEaten
+            );
+          }
+        }
         this.stats.foodEaten += foodResult.itemsEaten;
+        if (this.tutorialManager.recordFoodEaten()) {
+          forceUIEmit = true;
+        }
         const leveledUp = this.addAdn(foodResult.adnGained);
         if (!leveledUp && !isolatedNewGene) {
-          this.setEventMessage(
-            `+${foodResult.adnGained} ADN · +${finalEnergyGained} Energía`
-          );
+          if (isCreatureStage && foodResult.meatEaten > 0) {
+            this.setEventMessage(
+              `+${foodResult.adnGained} ADN (Carne Fresca) · +${35 * foodResult.meatEaten} Salud · +${finalEnergyGained} Energía`
+            );
+          } else {
+            this.setEventMessage(
+              `+${foodResult.adnGained} ADN · +${finalEnergyGained} Energía`
+            );
+          }
         }
         forceUIEmit = true;
       } else if (foodResult.blockedFoodKind === 'meat' && !this.recentEventMessage) {
@@ -6102,12 +6736,37 @@ export class GameEngine {
         forceUIEmit = true;
       }
 
-      if (chemoreceptorStacks > 0) {
-        const chemoTarget = this.foodManager.findNearestTargetForChemoreceptor(
+      if (!isCreatureStage && this.isMatingCallActive && this.activeMate) {
+        this.player.updateChemoreceptorCompass(
+          this.activeMate.position,
+          false,
+          this.elapsedActiveTime,
+          true
+        );
+      } else if (chemoreceptorStacks > 0) {
+        let chemoTarget = this.foodManager.findNearestTargetForChemoreceptor(
           this.player.position,
           this.stats.diet,
           hasChloroplast
         );
+        if (
+          !chemoTarget &&
+          isCreatureStage &&
+          (this.stats.diet === 'herbivore' ||
+            this.stats.diet === 'omnivore' ||
+            hasChloroplast)
+        ) {
+          let nearestBushDistSq = Infinity;
+          for (const bush of this.environment.fruitBushes) {
+            if (bush.fruits.some((f) => !f.isHarvested)) {
+              const dSq = this.player.position.distanceToSquared(bush.position);
+              if (dSq < nearestBushDistSq) {
+                nearestBushDistSq = dSq;
+                chemoTarget = { position: bush.position, isGeneticNodule: false };
+              }
+            }
+          }
+        }
         this.player.updateChemoreceptorCompass(
           chemoTarget ? chemoTarget.position : null,
           chemoTarget ? chemoTarget.isGeneticNodule : false,
@@ -6116,6 +6775,7 @@ export class GameEngine {
       } else {
         this.player.updateChemoreceptorCompass(null, false, this.elapsedActiveTime);
       }
+
 
       // 4B. Update 3D Abyssal Fossil Meteorites (Mecánica 1: Descubrimiento por Fósiles)
       if (!isCreatureStage) {
@@ -6153,9 +6813,13 @@ export class GameEngine {
           )
         : 0;
 
-      const canPredateHerbivores = hasJaw || hasProboscis;
+      const canPredateHerbivores =
+        hasJaw ||
+        hasProboscis ||
+        (isCreatureStage &&
+          (this.stats.diet === 'carnivore' || this.stats.diet === 'omnivore'));
       const canDevourWeakenedHunters =
-        (this.stats.growthStage >= 3 || crusherStacks > 0) &&
+        (this.stats.growthStage >= 3 || crusherStacks > 0 || isCreatureStage) &&
         canPredateHerbivores &&
         moveResult.isBoosting;
       const canHuntWithGraspingArms =
@@ -6171,8 +6835,22 @@ export class GameEngine {
         canCounterAttack,
         canPredateHerbivores,
         hasProboscis || needleProboscisStacks > 0,
-        (killedPos, geneticTraits, speciesName) => {
-          this.foodManager.spawnMeatDrop(killedPos);
+        (
+          killedPos,
+          geneticTraits,
+          speciesName,
+          _killedByPlayer,
+          creatureTier,
+          meatDropCount
+        ) => {
+          if (!isCreatureStage) {
+            this.stageHistory.microbesKilled += 1;
+          }
+          this.foodManager.spawnMeatDrop(
+            killedPos,
+            meatDropCount,
+            creatureTier ?? 1
+          );
           // Only drop a special Genetic Nodule if the dead creature carried a part still in 'locked_hidden' state
           const lockedTrait = geneticTraits
             .map((rawId) => normalizeAdaptationId(rawId))
@@ -6484,7 +7162,8 @@ export class GameEngine {
         this.elapsedActiveTime,
         delta,
         this.player.position.x,
-        this.player.position.z
+        this.player.position.z,
+        this.cameraController.camera
       );
       this.introCinematicController.updatePermanentMonument(
         delta,
@@ -6517,6 +7196,55 @@ export class GameEngine {
     }
 
     this.renderer.render(this.environment.scene, this.cameraController.camera);
+  }
+
+  private leviathanEncounterCooldown = 0;
+
+  /**
+   * Límite Natural al Estilo Spore: El Leviatán Marino.
+   * Si la criatura nada mar adentro hacia las aguas profundas (> SHALLOW_WATER_LIMIT o elevación < -4.0m),
+   * emerge el Leviatán Marino y la lanza de vuelta hacia la costa más cercana.
+   */
+  public updateOceanBoundary(playerPos: THREE.Vector3, dt: number): void {
+    if (this.leviathanEncounterCooldown > 0) {
+      this.leviathanEncounterCooldown = Math.max(
+        0,
+        this.leviathanEncounterCooldown - dt
+      );
+    }
+
+    const distFromCenter = Math.hypot(playerPos.x, playerPos.z);
+    const currentElevation = getLandHeightAt(playerPos.x, playerPos.z);
+
+    // 1. Entrada al agua: si se adentra en aguas profundas, alerta y empuje del Leviatán
+    if (
+      distFromCenter > CONTINENT_CONFIG.SHALLOW_WATER_LIMIT ||
+      currentElevation < -4.0
+    ) {
+      this.triggerLeviathanEncounter(playerPos, dt);
+    }
+  }
+
+  private triggerLeviathanEncounter(playerPos: THREE.Vector3, dt: number): void {
+    // Vibración de cámara y rugido abisal
+    this.cameraController.shake(0.6);
+
+    if (this.leviathanEncounterCooldown <= 0) {
+      this.leviathanEncounterCooldown = 1.8;
+      audioManager.playLeviathanRoar();
+      this.environment.triggerLeviathanVisual(playerPos);
+      this.setEventMessage(
+        '¡PELIGRO ABISAL! El Leviatán Marino custodia el océano profundo y te lanza de vuelta a la costa'
+      );
+    }
+
+    // Empuje hidrodinámico masivo que lanza al jugador de vuelta a la playa más cercana
+    const dirToShore = new THREE.Vector2(-playerPos.x, -playerPos.z).normalize();
+    playerPos.x += dirToShore.x * 45.0 * dt;
+    playerPos.z += dirToShore.y * 45.0 * dt;
+    const shoreGroundY = getLandHeightAt(playerPos.x, playerPos.z);
+    playerPos.y = Math.max(shoreGroundY, -0.2) + 2.5;
+    this.player.group.position.copy(playerPos);
   }
 
   private footerDeathCleanup(): void {
@@ -6596,6 +7324,9 @@ export class GameEngine {
       brainCinematic: this.brainCinematicState
         ? { ...this.brainCinematicState }
         : undefined,
+      isEvolutionSummaryOpen: this.isEvolutionSummaryOpen,
+      stageEvolutionHistory: { ...this.stageHistory },
+      tutorialState: this.tutorialManager.getState(),
       autosaveNotificationVisible: this.autosaveBadgeTimer > 0,
       deathCauseDescription: this.deathCauseDescription,
       isGodModeActive: this.isGodModeActive,
@@ -6634,6 +7365,7 @@ export class GameEngine {
       this.boundContextLost
     );
 
+    this.cameraController.disposeMouseListeners();
     this.inputController.dispose();
     this.timer.dispose();
     this.player.dispose();
